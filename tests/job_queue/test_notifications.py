@@ -24,6 +24,17 @@ async def test_claim_notification_returns_the_result_of_a_done_job(queue: JobQue
     )
 
 
+async def test_two_concurrent_notification_claims_never_return_the_same_job(queue: JobQueue) -> None:
+    job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
+    await queue.claim_next()
+    await queue.complete(job_id, {"plan": "ok"})
+
+    first, second = await asyncio.gather(queue.claim_notification(), queue.claim_notification())
+
+    claimed = [c for c in (first, second) if c is not None]
+    assert len(claimed) == 1
+
+
 async def test_run_notifications_calls_handle_exactly_once_for_a_successful_delivery(
     queue: JobQueue,
 ) -> None:

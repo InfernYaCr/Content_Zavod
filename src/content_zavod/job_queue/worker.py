@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Awaitable, Callable
 
 from .models import JobHandler
@@ -20,17 +21,17 @@ async def run_worker(
     stuck_recovery_interval: float = 60.0,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     stop: asyncio.Event | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> None:
-    time_since_recovery = stuck_recovery_interval
+    last_recovery = clock() - stuck_recovery_interval
     while stop is None or not stop.is_set():
-        if time_since_recovery >= stuck_recovery_interval:
+        if clock() - last_recovery >= stuck_recovery_interval:
             await queue.recover_stuck()
-            time_since_recovery = 0.0
+            last_recovery = clock()
 
         claimed = await queue.claim_next()
         if claimed is None:
             await sleep(poll_interval)
-            time_since_recovery += poll_interval
             continue
 
         handler = handlers.get(claimed.job_type)

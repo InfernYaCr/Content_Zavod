@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     error TEXT,
     notified_at TIMESTAMPTZ,
     notification_attempts INT NOT NULL DEFAULT 0,
+    notify_locked_at TIMESTAMPTZ,
     run_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     locked_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

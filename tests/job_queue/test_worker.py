@@ -77,6 +77,56 @@ async def test_recover_stuck_requeues_abandoned_running_jobs(pool: asyncpg.Pool)
     assert await queue.get_status(job_id) == "queued"
 
 
+async def test_run_worker_recovers_stuck_jobs_periodically_even_when_continuously_busy(
+    queue: JobQueue,
+) -> None:
+    for i in range(5):
+        await queue.enqueue("generate_plan", {"i": i}, idempotency_key=f"plan-{i}")
+
+    recovery_calls = 0
+    original_recover_stuck = queue.recover_stuck
+
+    async def counting_recover_stuck() -> int:
+        nonlocal recovery_calls
+        recovery_calls += 1
+        return await original_recover_stuck()
+
+    queue.recover_stuck = counting_recover_stuck  # type: ignore[method-assign]
+
+    processed = 0
+    stop = asyncio.Event()
+
+    async def handler(payload: dict) -> dict:
+        nonlocal processed
+        processed += 1
+        if processed >= 5:
+            stop.set()
+        return {}
+
+    fake_time = 0.0
+
+    def clock() -> float:
+        nonlocal fake_time
+        fake_time += 0.02
+        return fake_time
+
+    await asyncio.wait_for(
+        run_worker(
+            queue,
+            {"generate_plan": handler},
+            poll_interval=0.001,
+            stuck_recovery_interval=0.05,
+            clock=clock,
+            stop=stop,
+        ),
+        timeout=5,
+    )
+
+    # Never idle (5 jobs always available) - a recovery pass must still fire
+    # more than once as time crosses stuck_recovery_interval repeatedly.
+    assert recovery_calls >= 2
+
+
 async def test_run_worker_executes_the_matching_handler(queue: JobQueue) -> None:
     job_id = await queue.enqueue("generate_plan", {"week": 1}, idempotency_key="plan-1")
 

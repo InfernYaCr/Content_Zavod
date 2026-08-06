@@ -18,10 +18,14 @@ from typing import Any
 
 import asyncpg
 
-from .errors import JobNotFound
+from .errors import JobNotFound, JobQueueError
 from .models import JobId, JobResult, JobStatus
 
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
+
+
+def _exponential_delay(base_delay: float, attempts: int) -> float:
+    return base_delay * (2 ** (attempts - 1))
 
 
 @dataclass(frozen=True)
@@ -64,20 +68,16 @@ class JobQueue:
             """
             INSERT INTO jobs (job_type, payload, idempotency_key)
             VALUES ($1, $2::jsonb, $3)
-            ON CONFLICT (idempotency_key) DO NOTHING
+            ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
             RETURNING id
             """,
             job_type,
             json.dumps(payload),
             idempotency_key,
         )
-        if row is not None:
-            return JobId(row["id"])
-        existing = await self._pool.fetchrow(
-            "SELECT id FROM jobs WHERE idempotency_key = $1", idempotency_key
-        )
-        assert existing is not None
-        return JobId(existing["id"])
+        if row is None:
+            raise JobQueueError(f"enqueue failed to return an id for idempotency_key={idempotency_key!r}")
+        return JobId(row["id"])
 
     async def get_status(self, job_id: JobId) -> JobStatus:
         row = await self._pool.fetchrow("SELECT status FROM jobs WHERE id = $1", job_id)
@@ -126,7 +126,7 @@ class JobQueue:
             raise JobNotFound(job_id)
         attempts = row["attempts"]
         if attempts < self._max_attempts:
-            delay = self._base_delay * (2 ** (attempts - 1))
+            delay = _exponential_delay(self._base_delay, attempts)
             await self._pool.execute(
                 """
                 UPDATE jobs
@@ -150,6 +150,7 @@ class JobQueue:
             )
 
     async def recover_stuck(self) -> int:
+        timeout_seconds = self._stuck_timeout.total_seconds()
         rows = await self._pool.fetch(
             """
             UPDATE jobs
@@ -157,7 +158,15 @@ class JobQueue:
             WHERE status = 'running' AND locked_at < now() - $1 * interval '1 second'
             RETURNING id
             """,
-            self._stuck_timeout.total_seconds(),
+            timeout_seconds,
+        )
+        await self._pool.execute(
+            """
+            UPDATE jobs
+            SET notify_locked_at = NULL, updated_at = now()
+            WHERE notify_locked_at IS NOT NULL AND notify_locked_at < now() - $1 * interval '1 second'
+            """,
+            timeout_seconds,
         )
         return len(rows)
 
@@ -165,10 +174,11 @@ class JobQueue:
         row = await self._pool.fetchrow(
             """
             UPDATE jobs
-            SET notification_attempts = notification_attempts + 1
+            SET notification_attempts = notification_attempts + 1, notify_locked_at = now()
             WHERE id = (
                 SELECT id FROM jobs
-                WHERE status IN ('done', 'failed') AND notified_at IS NULL AND run_at <= now()
+                WHERE status IN ('done', 'failed') AND notified_at IS NULL
+                    AND notify_locked_at IS NULL AND run_at <= now()
                 ORDER BY run_at
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
@@ -188,12 +198,18 @@ class JobQueue:
         return ClaimedNotification(result=result, notification_attempts=row["notification_attempts"])
 
     async def mark_notified(self, job_id: JobId) -> None:
-        await self._pool.execute("UPDATE jobs SET notified_at = now() WHERE id = $1", job_id)
+        await self._pool.execute(
+            "UPDATE jobs SET notified_at = now(), notify_locked_at = NULL WHERE id = $1", job_id
+        )
 
     async def reschedule_notification(self, job_id: JobId, notification_attempts: int) -> None:
-        delay = self._notification_base_delay * (2 ** (notification_attempts - 1))
+        delay = _exponential_delay(self._notification_base_delay, notification_attempts)
         await self._pool.execute(
-            "UPDATE jobs SET run_at = now() + $2 * interval '1 second' WHERE id = $1",
+            """
+            UPDATE jobs
+            SET run_at = now() + $2 * interval '1 second', notify_locked_at = NULL
+            WHERE id = $1
+            """,
             job_id,
             delay,
         )
