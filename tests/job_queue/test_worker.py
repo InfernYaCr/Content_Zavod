@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timedelta, timezone
+
+import asyncpg
+
+from content_zavod.job_queue import JobQueue, run_worker
+
+
+async def test_claim_next_returns_none_when_queue_is_empty(queue: JobQueue) -> None:
+    assert await queue.claim_next() is None
+
+
+async def test_claim_next_marks_the_job_running_and_returns_its_payload(queue: JobQueue) -> None:
+    job_id = await queue.enqueue("generate_plan", {"week": 1}, idempotency_key="plan-1")
+
+    claimed = await queue.claim_next()
+
+    assert claimed is not None
+    assert claimed.id == job_id
+    assert claimed.job_type == "generate_plan"
+    assert claimed.payload == {"week": 1}
+    assert claimed.attempts == 1
+    assert await queue.get_status(job_id) == "running"
+
+
+async def test_two_concurrent_claims_never_return_the_same_job(queue: JobQueue) -> None:
+    await queue.enqueue("generate_plan", {"week": 1}, idempotency_key="plan-1")
+
+    first, second = await asyncio.gather(queue.claim_next(), queue.claim_next())
+
+    claimed = [c for c in (first, second) if c is not None]
+    assert len(claimed) == 1
+
+
+async def test_complete_writes_result_and_status_together(queue: JobQueue) -> None:
+    job_id = await queue.enqueue("generate_plan", {"week": 1}, idempotency_key="plan-1")
+    await queue.claim_next()
+
+    await queue.complete(job_id, {"plan": "done"})
+
+    assert await queue.get_status(job_id) == "done"
+
+
+async def test_fail_requeues_with_backoff_until_attempts_are_exhausted(pool: asyncpg.Pool) -> None:
+    queue = JobQueue(pool, max_attempts=2, base_delay=100.0)
+    await queue.ensure_schema()
+    await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
+    job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
+
+    await queue.claim_next()
+    await queue.fail(job_id, "boom")
+    status_after_first_failure = await queue.get_status(job_id)
+    row = await pool.fetchrow("SELECT run_at FROM jobs WHERE id = $1", job_id)
+
+    assert status_after_first_failure == "queued"
+    assert row["run_at"] > datetime.now(timezone.utc)
+
+    await pool.execute("UPDATE jobs SET run_at = now() WHERE id = $1", job_id)
+    await queue.claim_next()
+    await queue.fail(job_id, "boom again")
+
+    assert await queue.get_status(job_id) == "failed"
+
+
+async def test_recover_stuck_requeues_abandoned_running_jobs(pool: asyncpg.Pool) -> None:
+    queue = JobQueue(pool, stuck_timeout=timedelta(seconds=0))
+    await queue.ensure_schema()
+    await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
+    job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
+    await queue.claim_next()
+
+    recovered = await queue.recover_stuck()
+
+    assert recovered == 1
+    assert await queue.get_status(job_id) == "queued"
+
+
+async def test_run_worker_executes_the_matching_handler(queue: JobQueue) -> None:
+    job_id = await queue.enqueue("generate_plan", {"week": 1}, idempotency_key="plan-1")
+
+    async def handler(payload: dict) -> dict:
+        return {"weeks_done": payload["week"]}
+
+    stop = asyncio.Event()
+
+    async def handle_and_stop(payload: dict) -> dict:
+        result = await handler(payload)
+        stop.set()
+        return result
+
+    await asyncio.wait_for(
+        run_worker(queue, {"generate_plan": handle_and_stop}, poll_interval=0.01, stop=stop),
+        timeout=5,
+    )
+
+    assert await queue.get_status(job_id) == "done"
+
+
+async def test_run_worker_retries_a_failing_handler_and_eventually_marks_it_failed(
+    pool: asyncpg.Pool,
+) -> None:
+    queue = JobQueue(pool, max_attempts=2, base_delay=0.01)
+    await queue.ensure_schema()
+    await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
+    job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
+
+    call_count = 0
+
+    async def failing_handler(payload: dict) -> dict:
+        nonlocal call_count
+        call_count += 1
+        raise RuntimeError("boom")
+
+    stop = asyncio.Event()
+
+    async def watcher() -> None:
+        while await queue.get_status(job_id) != "failed":
+            await asyncio.sleep(0.01)
+        stop.set()
+
+    await asyncio.wait_for(
+        asyncio.gather(
+            run_worker(queue, {"generate_plan": failing_handler}, poll_interval=0.01, stop=stop),
+            watcher(),
+        ),
+        timeout=5,
+    )
+
+    assert call_count == 2
+    assert await queue.get_status(job_id) == "failed"
