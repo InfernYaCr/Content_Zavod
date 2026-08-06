@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Генерация контент-планов и статей для медиаплощадок через Telegram-бота"
 requires-python = ">=3.12"
 dependencies = [
+    "aiogram>=3.30.0",
     "asyncpg>=0.29",
+    "httpx>=0.28.1",
 ]
 
 [dependency-groups]
