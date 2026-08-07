@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-GitHub (via `gh` CLI) — remote is https://github.com/InfernYaCr/Content_Zavod; `gh` isn't installed locally yet. See `docs/agents/issue-tracker.md`.
+GitHub (via `gh` CLI) — remote is https://github.com/InfernYaCr/Content_Zavod; `gh` is installed and authenticated. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

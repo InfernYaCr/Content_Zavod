@@ -2,7 +2,7 @@
 
 Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
-> **Prerequisite not yet met**: git is initialized and the remote (`origin` → https://github.com/InfernYaCr/Content_Zavod) is set, but the `gh` CLI is not installed locally. Skills that read/write issues (`to-tickets`, `triage`, `to-spec`, `wayfinder`) will not work until `gh` is installed and authenticated.
+> Git is initialized, the remote (`origin` → https://github.com/InfernYaCr/Content_Zavod) is set, and `gh` is installed and authenticated as `InfernYaCr`. Skills that read/write issues (`to-tickets`, `triage`, `to-spec`, `wayfinder`) are ready to use.
 
 ## Conventions
 
