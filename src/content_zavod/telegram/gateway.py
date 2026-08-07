@@ -13,12 +13,13 @@ from .types import ArticleView, PlanView
 MESSAGE_LIMIT = 4096
 CALLBACK_DATA_LIMIT = 64
 
-Action = Literal["delete", "regenerate", "approve_all"]
+Action = Literal["delete", "regenerate", "approve_all", "approve"]
 
 _ACTION_CODES: dict[Action, str] = {
     "delete": "d",
     "regenerate": "r",
     "approve_all": "a",
+    "approve": "p",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
 
@@ -86,14 +87,31 @@ def build_plan_keyboard(plan: PlanView) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_skip_keyboard(plan_item_id: str) -> InlineKeyboardMarkup:
+def build_skip_keyboard(id_: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="Пропустить",
-                    callback_data=encode_callback_data("regenerate", plan_item_id),
+                    callback_data=encode_callback_data("regenerate", id_),
                 )
+            ]
+        ]
+    )
+
+
+def build_article_keyboard(article_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Перегенерировать",
+                    callback_data=encode_callback_data("regenerate", article_id),
+                ),
+                InlineKeyboardButton(
+                    text="✅",
+                    callback_data=encode_callback_data("approve", article_id),
+                ),
             ]
         ]
     )
@@ -133,6 +151,11 @@ class TelegramGateway:
         document = BufferedInputFile(article.content, filename=article.filename)
         caption = f"📄 {article.title} ({article.platform})"
         await self._bot.send_document(chat_id, document, caption=caption)
+        await self._bot.send_message(
+            chat_id,
+            "Принять эту Статью или запросить перегенерацию?",
+            reply_markup=build_article_keyboard(article.id),
+        )
 
     async def send_error(self, chat_id: int, text: str) -> None:
         for chunk in chunk_text(text):
@@ -145,9 +168,9 @@ class TelegramCommentPrompt:
     def __init__(self, bot: BotClient) -> None:
         self._bot = bot
 
-    async def prompt_for_comment(self, chat_id: int, plan_item_id: str) -> None:
+    async def prompt_for_comment(self, chat_id: int, id_: str) -> None:
         await self._bot.send_message(
             chat_id,
             "Комментарий к перегенерации? Одной строкой, или нажмите «Пропустить».",
-            reply_markup=build_skip_keyboard(plan_item_id),
+            reply_markup=build_skip_keyboard(id_),
         )

@@ -1,3 +1,4 @@
+from .comment_gated_regeneration import CommentGatedRegeneration, CommentPrompt
 from .gateway import (
     Action,
     BotClient,
@@ -6,13 +7,15 @@ from .gateway import (
     decode_callback_data,
     encode_callback_data,
 )
-from .plan_review import CommentPrompt, PlanOperations, PlanReview
-from .types import ArticleView, PlanId, PlanItemId, PlanItemView, PlanView
+from .plan_review import PlanOperations, PlanReview
+from .types import ArticleId, ArticleView, PlanId, PlanItemId, PlanItemView, PlanView
 
 __all__ = [
     "Action",
+    "ArticleId",
     "ArticleView",
     "BotClient",
+    "CommentGatedRegeneration",
     "CommentPrompt",
     "PlanId",
     "PlanItemId",

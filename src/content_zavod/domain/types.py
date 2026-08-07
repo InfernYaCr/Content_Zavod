@@ -34,6 +34,7 @@ class PlanView:
 
 @dataclass(frozen=True)
 class ArticleView:
+    id: ArticleId
     title: str
     platform: str
     filename: str

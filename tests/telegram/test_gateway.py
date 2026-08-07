@@ -2,6 +2,7 @@ import pytest
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
 
 from content_zavod.telegram import (
+    ArticleId,
     ArticleView,
     PlanId,
     PlanItemId,
@@ -83,18 +84,22 @@ async def test_send_plan_chunks_long_text_and_attaches_keyboard_to_last_chunk() 
     assert last[2] is not None
 
 
-@pytest.mark.asyncio
-async def test_send_article_ready_sends_document_with_filename_and_caption() -> None:
-    bot = FakeBot()
-    gateway = TelegramGateway(bot)
-    article = ArticleView(
+def make_article() -> ArticleView:
+    return ArticleView(
+        id=ArticleId("article-1"),
         title="Как выбрать нишу",
         platform="Дзен",
         filename="article.docx",
         content=b"fake docx bytes",
     )
 
-    await gateway.send_article_ready(chat_id=42, article=article)
+
+@pytest.mark.asyncio
+async def test_send_article_ready_sends_document_with_filename_and_caption() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    await gateway.send_article_ready(chat_id=42, article=make_article())
 
     assert len(bot.sent_documents) == 1
     chat_id, document, caption = bot.sent_documents[0]
@@ -104,6 +109,21 @@ async def test_send_article_ready_sends_document_with_filename_and_caption() -> 
     assert document.data == b"fake docx bytes"
     assert "Как выбрать нишу" in caption
     assert "Дзен" in caption
+
+
+@pytest.mark.asyncio
+async def test_send_article_ready_attaches_regenerate_and_approve_keyboard() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    await gateway.send_article_ready(chat_id=42, article=make_article())
+
+    assert len(bot.sent_messages) == 1
+    chat_id, _, keyboard = bot.sent_messages[0]
+    assert chat_id == 42
+    (regenerate_button, approve_button) = keyboard.inline_keyboard[0]
+    assert decode_callback_data(regenerate_button.callback_data) == ("regenerate", "article-1")
+    assert decode_callback_data(approve_button.callback_data) == ("approve", "article-1")
 
 
 @pytest.mark.asyncio
@@ -153,7 +173,7 @@ async def test_comment_prompt_sends_message_with_skip_button_encoding_regenerate
     bot = FakeBot()
     prompt = TelegramCommentPrompt(bot)
 
-    await prompt.prompt_for_comment(chat_id=1, plan_item_id="item-1")
+    await prompt.prompt_for_comment(chat_id=1, id_="item-1")
 
     assert len(bot.sent_messages) == 1
     chat_id, _, keyboard = bot.sent_messages[0]

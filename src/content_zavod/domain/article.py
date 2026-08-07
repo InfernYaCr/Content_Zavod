@@ -65,7 +65,7 @@ class Article:
         content = await self._latest_content(article_id)
         if content is None:
             raise ArticleNotReady(article_id)
-        return _to_view(article_row["title"], article_row["platform"], content)
+        return _to_view(article_id, article_row["title"], article_row["platform"], content)
 
     async def list_for_plan(self, plan_id: PlanId) -> list[ArticleView]:
         rows = await self._pool.fetch(
@@ -74,10 +74,11 @@ class Article:
         )
         views: list[ArticleView] = []
         for row in rows:
-            content = await self._latest_content(ArticleId(row["id"]))
+            article_id = ArticleId(row["id"])
+            content = await self._latest_content(article_id)
             if content is None:
                 continue
-            views.append(_to_view(row["title"], row["platform"], content))
+            views.append(_to_view(article_id, row["title"], row["platform"], content))
         return views
 
     async def record_version(self, article_id: ArticleId, version: GeneratedVersion) -> None:
@@ -150,8 +151,9 @@ class Article:
         return row["content"] if row is not None else None
 
 
-def _to_view(title: str, platform: str, content: str) -> ArticleView:
+def _to_view(article_id: ArticleId, title: str, platform: str, content: str) -> ArticleView:
     return ArticleView(
+        id=article_id,
         title=title,
         platform=platform,
         filename=_build_filename(title, platform),
