@@ -2,7 +2,7 @@ from .credentials import CredentialProvider, IamTokenProvider, StaticApiKeyProvi
 from .errors import AuthError, ContentPolicyError, RateLimited, YandexError
 from .http import HttpResponse, HttpTransport, HttpxTransport
 from .image_generator import ImageGenerator
-from .keyword_stats import KeywordStat, KeywordStats
+from .keyword_stats import KeywordDynamicsPoint, KeywordStat, KeywordStats
 from .text_generator import Message, TextGenerator
 
 __all__ = [
@@ -14,6 +14,7 @@ __all__ = [
     "HttpxTransport",
     "IamTokenProvider",
     "ImageGenerator",
+    "KeywordDynamicsPoint",
     "KeywordStat",
     "KeywordStats",
     "Message",

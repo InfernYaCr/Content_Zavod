@@ -46,3 +46,24 @@ async def with_backoff_retry(
             attempt += 1
             continue
         raise error
+
+
+async def with_connection_retry(
+    call: Callable[[], Awaitable[HttpResponse]],
+    *,
+    max_retries: int,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    base_delay: float = 0.5,
+) -> HttpResponse:
+    """Retry `call` when it raises (SSL/connect errors from the transport),
+    as opposed to `with_backoff_retry` which retries on HTTP-level rate
+    limiting. Used for hosts observed to be flaky on first connection."""
+    attempt = 0
+    while True:
+        try:
+            return await call()
+        except Exception:  # noqa: BLE001 - retry any transport-level failure (SSL/connect errors)
+            if attempt >= max_retries:
+                raise
+            await sleep(base_delay * (2**attempt))
+            attempt += 1
