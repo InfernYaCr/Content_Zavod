@@ -1,0 +1,189 @@
+"""generate_article / regenerate_article Job Handlers: outline -> draft ->
+rewrite -> sources, as four separate TextGenerator calls rather than one long
+prompt (long single-shot generations were observed to degrade in quality).
+
+Both job types converge on one shared pipeline core (`_run_pipeline`):
+`regenerate_article` is a refinement of the prior result, not a different
+pipeline, so it sources its facts from the Article's current Версия (via
+`ArticleReader.get`) instead of re-fetching plan_items. Money/legal Темы
+don't get a separate step or job_type - the sources step just uses a
+stricter prompt for them, selected by a keyword/title heuristic.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any, Protocol, Sequence
+
+from ..domain import ArticleId, ArticleView
+from ..job_queue import JobHandler
+from ..yandex import Completion, Message, TextGenerator
+from .url_reachability import UrlReachabilityChecker
+
+_URL_RE = re.compile(r"https?://\S+")
+
+_SENSITIVE_KEYWORDS = frozenset(
+    {
+        "кредит",
+        "займ",
+        "ипотека",
+        "налог",
+        "право",
+        "закон",
+        "юрист",
+        "страхование",
+        "инвестиции",
+        "банкрот",
+        "штраф",
+        "суд",
+    }
+)
+
+# MVP: real per-token Yandex billing isn't wired up yet (no confirmed pricing
+# figures) - cost stays 0.0 until that lands as a follow-up.
+_COST_PER_TOKEN = 0.0
+
+
+class ArticleReader(Protocol):
+    async def get(self, article_id: ArticleId) -> ArticleView: ...
+
+
+def make_generate_article_handler(
+    text_generator: TextGenerator,
+    url_checker: UrlReachabilityChecker,
+) -> JobHandler:
+    async def handle(payload: dict[str, Any]) -> dict[str, Any]:
+        return await _run_pipeline(
+            text_generator,
+            url_checker,
+            article_id=ArticleId(payload["article_id"]),
+            title=payload["title"],
+            platform=payload["platform"],
+            summary=payload.get("summary", ""),
+            keywords=payload.get("keywords", []),
+        )
+
+    return handle
+
+
+def make_regenerate_article_handler(
+    article_reader: ArticleReader,
+    text_generator: TextGenerator,
+    url_checker: UrlReachabilityChecker,
+) -> JobHandler:
+    async def handle(payload: dict[str, Any]) -> dict[str, Any]:
+        article_id = ArticleId(payload["article_id"])
+        view = await article_reader.get(article_id)
+        return await _run_pipeline(
+            text_generator,
+            url_checker,
+            article_id=article_id,
+            title=view.title,
+            platform=view.platform,
+            comment=payload.get("comment"),
+            previous_content=view.content.decode("utf-8"),
+        )
+
+    return handle
+
+
+async def _run_pipeline(
+    text_generator: TextGenerator,
+    url_checker: UrlReachabilityChecker,
+    *,
+    article_id: ArticleId,
+    title: str,
+    platform: str,
+    summary: str = "",
+    keywords: Sequence[str] = (),
+    comment: str | None = None,
+    previous_content: str | None = None,
+) -> dict[str, Any]:
+    completions: list[Completion] = []
+    prompts: list[str] = []
+
+    async def run_step(messages: list[Message]) -> str:
+        completion = await text_generator.complete_with_usage(messages)
+        completions.append(completion)
+        prompts.append("\n".join(f"[{m.role}] {m.text}" for m in messages))
+        return completion.text
+
+    outline = await run_step(
+        _outline_messages(title, summary, keywords, platform, previous_content, comment)
+    )
+    draft = await run_step(_draft_messages(title, platform, outline))
+    rewrite = await run_step(_rewrite_messages(platform, draft))
+    sensitive = _is_money_or_legal(title, keywords)
+    sources_text = await run_step(_sources_messages(rewrite, sensitive=sensitive))
+
+    urls = _extract_urls(sources_text)
+    reachable_urls = [url for url in urls if await url_checker.is_reachable(url)]
+    content = _assemble_content(rewrite, reachable_urls)
+
+    return {
+        "article_id": article_id,
+        "content": content,
+        "prompt": "\n\n---\n\n".join(prompts),
+        "model": completions[-1].model,
+        "tokens": sum(c.tokens for c in completions),
+        "cost": sum(c.tokens * _COST_PER_TOKEN for c in completions),
+    }
+
+
+def _outline_messages(
+    title: str,
+    summary: str,
+    keywords: Sequence[str],
+    platform: str,
+    previous_content: str | None,
+    comment: str | None,
+) -> list[Message]:
+    system = f"Ты - маркетолог-практик, пишущий Статью для площадки «{platform}». Составь аутлайн."
+    if previous_content is not None:
+        user = (
+            f"Перегенерация статьи «{title}» по комментарию: {comment or '(без комментария)'}.\n\n"
+            f"Текущая версия:\n{previous_content}"
+        )
+    else:
+        user = (
+            f"Тема: {title}\nОписание: {summary}\nКлючевые слова: {', '.join(keywords)}\n"
+            "Составь аутлайн статьи по этой Теме."
+        )
+    return [Message(role="system", text=system), Message(role="user", text=user)]
+
+
+def _draft_messages(title: str, platform: str, outline: str) -> list[Message]:
+    system = f"Ты - маркетолог-практик. Напиши черновик статьи «{title}» для «{platform}» по аутлайну."
+    return [Message(role="system", text=system), Message(role="user", text=outline)]
+
+
+def _rewrite_messages(platform: str, draft: str) -> list[Message]:
+    system = f"Отредактируй черновик под тон и формат площадки «{platform}», сохранив факты."
+    return [Message(role="system", text=system), Message(role="user", text=draft)]
+
+
+def _sources_messages(rewrite: str, *, sensitive: bool) -> list[Message]:
+    if sensitive:
+        system = (
+            "Тема касается денег или права. Составь строгий список источников (по одной ссылке "
+            "на строку) для каждого утверждения с цифрой или юридическим фактом в тексте ниже."
+        )
+    else:
+        system = "Составь список источников (по одной ссылке на строку), подтверждающих факты и цифры в тексте ниже."
+    return [Message(role="system", text=system), Message(role="user", text=rewrite)]
+
+
+def _is_money_or_legal(title: str, keywords: Sequence[str]) -> bool:
+    haystack = " ".join([title, *keywords]).lower()
+    return any(word in haystack for word in _SENSITIVE_KEYWORDS)
+
+
+def _extract_urls(text: str) -> list[str]:
+    return [url.rstrip(".,;)") for url in _URL_RE.findall(text)]
+
+
+def _assemble_content(body: str, urls: list[str]) -> str:
+    if not urls:
+        return body
+    sources = "\n".join(f"- {url}" for url in urls)
+    return f"{body}\n\nИсточники:\n{sources}"

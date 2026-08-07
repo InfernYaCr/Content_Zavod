@@ -9,6 +9,11 @@ retried Telegram callback is a no-op rather than an error.
 `regenerate_topic` Job (ADR-0004) and returns immediately. The result comes
 back asynchronously via `apply_regeneration`, called by the notification
 handler once the job completes (see job_queue.run_notifications).
+
+`request_cover` follows the same enqueue-now/apply-later shape for the
+`generate_cover` Job (see #6), applied via `apply_cover`. `create`'s
+`dedupe_by_week` guards `generate_plan`'s notification handler against
+re-persisting the same week's Plan on a retried delivery.
 """
 
 from __future__ import annotations
@@ -57,7 +62,16 @@ class Plan:
         ]
         return PlanView(id=PlanId(plan_row["id"]), week_label=plan_row["week_label"], items=items)
 
-    async def create(self, week_label: str, topics: list[TopicDraft]) -> PlanId:
+    async def create(
+        self, week_label: str, topics: list[TopicDraft], *, dedupe_by_week: bool = False
+    ) -> PlanId:
+        if dedupe_by_week:
+            # Guards against a retried generate_plan notification re-persisting the
+            # same week's Plan (e.g. after `handle` succeeded but the queue's
+            # mark_notified failed to commit).
+            existing = await self._pool.fetchrow("SELECT id FROM plans WHERE week_label = $1", week_label)
+            if existing is not None:
+                return PlanId(existing["id"])
         plan_id = self._new_id()
         async with self._pool.acquire() as conn:
             async with conn.transaction():
@@ -136,6 +150,32 @@ class Plan:
             topic.title,
             topic.summary,
             _keywords_json(topic.keywords),
+        )
+
+    async def request_cover(self, plan_item_id: PlanItemId) -> None:
+        row = await self._pool.fetchrow(
+            "SELECT title, summary, updated_at FROM plan_items WHERE id = $1", plan_item_id
+        )
+        if row is None:
+            raise PlanItemNotFound(plan_item_id)
+        await self._queue.enqueue(
+            "generate_cover",
+            {"plan_item_id": plan_item_id, "title": row["title"], "summary": row["summary"]},
+            # Keyed on the item's current updated_at so a retried callback (same item,
+            # unchanged since) collapses into the same job instead of enqueuing a duplicate.
+            idempotency_key=f"generate_cover:{plan_item_id}:{row['updated_at'].isoformat()}",
+        )
+
+    async def apply_cover(self, plan_item_id: PlanItemId, image: bytes, mime_type: str) -> None:
+        await self._pool.execute(
+            """
+            UPDATE plan_items
+            SET cover_image = $2, cover_mime_type = $3, cover_generated_at = now()
+            WHERE id = $1
+            """,
+            plan_item_id,
+            image,
+            mime_type,
         )
 
     async def recent_topic_titles(self, since: datetime) -> list[str]:

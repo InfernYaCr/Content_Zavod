@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS plan_items (
     summary TEXT NOT NULL DEFAULT '',
     keywords JSONB NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'pending_review',
+    cover_image BYTEA,
+    cover_mime_type TEXT,
+    cover_generated_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

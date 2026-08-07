@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+import asyncpg
 import pytest
 
 from content_zavod.domain import (
@@ -176,3 +177,75 @@ async def test_recent_topic_titles_excludes_titles_older_than_since(plan: Plan) 
     titles = await plan.recent_topic_titles(since=after)
 
     assert "Old Topic" not in titles
+
+
+async def test_create_with_dedupe_returns_existing_plan_for_a_repeated_week_label(plan: Plan) -> None:
+    first_id = await plan.create("Week 1", [TopicDraft(title="Topic A")], dedupe_by_week=True)
+
+    second_id = await plan.create("Week 1", [TopicDraft(title="Topic B")], dedupe_by_week=True)
+
+    assert second_id == first_id
+    view = await plan.get(first_id)
+    assert [item.title for item in view.items] == ["Topic A"]
+
+
+async def test_create_without_dedupe_creates_a_separate_plan_for_a_repeated_week_label(
+    plan: Plan,
+) -> None:
+    first_id = await plan.create("Week 1", [TopicDraft(title="Topic A")])
+
+    second_id = await plan.create("Week 1", [TopicDraft(title="Topic B")])
+
+    assert second_id != first_id
+
+
+async def test_request_cover_enqueues_a_job_with_the_items_title_and_summary(
+    plan: Plan, queue: JobQueue
+) -> None:
+    plan_id = await plan.create("Week 1", [TopicDraft(title="Topic A", summary="a summary")])
+    view = await plan.get(plan_id)
+    item_id = view.items[0].id
+
+    await plan.request_cover(item_id)
+
+    claimed = await queue.claim_next()
+    assert claimed is not None
+    assert claimed.job_type == "generate_cover"
+    assert claimed.payload == {"plan_item_id": item_id, "title": "Topic A", "summary": "a summary"}
+
+
+async def test_request_cover_retried_before_any_state_change_does_not_duplicate_the_job(
+    plan: Plan, queue: JobQueue
+) -> None:
+    plan_id = await plan.create("Week 1", [TopicDraft(title="Topic A")])
+    view = await plan.get(plan_id)
+    item_id = view.items[0].id
+
+    await plan.request_cover(item_id)
+    await plan.request_cover(item_id)
+
+    first_claim = await queue.claim_next()
+    assert first_claim is not None
+    second_claim = await queue.claim_next()
+    assert second_claim is None
+
+
+async def test_request_cover_raises_for_unknown_item(plan: Plan) -> None:
+    with pytest.raises(PlanItemNotFound):
+        await plan.request_cover("missing")
+
+
+async def test_apply_cover_persists_image_and_mime_type(plan: Plan, pool: asyncpg.Pool) -> None:
+    plan_id = await plan.create("Week 1", [TopicDraft(title="Topic A")])
+    view = await plan.get(plan_id)
+    item_id = view.items[0].id
+
+    await plan.apply_cover(item_id, b"fake-image-bytes", "image/jpeg")
+
+    row = await pool.fetchrow(
+        "SELECT cover_image, cover_mime_type, cover_generated_at FROM plan_items WHERE id = $1",
+        item_id,
+    )
+    assert bytes(row["cover_image"]) == b"fake-image-bytes"
+    assert row["cover_mime_type"] == "image/jpeg"
+    assert row["cover_generated_at"] is not None

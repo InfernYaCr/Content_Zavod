@@ -94,3 +94,41 @@ def test_with_service_account_key_does_not_require_credential_wiring() -> None:
     generator = TextGenerator.with_service_account_key("service-key", folder_id="folder-1")
 
     assert isinstance(generator, TextGenerator)
+
+
+@pytest.mark.asyncio
+async def test_complete_with_usage_returns_text_model_and_tokens() -> None:
+    transport = FakeHttpTransport()
+    transport.queue_post(
+        COMPLETION_URL,
+        HttpResponse(
+            status=200,
+            body={
+                "result": {
+                    "alternatives": [{"message": {"role": "assistant", "text": "hello there"}}],
+                    "usage": {"totalTokens": "42"},
+                    "modelVersion": "yandexgpt/latest",
+                }
+            },
+        ),
+    )
+    generator = _make_generator(transport)
+
+    completion = await generator.complete_with_usage([Message(role="user", text="hi")])
+
+    assert completion.text == "hello there"
+    assert completion.tokens == 42
+    assert completion.model == "yandexgpt/latest"
+
+
+@pytest.mark.asyncio
+async def test_complete_with_usage_defaults_tokens_and_model_when_absent() -> None:
+    transport = FakeHttpTransport()
+    transport.queue_post(COMPLETION_URL, _success_response("no usage field"))
+    generator = _make_generator(transport)
+
+    completion = await generator.complete_with_usage([Message(role="user", text="hi")])
+
+    assert completion.text == "no usage field"
+    assert completion.tokens == 0
+    assert completion.model == ""

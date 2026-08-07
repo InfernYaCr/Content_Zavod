@@ -27,6 +27,13 @@ class Message:
     text: str
 
 
+@dataclass(frozen=True)
+class Completion:
+    text: str
+    model: str
+    tokens: int
+
+
 class TextGenerator:
     def __init__(
         self,
@@ -59,6 +66,10 @@ class TextGenerator:
         return cls(transport, IamTokenProvider(transport, oauth_token=oauth_token), folder_id=folder_id, **kwargs)
 
     async def complete(self, messages: list[Message], *, temperature: float = 0.7) -> str:
+        completion = await self.complete_with_usage(messages, temperature=temperature)
+        return completion.text
+
+    async def complete_with_usage(self, messages: list[Message], *, temperature: float = 0.7) -> Completion:
         async def call() -> HttpResponse:
             headers = await self._credentials.auth_header()
             return await self._transport.post(
@@ -68,7 +79,7 @@ class TextGenerator:
             )
 
         response = await with_backoff_retry(call, max_retries=self._max_retries, sleep=self._sleep)
-        return self._extract_text(response.body)
+        return self._extract_completion(response.body)
 
     def _request_body(self, messages: list[Message], temperature: float) -> dict[str, Any]:
         return {
@@ -78,9 +89,18 @@ class TextGenerator:
         }
 
     @staticmethod
-    def _extract_text(body: dict[str, Any]) -> str:
+    def _extract_completion(body: dict[str, Any]) -> Completion:
         try:
-            alternatives = body["result"]["alternatives"]
-            return str(alternatives[0]["message"]["text"])
+            result = body["result"]
+            text = str(result["alternatives"][0]["message"]["text"])
         except (KeyError, IndexError, TypeError) as exc:
             raise YandexError(f"Malformed YandexGPT response: {body}") from exc
+        # usage/modelVersion are absent from some sandbox responses; tokens/model
+        # default rather than fail the whole completion over accounting fields.
+        usage = result.get("usage") or {}
+        try:
+            tokens = int(usage.get("totalTokens", 0))
+        except (TypeError, ValueError):
+            tokens = 0
+        model = str(result.get("modelVersion", ""))
+        return Completion(text=text, model=model, tokens=tokens)
