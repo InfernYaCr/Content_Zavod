@@ -1,0 +1,178 @@
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from content_zavod.domain import (
+    Plan,
+    PlanId,
+    PlanItemNotEditable,
+    PlanItemNotFound,
+    PlanNotFound,
+    PlanView,
+    TopicDraft,
+)
+from content_zavod.job_queue import JobQueue
+
+
+async def _create_plan(
+    plan: Plan, *, titles: tuple[str, ...] = ("Topic A", "Topic B")
+) -> tuple[PlanId, PlanView]:
+    plan_id = await plan.create("Week 1", [TopicDraft(title=t) for t in titles])
+    view = await plan.get(plan_id)
+    return plan_id, view
+
+
+async def test_create_and_get_round_trip(plan: Plan) -> None:
+    plan_id, view = await _create_plan(plan)
+
+    assert view.id == plan_id
+    assert view.week_label == "Week 1"
+    assert [item.title for item in view.items] == ["Topic A", "Topic B"]
+    assert all(item.status == "pending_review" for item in view.items)
+
+
+async def test_get_raises_for_unknown_plan(plan: Plan) -> None:
+    with pytest.raises(PlanNotFound):
+        await plan.get("missing")
+
+
+async def test_delete_item_marks_it_rejected(plan: Plan) -> None:
+    _, view = await _create_plan(plan)
+    item_id = view.items[0].id
+
+    await plan.delete_item(item_id)
+
+    updated = await plan.get(view.id)
+    statuses = {item.id: item.status for item in updated.items}
+    assert statuses[item_id] == "rejected"
+    assert statuses[view.items[1].id] == "pending_review"
+
+
+async def test_delete_item_is_idempotent(plan: Plan) -> None:
+    _, view = await _create_plan(plan)
+    item_id = view.items[0].id
+
+    await plan.delete_item(item_id)
+    await plan.delete_item(item_id)  # no-op, must not raise
+
+    updated = await plan.get(view.id)
+    assert updated.items[0].status == "rejected"
+
+
+async def test_delete_item_raises_for_unknown_item(plan: Plan) -> None:
+    with pytest.raises(PlanItemNotFound):
+        await plan.delete_item("missing")
+
+
+async def test_delete_item_raises_once_approved(plan: Plan) -> None:
+    _, view = await _create_plan(plan)
+
+    await plan.approve_all(view.id)
+
+    with pytest.raises(PlanItemNotEditable):
+        await plan.delete_item(view.items[0].id)
+
+
+async def test_approve_all_approves_pending_items_and_leaves_rejected_alone(plan: Plan) -> None:
+    _, view = await _create_plan(plan)
+    await plan.delete_item(view.items[0].id)
+
+    await plan.approve_all(view.id)
+
+    updated = await plan.get(view.id)
+    statuses = {item.id: item.status for item in updated.items}
+    assert statuses[view.items[0].id] == "rejected"
+    assert statuses[view.items[1].id] == "approved"
+
+
+async def test_approve_all_is_idempotent(plan: Plan) -> None:
+    _, view = await _create_plan(plan)
+
+    await plan.approve_all(view.id)
+    await plan.approve_all(view.id)  # no-op, must not raise
+
+    updated = await plan.get(view.id)
+    assert all(item.status == "approved" for item in updated.items)
+
+
+async def test_approve_all_raises_for_unknown_plan(plan: Plan) -> None:
+    with pytest.raises(PlanNotFound):
+        await plan.approve_all("missing")
+
+
+async def test_regenerate_item_enqueues_a_job_instead_of_calling_an_llm_directly(
+    plan: Plan, queue: JobQueue
+) -> None:
+    _, view = await _create_plan(plan)
+    item_id = view.items[0].id
+
+    await plan.regenerate_item(item_id, comment="make it punchier")
+
+    claimed = await queue.claim_next()
+    assert claimed is not None
+    assert claimed.job_type == "regenerate_topic"
+    assert claimed.payload == {"plan_item_id": item_id, "comment": "make it punchier"}
+
+
+async def test_regenerate_item_retried_before_any_state_change_does_not_duplicate_the_job(
+    plan: Plan, queue: JobQueue
+) -> None:
+    _, view = await _create_plan(plan)
+    item_id = view.items[0].id
+
+    await plan.regenerate_item(item_id, comment="please")
+    await plan.regenerate_item(item_id, comment="please")  # e.g. a retried Telegram callback
+
+    first_claim = await queue.claim_next()
+    assert first_claim is not None
+    second_claim = await queue.claim_next()
+    assert second_claim is None
+
+
+async def test_regenerate_item_raises_once_approved(plan: Plan) -> None:
+    _, view = await _create_plan(plan)
+    await plan.approve_all(view.id)
+
+    with pytest.raises(PlanItemNotEditable):
+        await plan.regenerate_item(view.items[0].id, comment=None)
+
+
+async def test_apply_regeneration_updates_the_pending_item(plan: Plan) -> None:
+    _, view = await _create_plan(plan)
+    item_id = view.items[0].id
+
+    await plan.apply_regeneration(item_id, TopicDraft(title="Better Title", summary="new summary"))
+
+    updated = await plan.get(view.id)
+    assert updated.items[0].title == "Better Title"
+    assert updated.items[0].status == "pending_review"
+
+
+async def test_apply_regeneration_ignores_a_stale_result_after_approval(plan: Plan) -> None:
+    _, view = await _create_plan(plan)
+    item_id = view.items[0].id
+    await plan.approve_all(view.id)
+
+    await plan.apply_regeneration(item_id, TopicDraft(title="Too Late"))
+
+    updated = await plan.get(view.id)
+    assert updated.items[0].title == "Topic A"
+    assert updated.items[0].status == "approved"
+
+
+async def test_recent_topic_titles_returns_titles_created_since(plan: Plan) -> None:
+    before = datetime.now(timezone.utc) - timedelta(minutes=1)
+    await _create_plan(plan, titles=("Fresh Topic",))
+
+    titles = await plan.recent_topic_titles(since=before)
+
+    assert "Fresh Topic" in titles
+
+
+async def test_recent_topic_titles_excludes_titles_older_than_since(plan: Plan) -> None:
+    await _create_plan(plan, titles=("Old Topic",))
+    after = datetime.now(timezone.utc) + timedelta(minutes=1)
+
+    titles = await plan.recent_topic_titles(since=after)
+
+    assert "Old Topic" not in titles

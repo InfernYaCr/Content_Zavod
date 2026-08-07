@@ -1,27 +1,5 @@
-from dataclasses import dataclass
-from typing import NewType, Sequence
+"""Re-exports of the domain layer's Plan/Article view types (see #5)."""
 
-PlanId = NewType("PlanId", str)
-PlanItemId = NewType("PlanItemId", str)
+from ..domain import ArticleView, PlanId, PlanItemId, PlanItemView, PlanView
 
-
-@dataclass(frozen=True)
-class PlanItemView:
-    id: PlanItemId
-    title: str
-    status: str
-
-
-@dataclass(frozen=True)
-class PlanView:
-    id: PlanId
-    week_label: str
-    items: Sequence[PlanItemView]
-
-
-@dataclass(frozen=True)
-class ArticleView:
-    title: str
-    platform: str
-    filename: str
-    content: bytes
+__all__ = ["ArticleView", "PlanId", "PlanItemId", "PlanItemView", "PlanView"]
