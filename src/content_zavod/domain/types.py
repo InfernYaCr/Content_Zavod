@@ -13,8 +13,8 @@ PlanId = NewType("PlanId", str)
 PlanItemId = NewType("PlanItemId", str)
 ArticleId = NewType("ArticleId", str)
 
-PlanStatus = Literal["pending_review", "approved"]
-PlanItemStatus = Literal["pending_review", "approved", "rejected"]
+PlanStatus = Literal["pending_review", "approved", "archived"]
+PlanItemStatus = Literal["pending_review", "approved", "rejected", "archived"]
 ArticleStatus = Literal["queued", "generating", "error", "ready", "regenerating", "exported"]
 
 

@@ -50,3 +50,12 @@ class CommentGatedRegeneration(Generic[Id]):
 
     def cancel(self, chat_id: int, user_id: int) -> None:
         self._pending.pop((chat_id, user_id), None)
+
+    def has_matching_pending(self, chat_id: int, user_id: int, id_: Id) -> bool:
+        """True if `request(chat_id, user_id, id_)` would enqueue immediately rather than prompt.
+
+        Lets a caller (e.g. the Telegram callback handler) show a "generating..."
+        progress indicator only when a Job is actually about to be enqueued.
+        """
+        pending = self._pending.get((chat_id, user_id))
+        return pending is not None and pending.id_ == id_

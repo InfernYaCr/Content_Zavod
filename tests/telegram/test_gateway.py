@@ -11,21 +11,41 @@ from content_zavod.telegram import (
     TelegramCommentPrompt,
     TelegramGateway,
     decode_callback_data,
+    decode_page_id,
     encode_callback_data,
+    encode_page_callback,
 )
-from content_zavod.telegram.gateway import CALLBACK_DATA_LIMIT, MESSAGE_LIMIT, chunk_text
+from content_zavod.telegram.gateway import (
+    CALLBACK_DATA_LIMIT,
+    ITEMS_PER_PAGE,
+    MESSAGE_LIMIT,
+    build_plan_keyboard,
+    chunk_text,
+    render_plan_text,
+)
 
 
 class FakeBot:
     def __init__(self) -> None:
         self.sent_messages: list[tuple[int, str, InlineKeyboardMarkup | None]] = []
         self.sent_documents: list[tuple[int, BufferedInputFile, str | None]] = []
+        self.edited_messages: list[tuple[int, int, str, InlineKeyboardMarkup | None]] = []
 
-    async def send_message(self, chat_id, text, reply_markup=None) -> None:
+    async def send_message(self, chat_id, text, reply_markup=None) -> int:
         self.sent_messages.append((chat_id, text, reply_markup))
+        return len(self.sent_messages)
 
     async def send_document(self, chat_id, document, caption=None) -> None:
         self.sent_documents.append((chat_id, document, caption))
+
+    async def edit_message_text(self, chat_id, message_id, text, reply_markup=None) -> None:
+        self.edited_messages.append((chat_id, message_id, text, reply_markup))
+
+    async def edit_message_reply_markup(self, chat_id, message_id, reply_markup=None) -> None:
+        self.edited_messages.append((chat_id, message_id, "", reply_markup))
+
+    async def set_my_commands(self, commands, *, scope) -> None:
+        pass
 
 
 def make_plan(item_count: int = 2) -> PlanView:
@@ -69,19 +89,120 @@ async def test_send_plan_keyboard_callback_data_round_trips() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_plan_chunks_long_text_and_attaches_keyboard_to_last_chunk() -> None:
+async def test_send_plan_sends_a_single_message_even_for_many_items() -> None:
     bot = FakeBot()
     gateway = TelegramGateway(bot)
-    plan = make_plan(item_count=400)  # forces text past MESSAGE_LIMIT
+    plan = make_plan(item_count=40)  # many items, paginated instead of split into messages
 
     await gateway.send_plan(chat_id=1, plan=plan)
 
-    assert len(bot.sent_messages) > 1
-    for _, text, _ in bot.sent_messages:
-        assert len(text) <= MESSAGE_LIMIT
-    *earlier, last = bot.sent_messages
-    assert all(keyboard is None for _, _, keyboard in earlier)
-    assert last[2] is not None
+    assert len(bot.sent_messages) == 1
+    _, text, keyboard = bot.sent_messages[0]
+    assert len(text) <= MESSAGE_LIMIT
+    assert keyboard is not None
+
+
+def test_build_plan_keyboard_paginates_beyond_page_size() -> None:
+    plan = make_plan(item_count=ITEMS_PER_PAGE + 3)
+
+    keyboard = build_plan_keyboard(plan, page=0)
+
+    # ITEMS_PER_PAGE item rows + a Next-only nav row + approve_all row
+    assert len(keyboard.inline_keyboard) == ITEMS_PER_PAGE + 2
+    nav_row = keyboard.inline_keyboard[ITEMS_PER_PAGE]
+    assert len(nav_row) == 1
+    assert decode_callback_data(nav_row[0].callback_data) == ("page", "plan-1:1")
+
+
+def test_build_plan_keyboard_last_page_only_shows_back_button() -> None:
+    plan = make_plan(item_count=ITEMS_PER_PAGE + 3)
+
+    keyboard = build_plan_keyboard(plan, page=1)
+
+    remaining_items = 3
+    nav_row = keyboard.inline_keyboard[remaining_items]
+    assert len(nav_row) == 1
+    assert decode_callback_data(nav_row[0].callback_data) == ("page", "plan-1:0")
+
+
+def test_build_plan_keyboard_single_page_has_no_nav_row() -> None:
+    plan = make_plan(item_count=2)
+
+    keyboard = build_plan_keyboard(plan, page=0)
+
+    assert len(keyboard.inline_keyboard) == 3  # 2 item rows + approve_all, no nav row
+
+
+def test_render_plan_text_shows_absolute_item_numbers_across_pages() -> None:
+    plan = make_plan(item_count=ITEMS_PER_PAGE + 3)
+
+    text = render_plan_text(plan, page=1)
+
+    assert f"{ITEMS_PER_PAGE + 1}." in text
+    assert f"{ITEMS_PER_PAGE + 3}." in text
+    assert "\n1. " not in text
+
+
+def test_encode_decode_page_callback_roundtrips() -> None:
+    data = encode_page_callback("plan-1", 2)
+
+    assert decode_page_id(decode_callback_data(data)[1]) == ("plan-1", 2)
+
+
+def test_page_callback_data_stays_under_limit_for_max_length_plan_id() -> None:
+    uuid_hex_plan_id = "a" * 32
+    data = encode_page_callback(uuid_hex_plan_id, 999)
+
+    assert len(data.encode("utf-8")) <= CALLBACK_DATA_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_edit_plan_calls_edit_message_text_with_rendered_page() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+    plan = make_plan(1)
+
+    await gateway.edit_plan(chat_id=1, message_id=99, plan=plan, page=0)
+
+    assert len(bot.edited_messages) == 1
+    chat_id, message_id, text, keyboard = bot.edited_messages[0]
+    assert (chat_id, message_id) == (1, 99)
+    assert "Тема 0" in text
+    assert keyboard is not None
+
+
+@pytest.mark.asyncio
+async def test_edit_notice_calls_edit_message_text_with_plain_text() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    await gateway.edit_notice(chat_id=1, message_id=99, text="⏳ Генерирую...")
+
+    assert bot.edited_messages == [(1, 99, "⏳ Генерирую...", None)]
+
+
+@pytest.mark.asyncio
+async def test_send_message_returns_the_sent_message_id() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    message_id = await gateway.send_message(chat_id=1, text="hi")
+
+    assert message_id == 1
+    assert bot.sent_messages == [(1, "hi", None)]
+
+
+@pytest.mark.asyncio
+async def test_send_error_with_retry_attaches_retry_keyboard() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    await gateway.send_error_with_retry(chat_id=1, text="failed", job_id=42)
+
+    assert len(bot.sent_messages) == 1
+    _, _, keyboard = bot.sent_messages[0]
+    (retry_button,) = keyboard.inline_keyboard[0]
+    assert decode_callback_data(retry_button.callback_data) == ("retry", "42")
 
 
 def make_article() -> ArticleView:

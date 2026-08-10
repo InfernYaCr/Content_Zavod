@@ -8,6 +8,7 @@ and content-manager are the two roles named in the domain vocabulary
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -18,6 +19,12 @@ from .errors import MemberNotFound
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 Role = Literal["owner", "content_manager"]
+
+
+@dataclass(frozen=True)
+class MemberView:
+    telegram_id: int
+    role: Role
 
 
 class Membership:
@@ -43,6 +50,16 @@ class Membership:
             telegram_id,
             role,
         )
+
+    async def list_by_role(self, role: Role) -> list[int]:
+        rows = await self._pool.fetch(
+            "SELECT telegram_id FROM members WHERE role = $1 ORDER BY telegram_id", role
+        )
+        return [row["telegram_id"] for row in rows]
+
+    async def list_all(self) -> list[MemberView]:
+        rows = await self._pool.fetch("SELECT telegram_id, role FROM members ORDER BY telegram_id")
+        return [MemberView(telegram_id=row["telegram_id"], role=row["role"]) for row in rows]
 
     async def remove_member(self, telegram_id: int) -> None:
         result = await self._pool.execute("DELETE FROM members WHERE telegram_id = $1", telegram_id)

@@ -122,3 +122,25 @@ async def test_cancel_clears_pending_wait_for_same_user(
 @pytest.mark.asyncio
 async def test_cancel_without_pending_wait_is_a_no_op(flow: CommentGatedRegeneration[str]) -> None:
     flow.cancel(1, 10)  # must not raise
+
+
+def test_has_matching_pending_is_false_with_no_pending_wait(flow: CommentGatedRegeneration[str]) -> None:
+    assert flow.has_matching_pending(1, 10, "item-1") is False
+
+
+@pytest.mark.asyncio
+async def test_has_matching_pending_is_true_for_a_matching_second_press(
+    flow: CommentGatedRegeneration[str],
+) -> None:
+    await flow.request(1, 10, "item-1")
+
+    assert flow.has_matching_pending(1, 10, "item-1") is True
+
+
+@pytest.mark.asyncio
+async def test_has_matching_pending_is_false_for_a_different_target(
+    flow: CommentGatedRegeneration[str],
+) -> None:
+    await flow.request(1, 10, "item-1")
+
+    assert flow.has_matching_pending(1, 10, "item-2") is False

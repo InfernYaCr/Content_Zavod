@@ -7,7 +7,7 @@ import pytest
 import pytest_asyncio
 from testcontainers.community.postgres import PostgresContainer
 
-from content_zavod.access import JoinRequests, Membership
+from content_zavod.scheduling import ScheduleSettings
 
 
 @pytest.fixture(scope="session")
@@ -33,16 +33,8 @@ async def pool(postgres_container: PostgresContainer) -> AsyncIterator[asyncpg.P
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def membership(pool: asyncpg.Pool) -> AsyncIterator[Membership]:
-    instance = Membership(pool)
+async def schedule_settings(pool: asyncpg.Pool) -> AsyncIterator[ScheduleSettings]:
+    instance = ScheduleSettings(pool)
     await instance.ensure_schema()
-    await pool.execute("TRUNCATE TABLE members")
-    yield instance
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def join_requests(pool: asyncpg.Pool) -> AsyncIterator[JoinRequests]:
-    instance = JoinRequests(pool)
-    await instance.ensure_schema()
-    await pool.execute("TRUNCATE TABLE join_request_broadcasts, join_requests")
+    await pool.execute("TRUNCATE TABLE schedule_settings")
     yield instance
