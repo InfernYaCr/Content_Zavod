@@ -30,6 +30,7 @@ generated" check is needed.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Sequence
@@ -40,6 +41,16 @@ import asyncpg
 from ..job_queue import JobId, JobQueue
 from .errors import PlanItemNotEditable, PlanItemNotFound, PlanNotFound
 from .types import PlanId, PlanItemId, PlanItemStatus, PlanItemView, PlanView, TopicDraft
+
+
+@dataclass(frozen=True)
+class PlanItemDetail:
+    """A plan item's full content, for regeneration prompts (unlike the summary-only PlanItemView)."""
+
+    id: PlanItemId
+    title: str
+    summary: str
+    keywords: list[str]
 
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
@@ -72,6 +83,19 @@ class Plan:
             for row in item_rows
         ]
         return PlanView(id=PlanId(plan_row["id"]), week_label=plan_row["week_label"], items=items)
+
+    async def get_item(self, plan_item_id: PlanItemId) -> PlanItemDetail:
+        row = await self._pool.fetchrow(
+            "SELECT id, title, summary, keywords FROM plan_items WHERE id = $1", plan_item_id
+        )
+        if row is None:
+            raise PlanItemNotFound(plan_item_id)
+        return PlanItemDetail(
+            id=PlanItemId(row["id"]),
+            title=row["title"],
+            summary=row["summary"],
+            keywords=json.loads(row["keywords"]),
+        )
 
     async def add_topics(self, week_label: str, topics: Sequence[TopicDraft]) -> PlanId:
         """Append Topics to the week's draft Plan, creating it if none exists yet.

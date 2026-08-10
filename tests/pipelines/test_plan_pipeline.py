@@ -2,8 +2,21 @@ from datetime import datetime, timezone
 
 import pytest
 
-from content_zavod.pipelines.plan_pipeline import make_generate_plan_handler
+from content_zavod.domain.plan import PlanItemDetail
+from content_zavod.pipelines.plan_pipeline import (
+    make_generate_plan_handler,
+    make_regenerate_topic_handler,
+)
 from content_zavod.yandex import KeywordDynamicsPoint, Message
+
+
+class FakePlanItemReader:
+    def __init__(self, item: PlanItemDetail) -> None:
+        self._item = item
+
+    async def get_item(self, plan_item_id: str) -> PlanItemDetail:
+        assert plan_item_id == self._item.id
+        return self._item
 
 
 class FakeKeywordStats:
@@ -155,3 +168,37 @@ async def test_handler_requests_a_six_month_monthly_dynamics_window() -> None:
     await handler({"week_label": "Week 1"})
 
     assert keyword_stats.calls == ["missing kw"]
+
+
+@pytest.mark.asyncio
+async def test_regenerate_topic_handler_redrafts_using_current_item_and_comment() -> None:
+    current = PlanItemDetail(id="item-1", title="Old Title", summary="old summary", keywords=["old kw"])
+    item_reader = FakePlanItemReader(current)
+    text_generator = FakeTextGenerator(
+        {"Old Title": "Title: New Title\nSummary: new summary\nKeywords: new kw"}
+    )
+    handler = make_regenerate_topic_handler(item_reader, text_generator)
+
+    output = await handler({"plan_item_id": "item-1", "comment": "make it punchier"})
+
+    assert output == {
+        "plan_item_id": "item-1",
+        "title": "New Title",
+        "summary": "new summary",
+        "keywords": ["new kw"],
+    }
+    assert "make it punchier" in text_generator.calls[0][-1].text
+
+
+@pytest.mark.asyncio
+async def test_regenerate_topic_handler_works_without_a_comment() -> None:
+    current = PlanItemDetail(id="item-1", title="Old Title", summary="", keywords=[])
+    item_reader = FakePlanItemReader(current)
+    text_generator = FakeTextGenerator(
+        {"Old Title": "Title: New Title\nSummary: \nKeywords: "}
+    )
+    handler = make_regenerate_topic_handler(item_reader, text_generator)
+
+    output = await handler({"plan_item_id": "item-1", "comment": None})
+
+    assert output["title"] == "New Title"

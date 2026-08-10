@@ -11,9 +11,9 @@ caller-supplied `recent_topic_titles`.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Sequence
+from typing import Any, Awaitable, Callable, Protocol, Sequence
 
-from ..domain import TopicDraft
+from ..domain import PlanItemDetail, PlanItemId, TopicDraft
 from ..job_queue import JobHandler
 from ..yandex import KeywordDynamicsPoint, KeywordStats, Message, TextGenerator
 
@@ -87,6 +87,56 @@ def make_generate_plan_handler(
         return {"week_label": week_label, "topics": topics}
 
     return handle
+
+
+class PlanItemReader(Protocol):
+    async def get_item(self, plan_item_id: PlanItemId) -> PlanItemDetail: ...
+
+
+_REGENERATE_PROMPT_SYSTEM = (
+    "Ты - контент-стратег в Нише «маркетинг». Тебе дали существующую Тему для "
+    "контент-плана и комментарий, что в ней поправить. Предложи обновлённый "
+    "вариант этой же Темы. Ответь строго в формате:\n"
+    "Title: <заголовок>\n"
+    "Summary: <краткое описание в 1-2 предложения>\n"
+    "Keywords: <ключевые слова через запятую>"
+)
+
+
+def make_regenerate_topic_handler(
+    item_reader: PlanItemReader,
+    text_generator: TextGenerator,
+) -> JobHandler:
+    async def handle(payload: dict[str, Any]) -> dict[str, Any]:
+        plan_item_id = PlanItemId(payload["plan_item_id"])
+        comment = payload.get("comment")
+        current = await item_reader.get_item(plan_item_id)
+        draft = await _redraft_topic(text_generator, current, comment)
+        return {
+            "plan_item_id": plan_item_id,
+            "title": draft.title,
+            "summary": draft.summary,
+            "keywords": list(draft.keywords),
+        }
+
+    return handle
+
+
+async def _redraft_topic(
+    text_generator: TextGenerator, current: PlanItemDetail, comment: str | None
+) -> TopicDraft:
+    user_text = (
+        f"Текущая Тема:\nTitle: {current.title}\nSummary: {current.summary}\n"
+        f"Keywords: {', '.join(current.keywords)}\n\n"
+        f"Комментарий: {comment or '(без комментария)'}"
+    )
+    text = await text_generator.complete(
+        [
+            Message(role="system", text=_REGENERATE_PROMPT_SYSTEM),
+            Message(role="user", text=user_text),
+        ]
+    )
+    return _parse_topic(text, fallback_keyword=current.title)
 
 
 def _dynamics_window(now: datetime) -> tuple[str, str]:

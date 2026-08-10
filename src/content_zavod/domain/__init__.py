@@ -8,7 +8,7 @@ from .errors import (
     PlanItemNotFound,
     PlanNotFound,
 )
-from .plan import Plan
+from .plan import Plan, PlanItemDetail
 from .types import (
     ArticleId,
     ArticleStatus,
@@ -35,6 +35,7 @@ __all__ = [
     "GeneratedVersion",
     "Plan",
     "PlanId",
+    "PlanItemDetail",
     "PlanItemId",
     "PlanItemNotEditable",
     "PlanItemNotFound",

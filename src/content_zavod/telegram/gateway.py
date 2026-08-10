@@ -161,6 +161,11 @@ class TelegramGateway:
         for chunk in chunk_text(text):
             await self._bot.send_message(chat_id, chunk)
 
+    async def send_notice(self, chat_id: int, text: str) -> None:
+        """Plain informational text, for job results that aren't a rendered Plan/Article/error."""
+        for chunk in chunk_text(text):
+            await self._bot.send_message(chat_id, chunk)
+
 
 class TelegramCommentPrompt:
     """CommentPrompt implementation: asks for an optional comment with a Skip button."""

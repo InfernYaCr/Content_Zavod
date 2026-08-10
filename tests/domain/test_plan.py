@@ -12,6 +12,7 @@ from content_zavod.domain import (
     PlanView,
     TopicDraft,
 )
+from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.job_queue import JobQueue
 
 
@@ -35,6 +36,23 @@ async def test_create_and_get_round_trip(plan: Plan) -> None:
 async def test_get_raises_for_unknown_plan(plan: Plan) -> None:
     with pytest.raises(PlanNotFound):
         await plan.get("missing")
+
+
+async def test_get_item_returns_full_detail(plan: Plan) -> None:
+    plan_id = await plan.add_topics(
+        "Week 1", [TopicDraft(title="Topic A", summary="summary A", keywords=["kw1", "kw2"])]
+    )
+    view = await plan.get(plan_id)
+    item_id = view.items[0].id
+
+    detail = await plan.get_item(item_id)
+
+    assert detail == PlanItemDetail(id=item_id, title="Topic A", summary="summary A", keywords=["kw1", "kw2"])
+
+
+async def test_get_item_raises_for_unknown_item(plan: Plan) -> None:
+    with pytest.raises(PlanItemNotFound):
+        await plan.get_item("missing")
 
 
 async def test_delete_item_marks_it_rejected(plan: Plan) -> None:
