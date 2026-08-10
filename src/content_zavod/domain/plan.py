@@ -14,6 +14,13 @@ handler once the job completes (see job_queue.run_notifications).
 `generate_cover` Job (see #6), applied via `apply_cover`. `create`'s
 `dedupe_by_week` guards `generate_plan`'s notification handler against
 re-persisting the same week's Plan on a retried delivery.
+
+`request_new` enqueues `generate_plan` itself, keyed on `week_label` alone
+(see #7). Because `JobQueue.enqueue` is idempotent, calling it more than
+once for the same week - a missed scheduled run followed by a catch-up
+run, or a manual trigger racing the schedule - collapses into the same
+Job instead of a duplicate Plan; no separate "was this week already
+generated" check is needed.
 """
 
 from __future__ import annotations
@@ -26,7 +33,7 @@ from uuid import uuid4
 
 import asyncpg
 
-from ..job_queue import JobQueue
+from ..job_queue import JobId, JobQueue
 from .errors import PlanItemNotEditable, PlanItemNotFound, PlanNotFound
 from .types import PlanId, PlanItemId, PlanItemStatus, PlanItemView, PlanView, TopicDraft
 
@@ -92,6 +99,15 @@ class Plan:
                         _keywords_json(topic.keywords),
                     )
         return PlanId(plan_id)
+
+    async def request_new(self, week_label: str) -> JobId:
+        return await self._queue.enqueue(
+            "generate_plan",
+            {"week_label": week_label},
+            # Keyed on week_label alone: repeated triggers for the same week (missed-run
+            # catch-up, manual override) collapse into the same Job.
+            idempotency_key=f"generate_plan:{week_label}",
+        )
 
     async def delete_item(self, plan_item_id: PlanItemId) -> None:
         status = await self._item_status(plan_item_id)

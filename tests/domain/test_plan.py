@@ -199,6 +199,29 @@ async def test_create_without_dedupe_creates_a_separate_plan_for_a_repeated_week
     assert second_id != first_id
 
 
+async def test_request_new_enqueues_a_generate_plan_job_for_the_given_week(
+    plan: Plan, queue: JobQueue
+) -> None:
+    await plan.request_new("2026-W32")
+
+    claimed = await queue.claim_next()
+    assert claimed is not None
+    assert claimed.job_type == "generate_plan"
+    assert claimed.payload == {"week_label": "2026-W32"}
+
+
+async def test_request_new_retried_for_the_same_week_does_not_duplicate_the_job(
+    plan: Plan, queue: JobQueue
+) -> None:
+    await plan.request_new("2026-W32")
+    await plan.request_new("2026-W32")  # e.g. missed-run catch-up racing the manual command
+
+    first_claim = await queue.claim_next()
+    assert first_claim is not None
+    second_claim = await queue.claim_next()
+    assert second_claim is None
+
+
 async def test_request_cover_enqueues_a_job_with_the_items_title_and_summary(
     plan: Plan, queue: JobQueue
 ) -> None:
