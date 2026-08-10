@@ -13,12 +13,13 @@ from .types import ArticleView, PlanView
 MESSAGE_LIMIT = 4096
 CALLBACK_DATA_LIMIT = 64
 
-Action = Literal["delete", "regenerate", "approve_all", "approve"]
+Action = Literal["delete", "regenerate", "approve_all", "regenerate_article", "approve"]
 
 _ACTION_CODES: dict[Action, str] = {
     "delete": "d",
     "regenerate": "r",
     "approve_all": "a",
+    "regenerate_article": "ar",
     "approve": "p",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
@@ -87,13 +88,13 @@ def build_plan_keyboard(plan: PlanView) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_skip_keyboard(id_: str) -> InlineKeyboardMarkup:
+def build_skip_keyboard(id_: str, action: Action = "regenerate") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="Пропустить",
-                    callback_data=encode_callback_data("regenerate", id_),
+                    callback_data=encode_callback_data(action, id_),
                 )
             ]
         ]
@@ -106,7 +107,7 @@ def build_article_keyboard(article_id: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="🔄 Перегенерировать",
-                    callback_data=encode_callback_data("regenerate", article_id),
+                    callback_data=encode_callback_data("regenerate_article", article_id),
                 ),
                 InlineKeyboardButton(
                     text="✅",
@@ -168,14 +169,21 @@ class TelegramGateway:
 
 
 class TelegramCommentPrompt:
-    """CommentPrompt implementation: asks for an optional comment with a Skip button."""
+    """CommentPrompt implementation: asks for an optional comment with a Skip button.
 
-    def __init__(self, bot: BotClient) -> None:
+    `action` is the callback action the Skip button re-sends - it must match
+    whatever action originally opened the comment wait (`"regenerate"` for a
+    Plan item, `"regenerate_article"` for an Article), otherwise Skip would
+    route back into the wrong review flow (see #13 regenerate-misrouting fix).
+    """
+
+    def __init__(self, bot: BotClient, *, action: Action = "regenerate") -> None:
         self._bot = bot
+        self._action = action
 
     async def prompt_for_comment(self, chat_id: int, id_: str) -> None:
         await self._bot.send_message(
             chat_id,
             "Комментарий к перегенерации? Одной строкой, или нажмите «Пропустить».",
-            reply_markup=build_skip_keyboard(id_),
+            reply_markup=build_skip_keyboard(id_, self._action),
         )

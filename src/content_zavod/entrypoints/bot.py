@@ -27,6 +27,7 @@ from ..domain import Article, ArticleId, GeneratedVersion, Plan, PlanItemId, Top
 from ..job_queue import JobQueue, JobResult, run_notifications
 from ..scheduling import schedule_weekly_plan_trigger
 from ..telegram import (
+    CommentGatedRegeneration,
     PlanReview,
     TelegramCommentPrompt,
     TelegramGateway,
@@ -67,8 +68,10 @@ async def _role_for(membership: Membership, gateway: TelegramGateway, chat_id: i
 def _build_router(
     membership: Membership,
     plan: Plan,
+    article: Article,
     gateway: TelegramGateway,
     plan_review: PlanReview,
+    article_regeneration: CommentGatedRegeneration[ArticleId],
     settings: Settings,
 ) -> Router:
     router = Router()
@@ -95,11 +98,14 @@ def _build_router(
             action, id_ = decode_callback_data(callback.data or "")
         except ValueError:
             return
-        if action not in ("delete", "regenerate", "approve_all"):
-            # "approve" (accepting a generated Статья) has no domain-layer glue yet - see #13 gap.
-            await gateway.send_error(chat_id, "Приём готовых Статей пока не реализован.")
-            return
-        await plan_review.handle_action(chat_id, callback.from_user.id, PlanItemId(id_), action)
+        user_id = callback.from_user.id
+        if action == "regenerate_article":
+            await article_regeneration.request(chat_id, user_id, ArticleId(id_))
+        elif action == "approve":
+            # Accepting a ready Статья: no comment-wait, just the transition to "exported".
+            await article.mark_exported(ArticleId(id_))
+        else:
+            await plan_review.handle_action(chat_id, user_id, PlanItemId(id_), action)
 
     @router.message()
     async def on_message(message: Message) -> None:
@@ -107,7 +113,10 @@ def _build_router(
             return
         if await _role_for(membership, gateway, message.chat.id, message.from_user.id) is None:
             return
-        await plan_review.handle_comment_reply(message.chat.id, message.from_user.id, message.text or "")
+        chat_id, user_id, text = message.chat.id, message.from_user.id, message.text or ""
+        consumed = await plan_review.handle_comment_reply(chat_id, user_id, text)
+        if not consumed:
+            await article_regeneration.handle_comment_reply(chat_id, user_id, text)
 
     return router
 
@@ -184,9 +193,15 @@ async def main(settings: Settings | None = None) -> None:
         gateway = TelegramGateway(bot_client)
         comment_prompt = TelegramCommentPrompt(bot_client)
         plan_review = PlanReview(plan, comment_prompt)
+        article_comment_prompt = TelegramCommentPrompt(bot_client, action="regenerate_article")
+        article_regeneration = CommentGatedRegeneration[ArticleId](
+            article.request_regeneration, article_comment_prompt
+        )
 
         dispatcher = Dispatcher()
-        dispatcher.include_router(_build_router(membership, plan, gateway, plan_review, settings))
+        dispatcher.include_router(
+            _build_router(membership, plan, article, gateway, plan_review, article_regeneration, settings)
+        )
 
         scheduler = AsyncIOScheduler()
         schedule_weekly_plan_trigger(scheduler, plan, tz=settings.timezone)

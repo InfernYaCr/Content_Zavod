@@ -122,7 +122,7 @@ async def test_send_article_ready_attaches_regenerate_and_approve_keyboard() -> 
     chat_id, _, keyboard = bot.sent_messages[0]
     assert chat_id == 42
     (regenerate_button, approve_button) = keyboard.inline_keyboard[0]
-    assert decode_callback_data(regenerate_button.callback_data) == ("regenerate", "article-1")
+    assert decode_callback_data(regenerate_button.callback_data) == ("regenerate_article", "article-1")
     assert decode_callback_data(approve_button.callback_data) == ("approve", "article-1")
 
 
@@ -180,3 +180,14 @@ async def test_comment_prompt_sends_message_with_skip_button_encoding_regenerate
     assert chat_id == 1
     (skip_button,) = keyboard.inline_keyboard[0]
     assert decode_callback_data(skip_button.callback_data) == ("regenerate", "item-1")
+
+
+@pytest.mark.asyncio
+async def test_comment_prompt_with_article_action_encodes_regenerate_article_on_skip() -> None:
+    bot = FakeBot()
+    prompt = TelegramCommentPrompt(bot, action="regenerate_article")
+
+    await prompt.prompt_for_comment(chat_id=1, id_="article-1")
+
+    (skip_button,) = bot.sent_messages[0][2].inline_keyboard[0]
+    assert decode_callback_data(skip_button.callback_data) == ("regenerate_article", "article-1")
