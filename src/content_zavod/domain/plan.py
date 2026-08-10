@@ -70,6 +70,16 @@ class Plan:
     async def ensure_schema(self) -> None:
         await self._pool.execute(_SCHEMA_SQL)
 
+    async def find_active(self, week_label: str) -> PlanView | None:
+        """The week's non-archived Plan, if one exists (used by the manual /generate_plan command)."""
+        plan_row = await self._pool.fetchrow(
+            "SELECT id, week_label FROM plans WHERE week_label = $1 AND status IN ('pending_review', 'approved')",
+            week_label,
+        )
+        if plan_row is None:
+            return None
+        return await self.get(PlanId(plan_row["id"]))
+
     async def get(self, plan_id: PlanId) -> PlanView:
         plan_row = await self._pool.fetchrow("SELECT id, week_label FROM plans WHERE id = $1", plan_id)
         if plan_row is None:
@@ -207,6 +217,31 @@ class Plan:
                     """
                     UPDATE plan_items SET status = 'approved', updated_at = now()
                     WHERE plan_id = $1 AND status = 'pending_review'
+                    """,
+                    plan_id,
+                )
+
+    async def archive(self, plan_id: PlanId) -> None:
+        """Soft-archive a Plan and its items so /generate_plan can regenerate the week without data loss.
+
+        Idempotent (a plan already archived is a no-op), mirroring `approve_all`.
+        Items already `rejected` stay `rejected` - only items still in an active
+        state (`pending_review`/`approved`) move to `archived`.
+        """
+        plan_row = await self._pool.fetchrow("SELECT status FROM plans WHERE id = $1", plan_id)
+        if plan_row is None:
+            raise PlanNotFound(plan_id)
+        if plan_row["status"] == "archived":
+            return
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE plans SET status = 'archived', updated_at = now() WHERE id = $1", plan_id
+                )
+                await conn.execute(
+                    """
+                    UPDATE plan_items SET status = 'archived', updated_at = now()
+                    WHERE plan_id = $1 AND status IN ('pending_review', 'approved')
                     """,
                     plan_id,
                 )

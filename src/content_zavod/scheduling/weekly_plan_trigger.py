@@ -27,6 +27,7 @@ DEFAULT_DAY_OF_WEEK = "mon"
 DEFAULT_HOUR = 9
 DEFAULT_MINUTE = 0
 DEFAULT_MISFIRE_GRACE_TIME = timedelta(hours=6)
+JOB_ID = "weekly_plan_trigger"
 
 
 class PlanTrigger(Protocol):
@@ -64,6 +65,8 @@ def schedule_weekly_plan_trigger(
         CronTrigger(day_of_week=day_of_week, hour=hour, minute=minute, timezone=tz),
         args=[plan],
         kwargs={"tz": tz},
-        misfire_grace_time=misfire_grace_time.total_seconds(),
+        misfire_grace_time=int(misfire_grace_time.total_seconds()),
         coalesce=True,
+        id=JOB_ID,
+        replace_existing=True,
     )

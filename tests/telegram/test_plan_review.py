@@ -96,3 +96,15 @@ async def test_approve_all_clears_any_pending_wait_for_same_user(
     consumed = await review.handle_comment_reply(1, 10, "too late")
     assert consumed is False
     assert ops.approved == [PlanItemId("plan-1")]
+
+
+@pytest.mark.asyncio
+async def test_will_enqueue_regeneration_is_false_before_first_press(review: PlanReview) -> None:
+    assert review.will_enqueue_regeneration(1, 10, PlanItemId("item-1")) is False
+
+
+@pytest.mark.asyncio
+async def test_will_enqueue_regeneration_is_true_on_matching_second_press(review: PlanReview) -> None:
+    await review.handle_action(1, 10, PlanItemId("item-1"), "regenerate")
+
+    assert review.will_enqueue_regeneration(1, 10, PlanItemId("item-1")) is True

@@ -5,6 +5,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from content_zavod.job_queue import JobId
 from content_zavod.scheduling import (
+    JOB_ID,
     schedule_weekly_plan_trigger,
     trigger_weekly_plan,
     week_label_for,
@@ -68,6 +69,17 @@ def test_schedule_weekly_plan_trigger_registers_a_monday_morning_cron_job_with_c
     assert isinstance(job["trigger"], CronTrigger)
     assert job["misfire_grace_time"] == timedelta(hours=6).total_seconds()
     assert job["coalesce"] is True
+
+
+def test_schedule_weekly_plan_trigger_registers_a_stable_replaceable_job_id() -> None:
+    scheduler = FakeScheduler()
+    plan = FakePlan()
+
+    schedule_weekly_plan_trigger(scheduler, plan, tz=MOSCOW)
+
+    job = scheduler.jobs[0]
+    assert job["id"] == JOB_ID
+    assert job["replace_existing"] is True
 
 
 async def test_the_registered_job_calls_through_to_plan_request_new() -> None:

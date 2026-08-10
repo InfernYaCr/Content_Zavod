@@ -294,6 +294,68 @@ async def test_request_cover_raises_for_unknown_item(plan: Plan) -> None:
         await plan.request_cover("missing")
 
 
+async def test_find_active_returns_pending_or_approved_plan_for_the_week(plan: Plan) -> None:
+    plan_id, _ = await _create_plan(plan)
+
+    found = await plan.find_active("Week 1")
+
+    assert found is not None
+    assert found.id == plan_id
+
+
+async def test_find_active_returns_none_when_no_plan_exists_for_the_week(plan: Plan) -> None:
+    found = await plan.find_active("Week 1")
+
+    assert found is None
+
+
+async def test_find_active_ignores_an_archived_plan(plan: Plan) -> None:
+    plan_id, _ = await _create_plan(plan)
+    await plan.archive(plan_id)
+
+    found = await plan.find_active("Week 1")
+
+    assert found is None
+
+
+async def test_archive_marks_plan_and_pending_items_archived(plan: Plan) -> None:
+    plan_id, view = await _create_plan(plan)
+
+    await plan.archive(plan_id)
+
+    updated = await plan.get(plan_id)
+    assert all(item.status == "archived" for item in updated.items)
+    found = await plan.find_active("Week 1")
+    assert found is None
+
+
+async def test_archive_leaves_rejected_items_rejected(plan: Plan) -> None:
+    _, view = await _create_plan(plan)
+    await plan.delete_item(view.items[0].id)
+
+    await plan.archive(view.id)
+
+    updated = await plan.get(view.id)
+    statuses = {item.id: item.status for item in updated.items}
+    assert statuses[view.items[0].id] == "rejected"
+    assert statuses[view.items[1].id] == "archived"
+
+
+async def test_archive_is_idempotent(plan: Plan) -> None:
+    plan_id, _ = await _create_plan(plan)
+
+    await plan.archive(plan_id)
+    await plan.archive(plan_id)  # no-op, must not raise
+
+    updated = await plan.get(plan_id)
+    assert all(item.status == "archived" for item in updated.items)
+
+
+async def test_archive_raises_for_unknown_plan(plan: Plan) -> None:
+    with pytest.raises(PlanNotFound):
+        await plan.archive("missing")
+
+
 async def test_apply_cover_persists_image_and_mime_type(plan: Plan, pool: asyncpg.Pool) -> None:
     plan_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
     view = await plan.get(plan_id)

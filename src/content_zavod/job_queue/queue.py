@@ -149,6 +149,25 @@ class JobQueue:
                 error,
             )
 
+    async def retry(self, job_id: JobId) -> None:
+        """Reset a failed job back to queued, for a user-triggered "Повторить" retry.
+
+        Also clears `notified_at` so the eventual re-completion (done or
+        failed again) is notified once more - otherwise `claim_notification`
+        would skip it as already-notified from the original failure.
+        """
+        result = await self._pool.execute(
+            """
+            UPDATE jobs
+            SET status = 'queued', attempts = 0, error = NULL, run_at = now(),
+                locked_at = NULL, notified_at = NULL, updated_at = now()
+            WHERE id = $1
+            """,
+            job_id,
+        )
+        if result == "UPDATE 0":
+            raise JobNotFound(job_id)
+
     async def recover_stuck(self) -> int:
         timeout_seconds = self._stuck_timeout.total_seconds()
         rows = await self._pool.fetch(

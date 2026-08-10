@@ -49,6 +49,7 @@ class FakeGateway:
         self.sent_plans: list[tuple[int, PlanView]] = []
         self.sent_articles: list[tuple[int, ArticleView]] = []
         self.sent_errors: list[tuple[int, str]] = []
+        self.sent_errors_with_retry: list[tuple[int, str, int]] = []
         self.sent_notices: list[tuple[int, str]] = []
 
     async def send_plan(self, chat_id: int, plan: PlanView) -> None:
@@ -60,17 +61,22 @@ class FakeGateway:
     async def send_error(self, chat_id: int, text: str) -> None:
         self.sent_errors.append((chat_id, text))
 
+    async def send_error_with_retry(self, chat_id: int, text: str, job_id: int) -> None:
+        self.sent_errors_with_retry.append((chat_id, text, job_id))
+
     async def send_notice(self, chat_id: int, text: str) -> None:
         self.sent_notices.append((chat_id, text))
 
 
-async def test_failed_job_sends_error() -> None:
+async def test_failed_job_sends_error_with_retry_button() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     handle = _make_notification_handler(plan, article, gateway, 42)
 
     await handle(JobResult(job_id=1, job_type="generate_plan", status="failed", error="boom"))
 
-    assert gateway.sent_errors == [(42, "Задача generate_plan завершилась ошибкой: boom")]
+    assert gateway.sent_errors_with_retry == [
+        (42, "Задача generate_plan завершилась ошибкой: boom", 1)
+    ]
 
 
 async def test_generate_plan_appends_topics_and_sends_the_plan() -> None:

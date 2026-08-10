@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS plan_items (
 
 CREATE INDEX IF NOT EXISTS plan_items_plan_id_position_idx ON plan_items (plan_id, position);
 
+CREATE INDEX IF NOT EXISTS plans_week_label_status_idx ON plans (week_label, status);
+
 CREATE TABLE IF NOT EXISTS articles (
     id TEXT PRIMARY KEY,
     plan_id TEXT NOT NULL REFERENCES plans (id),
