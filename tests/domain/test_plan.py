@@ -18,7 +18,7 @@ from content_zavod.job_queue import JobQueue
 async def _create_plan(
     plan: Plan, *, titles: tuple[str, ...] = ("Topic A", "Topic B")
 ) -> tuple[PlanId, PlanView]:
-    plan_id = await plan.create("Week 1", [TopicDraft(title=t) for t in titles])
+    plan_id = await plan.add_topics("Week 1", [TopicDraft(title=t) for t in titles])
     view = await plan.get(plan_id)
     return plan_id, view
 
@@ -179,24 +179,42 @@ async def test_recent_topic_titles_excludes_titles_older_than_since(plan: Plan) 
     assert "Old Topic" not in titles
 
 
-async def test_create_with_dedupe_returns_existing_plan_for_a_repeated_week_label(plan: Plan) -> None:
-    first_id = await plan.create("Week 1", [TopicDraft(title="Topic A")], dedupe_by_week=True)
+async def test_add_topics_appends_to_the_existing_draft_for_a_repeated_week_label(
+    plan: Plan,
+) -> None:
+    first_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
 
-    second_id = await plan.create("Week 1", [TopicDraft(title="Topic B")], dedupe_by_week=True)
+    second_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic B")])
 
     assert second_id == first_id
     view = await plan.get(first_id)
-    assert [item.title for item in view.items] == ["Topic A"]
+    assert [item.title for item in view.items] == ["Topic A", "Topic B"]
 
 
-async def test_create_without_dedupe_creates_a_separate_plan_for_a_repeated_week_label(
+async def test_add_topics_skips_a_title_already_present_in_the_plan(plan: Plan) -> None:
+    # e.g. a redelivered generate_plan notification re-appending the same topics
+    first_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
+
+    second_id = await plan.add_topics(
+        "Week 1", [TopicDraft(title="Topic A"), TopicDraft(title="Topic B")]
+    )
+
+    assert second_id == first_id
+    view = await plan.get(first_id)
+    assert [item.title for item in view.items] == ["Topic A", "Topic B"]
+
+
+async def test_add_topics_starts_a_fresh_draft_once_the_prior_plan_is_approved(
     plan: Plan,
 ) -> None:
-    first_id = await plan.create("Week 1", [TopicDraft(title="Topic A")])
+    first_id, view = await _create_plan(plan, titles=("Topic A",))
+    await plan.approve_all(view.id)
 
-    second_id = await plan.create("Week 1", [TopicDraft(title="Topic B")])
+    second_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic B")])
 
     assert second_id != first_id
+    second_view = await plan.get(second_id)
+    assert [item.title for item in second_view.items] == ["Topic B"]
 
 
 async def test_request_new_enqueues_a_generate_plan_job_for_the_given_week(
@@ -225,7 +243,7 @@ async def test_request_new_retried_for_the_same_week_does_not_duplicate_the_job(
 async def test_request_cover_enqueues_a_job_with_the_items_title_and_summary(
     plan: Plan, queue: JobQueue
 ) -> None:
-    plan_id = await plan.create("Week 1", [TopicDraft(title="Topic A", summary="a summary")])
+    plan_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A", summary="a summary")])
     view = await plan.get(plan_id)
     item_id = view.items[0].id
 
@@ -240,7 +258,7 @@ async def test_request_cover_enqueues_a_job_with_the_items_title_and_summary(
 async def test_request_cover_retried_before_any_state_change_does_not_duplicate_the_job(
     plan: Plan, queue: JobQueue
 ) -> None:
-    plan_id = await plan.create("Week 1", [TopicDraft(title="Topic A")])
+    plan_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
     view = await plan.get(plan_id)
     item_id = view.items[0].id
 
@@ -259,7 +277,7 @@ async def test_request_cover_raises_for_unknown_item(plan: Plan) -> None:
 
 
 async def test_apply_cover_persists_image_and_mime_type(plan: Plan, pool: asyncpg.Pool) -> None:
-    plan_id = await plan.create("Week 1", [TopicDraft(title="Topic A")])
+    plan_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
     view = await plan.get(plan_id)
     item_id = view.items[0].id
 

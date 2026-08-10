@@ -11,9 +11,13 @@ back asynchronously via `apply_regeneration`, called by the notification
 handler once the job completes (see job_queue.run_notifications).
 
 `request_cover` follows the same enqueue-now/apply-later shape for the
-`generate_cover` Job (see #6), applied via `apply_cover`. `create`'s
-`dedupe_by_week` guards `generate_plan`'s notification handler against
-re-persisting the same week's Plan on a retried delivery.
+`generate_cover` Job (see #6), applied via `apply_cover`. `add_topics`
+finds-or-creates the week's non-approved Plan and appends to it, so it
+doubles as the retry guard for `generate_plan`'s notification handler
+(a retried delivery appends nothing new, since the topics it re-sends were
+already appended) and as the entry point for the manual `/topic` command
+(see #10) - both are just callers of the same idempotent-per-append
+operation.
 
 `request_new` enqueues `generate_plan` itself, keyed on `week_label` alone
 (see #7). Because `JobQueue.enqueue` is idempotent, calling it more than
@@ -69,23 +73,50 @@ class Plan:
         ]
         return PlanView(id=PlanId(plan_row["id"]), week_label=plan_row["week_label"], items=items)
 
-    async def create(
-        self, week_label: str, topics: list[TopicDraft], *, dedupe_by_week: bool = False
-    ) -> PlanId:
-        if dedupe_by_week:
-            # Guards against a retried generate_plan notification re-persisting the
-            # same week's Plan (e.g. after `handle` succeeded but the queue's
-            # mark_notified failed to commit).
-            existing = await self._pool.fetchrow("SELECT id FROM plans WHERE week_label = $1", week_label)
-            if existing is not None:
-                return PlanId(existing["id"])
-        plan_id = self._new_id()
+    async def add_topics(self, week_label: str, topics: Sequence[TopicDraft]) -> PlanId:
+        """Append Topics to the week's draft Plan, creating it if none exists yet.
+
+        The one write path for both sourcing modes in ADR-0006: generate_plan's
+        notification handler and the manual /topic command both call this with
+        their own TopicDraft(s), so whichever fires first creates the week's
+        Plan and the other appends to it - neither can silently clobber the
+        other's Topics. Targets only the week's non-approved Plan (there is at
+        most one, per ADR-0005's single-canonical-Plan model); a proposal for a
+        week whose Plan is already approved starts a fresh draft rather than
+        reopening a locked one, mirroring the approved-item lock in
+        `delete_item`/`regenerate_item`.
+
+        Skips any topic whose title already exists in the target Plan
+        (case-insensitively) instead of inserting a duplicate item. This is
+        what makes a redelivered `generate_plan` notification retry-safe -
+        the same topics it already appended are recognised and skipped - and
+        it does so without the old `dedupe_by_week` bail-out that would have
+        also swallowed a second caller's genuinely different Topics.
+        """
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute(
-                    "INSERT INTO plans (id, week_label) VALUES ($1, $2)", plan_id, week_label
+                existing = await conn.fetchrow(
+                    "SELECT id FROM plans WHERE week_label = $1 AND status = 'pending_review'",
+                    week_label,
                 )
-                for position, topic in enumerate(topics):
+                if existing is not None:
+                    plan_id = existing["id"]
+                    item_rows = await conn.fetch(
+                        "SELECT position, title FROM plan_items WHERE plan_id = $1", plan_id
+                    )
+                    next_position = max((row["position"] for row in item_rows), default=-1) + 1
+                    seen_titles = {row["title"].lower() for row in item_rows}
+                else:
+                    plan_id = self._new_id()
+                    next_position = 0
+                    seen_titles = set()
+                    await conn.execute(
+                        "INSERT INTO plans (id, week_label) VALUES ($1, $2)", plan_id, week_label
+                    )
+                for topic in topics:
+                    if topic.title.lower() in seen_titles:
+                        continue
+                    seen_titles.add(topic.title.lower())
                     await conn.execute(
                         """
                         INSERT INTO plan_items (id, plan_id, position, title, summary, keywords)
@@ -93,11 +124,12 @@ class Plan:
                         """,
                         self._new_id(),
                         plan_id,
-                        position,
+                        next_position,
                         topic.title,
                         topic.summary,
                         _keywords_json(topic.keywords),
                     )
+                    next_position += 1
         return PlanId(plan_id)
 
     async def request_new(self, week_label: str) -> JobId:

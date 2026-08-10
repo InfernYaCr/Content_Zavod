@@ -17,7 +17,7 @@ _VERSION = GeneratedVersion(content="Hello, world.", prompt="write it", model="y
 
 
 async def _create_plan_item(plan: Plan) -> tuple[PlanId, PlanItemId]:
-    plan_id = await plan.create("Week 1", [TopicDraft(title="Topic A")])
+    plan_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
     view = await plan.get(plan_id)
     return plan_id, view.items[0].id
 
