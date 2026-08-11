@@ -1,7 +1,9 @@
 from .article_pipeline import ArticleReader, make_generate_article_handler, make_regenerate_article_handler
 from .cover_pipeline import make_generate_cover_handler
 from .plan_pipeline import (
+    DEFAULT_DIRECTIONS,
     DEFAULT_NICHE,
+    DIRECTIONS_KEY,
     NICHE_KEY,
     OwnerSettingsOperations,
     PlanItemReader,
@@ -12,7 +14,9 @@ from .url_reachability import HttpxUrlReachabilityChecker, UrlReachabilityChecke
 
 __all__ = [
     "ArticleReader",
+    "DEFAULT_DIRECTIONS",
     "DEFAULT_NICHE",
+    "DIRECTIONS_KEY",
     "HttpxUrlReachabilityChecker",
     "NICHE_KEY",
     "OwnerSettingsOperations",

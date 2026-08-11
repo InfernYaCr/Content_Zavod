@@ -1,13 +1,14 @@
 """generate_plan Job Handler: sources a week's Тем from real Wordstat growth.
 
 Per ADR-0006's 2026-08-07 amendment, "growing" is determined from
-`KeywordStats.keyword_dynamics()` month-over-month counts for a fixed seed
-list of Niche keywords, not a static high-frequency-now snapshot. The seed
-list stays a module constant for now (see ADR-0006) - only the free-text
-Niche description embedded in the prompts is Owner-editable (#36), read
-fresh from `OwnerSettingsStore` on every call so a `/set_niche` takes effect
-without a restart; dedup against topic history is delegated to the
-caller-supplied `recent_topic_titles`.
+`KeywordStats.keyword_dynamics()` month-over-month counts for a seed list of
+Направления (Wordstat seed keywords), not a static high-frequency-now
+snapshot. The seed list is Owner-editable (#38) via `/set_directions`, read
+fresh from `OwnerSettingsStore` on every call so a change takes effect
+without a restart - as is the free-text Niche description embedded in the
+prompts (#36). `seed_keywords` remains an explicit override for callers
+(mainly tests) that want to bypass the store entirely; dedup against topic
+history is delegated to the caller-supplied `recent_topic_titles`.
 """
 
 from __future__ import annotations
@@ -22,7 +23,8 @@ from ..yandex import KeywordDynamicsPoint, KeywordStats, Message, TextGenerator
 NICHE_KEY = "niche"
 DEFAULT_NICHE = "маркетинг"
 
-NICHE_SEED_KEYWORDS: Sequence[str] = (
+DIRECTIONS_KEY = "directions"
+DEFAULT_DIRECTIONS: Sequence[str] = (
     "crm для малого бизнеса",
     "email маркетинг",
     "таргетированная реклама",
@@ -47,6 +49,17 @@ async def _current_niche(owner_settings: OwnerSettingsOperations) -> str:
     return value if value else DEFAULT_NICHE
 
 
+def parse_directions(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+async def _current_directions(owner_settings: OwnerSettingsOperations) -> Sequence[str]:
+    value = await owner_settings.get(DIRECTIONS_KEY)
+    if not value:
+        return DEFAULT_DIRECTIONS
+    return parse_directions(value) or DEFAULT_DIRECTIONS
+
+
 def _topic_prompt_system(niche: str) -> str:
     return (
         f"Ты - контент-стратег в Нише «{niche}». По одному растущему поисковому "
@@ -63,7 +76,7 @@ def make_generate_plan_handler(
     recent_topic_titles: Callable[[datetime], Awaitable[list[str]]],
     owner_settings: OwnerSettingsOperations,
     *,
-    seed_keywords: Sequence[str] = NICHE_SEED_KEYWORDS,
+    seed_keywords: Sequence[str] | None = None,
     topics_per_plan: int = TOPICS_PER_PLAN,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> JobHandler:
@@ -72,9 +85,10 @@ def make_generate_plan_handler(
         current_time = now()
         from_date, to_date = _dynamics_window(current_time)
         niche = await _current_niche(owner_settings)
+        directions = seed_keywords if seed_keywords is not None else await _current_directions(owner_settings)
 
         growing: list[tuple[float, str]] = []
-        for keyword in seed_keywords:
+        for keyword in directions:
             try:
                 points = await keyword_stats.keyword_dynamics(
                     keyword, period="PERIOD_MONTHLY", from_date=from_date, to_date=to_date

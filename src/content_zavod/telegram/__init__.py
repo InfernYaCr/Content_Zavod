@@ -1,5 +1,6 @@
 from .comment_gated_regeneration import CommentGatedRegeneration, CommentPrompt
 from .commands import render_help_text, sync_commands
+from .directions_command import handle_directions_command, handle_set_directions_command
 from .gateway import (
     Action,
     BotClient,
@@ -109,6 +110,7 @@ __all__ = [
     "encode_page_callback",
     "handle_cancel_regenerate_plan",
     "handle_confirm_regenerate_plan",
+    "handle_directions_command",
     "handle_generate_plan_command",
     "handle_history_command",
     "handle_history_page",
@@ -118,6 +120,7 @@ __all__ = [
     "handle_members_command",
     "handle_niche_command",
     "handle_schedule_command",
+    "handle_set_directions_command",
     "handle_set_niche_command",
     "handle_set_schedule_command",
     "handle_topic_command",
