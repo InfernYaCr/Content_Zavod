@@ -8,7 +8,8 @@ render) worth a fast unit test.
 
 from __future__ import annotations
 
-from content_zavod.domain import ArticleView, GeneratedVersion, PlanId, PlanView, TopicDraft
+from content_zavod.domain import ArticleView, GeneratedVersion, PlanId, PlanItemId, PlanView, TopicDraft
+from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.entrypoints.bot import _make_notification_handler
 from content_zavod.job_queue import JobResult
 
@@ -26,6 +27,9 @@ class FakePlan:
     async def get(self, plan_id: PlanId) -> PlanView:
         return PlanView(id=plan_id, week_label="Week 1", items=[])
 
+    async def get_item(self, plan_item_id: PlanItemId) -> PlanItemDetail:
+        return PlanItemDetail(id=plan_item_id, title="Topic A", summary="s", keywords=[])
+
     async def apply_regeneration(self, plan_item_id: str, topic: TopicDraft) -> None:
         self.applied_regenerations.append((plan_item_id, topic))
 
@@ -41,7 +45,9 @@ class FakeArticle:
         self.recorded_versions.append((article_id, version))
 
     async def get(self, article_id: str) -> ArticleView:
-        return ArticleView(id=article_id, title="T", platform="P", filename="f.txt", content=b"c")
+        return ArticleView(
+            id=article_id, plan_item_id="item-1", title="T", platform="P", filename="f.txt", content=b"c"
+        )
 
 
 class FakeGateway:
@@ -51,6 +57,7 @@ class FakeGateway:
         self.sent_errors: list[tuple[int, str]] = []
         self.sent_errors_with_retry: list[tuple[int, str, int]] = []
         self.sent_notices: list[tuple[int, str]] = []
+        self.sent_covers: list[tuple[int, bytes, str, str]] = []
 
     async def send_plan(self, chat_id: int, plan: PlanView) -> None:
         self.sent_plans.append((chat_id, plan))
@@ -66,6 +73,9 @@ class FakeGateway:
 
     async def send_notice(self, chat_id: int, text: str) -> None:
         self.sent_notices.append((chat_id, text))
+
+    async def send_cover(self, chat_id: int, image: bytes, mime_type: str, title: str) -> None:
+        self.sent_covers.append((chat_id, image, mime_type, title))
 
 
 async def test_failed_job_sends_error_with_retry_button() -> None:
@@ -157,7 +167,7 @@ async def test_generate_cover_applies_cover_and_notifies() -> None:
     )
 
     assert plan.applied_covers == [("item-1", b"image-bytes", "image/jpeg")]
-    assert gateway.sent_notices == [(42, "Обложка готова.")]
+    assert gateway.sent_covers == [(42, b"image-bytes", "image/jpeg", "Topic A")]
 
 
 async def test_unknown_job_type_is_ignored() -> None:

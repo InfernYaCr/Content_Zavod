@@ -122,7 +122,12 @@ async def test_generate_article_uses_a_stricter_sources_prompt_for_money_or_lega
 @pytest.mark.asyncio
 async def test_regenerate_article_sources_facts_from_the_current_version_not_a_fresh_payload() -> None:
     view = ArticleView(
-        id="article-1", title="Topic A", platform="zen", filename="topic-a-zen.txt", content=b"old content"
+        id="article-1",
+        plan_item_id="item-1",
+        title="Topic A",
+        platform="zen",
+        filename="topic-a-zen.txt",
+        content=b"old content",
     )
     article_reader = FakeArticleReader(view)
     text_generator = ScriptedTextGenerator(

@@ -91,6 +91,11 @@ class _AiogramBotClient:
     ) -> None:
         await self._bot.send_document(chat_id, document, caption=caption)
 
+    async def send_photo(
+        self, chat_id: int, photo: BufferedInputFile, caption: str | None = None
+    ) -> None:
+        await self._bot.send_photo(chat_id, photo, caption=caption)
+
     async def edit_message_text(
         self,
         chat_id: int,
@@ -128,11 +133,15 @@ async def _role_for(membership: Membership, gateway: TelegramGateway, chat_id: i
 
 async def _generate_articles_for_approved_plan(plan: Plan, article: Article, plan_id: PlanId) -> None:
     """Fan out each approved Тема into one Статья per Площадка and enqueue its `generate_article`
-    Job (#14). Reads current DB state (`Plan.approved_items`) rather than acting only on items this
-    call just approved, and `Article.request_generation` is itself idempotent - so replaying this
-    for an already-approved Plan (a retried `approve_all` callback, or a crash between approving and
-    enqueueing) creates neither duplicate Статьи nor duplicate Jobs."""
+    Job (#14), plus one `generate_cover` Job per Тема (#15 - the whole week's content, including
+    covers, is generated together, so no separate manual trigger is needed for the common case).
+    Reads current DB state (`Plan.approved_items`) rather than acting only on items this call just
+    approved, and both `Article.request_generation` and `Plan.request_cover` are themselves
+    idempotent - so replaying this for an already-approved Plan (a retried `approve_all` callback,
+    or a crash between approving and enqueueing) creates neither duplicate Статьи/обложки nor
+    duplicate Jobs."""
     for item in await plan.approved_items(plan_id):
+        await plan.request_cover(item.id)
         for platform in PLATFORMS:
             await article.request_generation(plan_id, item.id, item.title, item.summary, item.keywords, platform)
 
@@ -303,6 +312,9 @@ def _build_router(
                 await callback.answer()
                 # Accepting a ready Статья: no comment-wait, just the transition to "exported".
                 await article.mark_exported(ArticleId(id_))
+            elif action == "request_cover":
+                await callback.answer("Генерирую обложку...")
+                await plan.request_cover(PlanItemId(id_))
             elif action == "regenerate":
                 will_enqueue = plan_review.will_enqueue_regeneration(chat_id, user_id, PlanItemId(id_))
                 await callback.answer("Принято, генерирую..." if will_enqueue else None)
@@ -383,7 +395,8 @@ def _make_notification_handler(
             plan_item_id = PlanItemId(output["plan_item_id"])
             image = base64.b64decode(output["image"])
             await plan.apply_cover(plan_item_id, image, output["mime_type"])
-            await gateway.send_notice(notify_chat_id, "Обложка готова.")
+            item = await plan.get_item(plan_item_id)
+            await gateway.send_cover(notify_chat_id, image, output["mime_type"], item.title)
         else:
             logger.warning("No notification renderer for job_type=%r", result.job_type)
 
