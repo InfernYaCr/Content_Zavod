@@ -48,7 +48,6 @@ async def test_record_version_makes_the_article_available_via_get(article: Artic
     assert view.title == "Topic A"
     assert view.platform == "zen"
     assert view.content == b"Hello, world."
-    assert view.filename == "topic-a-zen.txt"
 
 
 async def test_record_version_raises_for_unknown_article(article: Article) -> None:

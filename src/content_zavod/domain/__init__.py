@@ -8,9 +8,11 @@ from .errors import (
     PlanItemNotFound,
     PlanNotFound,
 )
+from .export import build_export_document, build_export_filename
 from .plan import Plan, PlanItemDetail
 from .types import (
     PLATFORMS,
+    ArticleFormat,
     ArticleId,
     ArticleStatus,
     ArticleSummary,
@@ -29,6 +31,7 @@ from .types import (
 __all__ = [
     "PLATFORMS",
     "Article",
+    "ArticleFormat",
     "ArticleId",
     "ArticleNotFound",
     "ArticleNotReady",
@@ -51,4 +54,6 @@ __all__ = [
     "PlanSummary",
     "PlanView",
     "TopicDraft",
+    "build_export_document",
+    "build_export_filename",
 ]

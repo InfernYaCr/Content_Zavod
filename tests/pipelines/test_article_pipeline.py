@@ -126,7 +126,6 @@ async def test_regenerate_article_sources_facts_from_the_current_version_not_a_f
         plan_item_id="item-1",
         title="Topic A",
         platform="zen",
-        filename="topic-a-zen.txt",
         content=b"old content",
     )
     article_reader = FakeArticleReader(view)
