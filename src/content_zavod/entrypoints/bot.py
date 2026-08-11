@@ -45,6 +45,7 @@ from ..domain import (
     TopicDraft,
 )
 from ..job_queue import JobId, JobQueue, JobResult, run_notifications
+from ..owner_settings import OwnerSettingsStore
 from ..scheduling import ScheduleSettings, schedule_weekly_plan_trigger
 from ..telegram import (
     BotClient,
@@ -66,7 +67,9 @@ from ..telegram import (
     handle_history_versions,
     handle_history_week,
     handle_members_command,
+    handle_niche_command,
     handle_schedule_command,
+    handle_set_niche_command,
     handle_set_schedule_command,
     handle_topic_command,
     render_help_text,
@@ -162,6 +165,7 @@ def _build_router(
     article_regeneration: CommentGatedRegeneration[ArticleId],
     join_request_flow: JoinRequestFlow,
     schedule_settings: ScheduleSettings,
+    owner_settings: OwnerSettingsStore,
     queue: JobQueue,
     scheduler: AsyncIOScheduler,
     settings: Settings,
@@ -257,6 +261,30 @@ def _build_router(
         await handle_set_schedule_command(
             schedule_settings, scheduler, gateway, message.chat.id, command.args or "", tz=settings.timezone
         )
+
+    @router.message(Command("niche"))
+    async def on_niche(message: Message) -> None:
+        if message.from_user is None:
+            return
+        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
+        if role is None:
+            return
+        if role != "owner":
+            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
+            return
+        await handle_niche_command(owner_settings, gateway, message.chat.id)
+
+    @router.message(Command("set_niche"))
+    async def on_set_niche(message: Message, command: CommandObject) -> None:
+        if message.from_user is None:
+            return
+        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
+        if role is None:
+            return
+        if role != "owner":
+            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
+            return
+        await handle_set_niche_command(owner_settings, gateway, message.chat.id, command.args or "")
 
     @router.callback_query()
     async def on_callback(callback: CallbackQuery) -> None:
@@ -449,6 +477,8 @@ async def main(settings: Settings | None = None) -> None:
         await join_requests.ensure_schema()
         schedule_settings = ScheduleSettings(pool)
         await schedule_settings.ensure_schema()
+        owner_settings = OwnerSettingsStore(pool)
+        await owner_settings.ensure_schema()
         plan = Plan(pool, queue)
         await plan.ensure_schema()
         article = Article(pool, queue)
@@ -493,6 +523,7 @@ async def main(settings: Settings | None = None) -> None:
                 article_regeneration,
                 join_request_flow,
                 schedule_settings,
+                owner_settings,
                 queue,
                 scheduler,
                 settings,

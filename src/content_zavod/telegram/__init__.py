@@ -44,6 +44,7 @@ from .history_command import (
 )
 from .join_request_flow import JoinRequestFlow
 from .members_command import handle_members_command
+from .niche_command import handle_niche_command, handle_set_niche_command
 from .plan_review import PlanOperations, PlanReview
 from .schedule_command import handle_schedule_command, handle_set_schedule_command
 from .topic_command import PlanProposal, handle_topic_command
@@ -115,7 +116,9 @@ __all__ = [
     "handle_history_versions",
     "handle_history_week",
     "handle_members_command",
+    "handle_niche_command",
     "handle_schedule_command",
+    "handle_set_niche_command",
     "handle_set_schedule_command",
     "handle_topic_command",
     "render_help_text",

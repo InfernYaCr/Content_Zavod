@@ -3,8 +3,10 @@
 Per ADR-0006's 2026-08-07 amendment, "growing" is determined from
 `KeywordStats.keyword_dynamics()` month-over-month counts for a fixed seed
 list of Niche keywords, not a static high-frequency-now snapshot. The seed
-list is a module constant because the Niche is currently singular and has no
-editing UI (see ADR-0006); dedup against topic history is delegated to the
+list stays a module constant for now (see ADR-0006) - only the free-text
+Niche description embedded in the prompts is Owner-editable (#36), read
+fresh from `OwnerSettingsStore` on every call so a `/set_niche` takes effect
+without a restart; dedup against topic history is delegated to the
 caller-supplied `recent_topic_titles`.
 """
 
@@ -17,7 +19,9 @@ from ..domain import PlanItemDetail, PlanItemId, TopicDraft
 from ..job_queue import JobHandler
 from ..yandex import KeywordDynamicsPoint, KeywordStats, Message, TextGenerator
 
-# Ниша сейчас одна (маркетинг), без UI для редактирования (см. ADR-0006).
+NICHE_KEY = "niche"
+DEFAULT_NICHE = "маркетинг"
+
 NICHE_SEED_KEYWORDS: Sequence[str] = (
     "crm для малого бизнеса",
     "email маркетинг",
@@ -33,19 +37,31 @@ TOPICS_PER_PLAN = 3
 DYNAMICS_MONTHS = 6
 RECENT_HISTORY_DAYS = 90
 
-_TOPIC_PROMPT_SYSTEM = (
-    "Ты - контент-стратег в Нише «маркетинг». По одному растущему поисковому "
-    "запросу предложи одну Тему для контент-плана. Ответь строго в формате:\n"
-    "Title: <заголовок>\n"
-    "Summary: <краткое описание в 1-2 предложения>\n"
-    "Keywords: <ключевые слова через запятую>"
-)
+
+class OwnerSettingsOperations(Protocol):
+    async def get(self, key: str) -> str | None: ...
+
+
+async def _current_niche(owner_settings: OwnerSettingsOperations) -> str:
+    value = await owner_settings.get(NICHE_KEY)
+    return value if value else DEFAULT_NICHE
+
+
+def _topic_prompt_system(niche: str) -> str:
+    return (
+        f"Ты - контент-стратег в Нише «{niche}». По одному растущему поисковому "
+        "запросу предложи одну Тему для контент-плана. Ответь строго в формате:\n"
+        "Title: <заголовок>\n"
+        "Summary: <краткое описание в 1-2 предложения>\n"
+        "Keywords: <ключевые слова через запятую>"
+    )
 
 
 def make_generate_plan_handler(
     keyword_stats: KeywordStats,
     text_generator: TextGenerator,
     recent_topic_titles: Callable[[datetime], Awaitable[list[str]]],
+    owner_settings: OwnerSettingsOperations,
     *,
     seed_keywords: Sequence[str] = NICHE_SEED_KEYWORDS,
     topics_per_plan: int = TOPICS_PER_PLAN,
@@ -55,6 +71,7 @@ def make_generate_plan_handler(
         week_label = payload["week_label"]
         current_time = now()
         from_date, to_date = _dynamics_window(current_time)
+        niche = await _current_niche(owner_settings)
 
         growing: list[tuple[float, str]] = []
         for keyword in seed_keywords:
@@ -76,7 +93,7 @@ def make_generate_plan_handler(
         for _, keyword in growing:
             if len(topics) >= topics_per_plan:
                 break
-            draft = await _draft_topic(text_generator, keyword)
+            draft = await _draft_topic(text_generator, keyword, niche)
             if draft.title.lower() in used_titles:
                 continue
             topics.append(
@@ -93,25 +110,28 @@ class PlanItemReader(Protocol):
     async def get_item(self, plan_item_id: PlanItemId) -> PlanItemDetail: ...
 
 
-_REGENERATE_PROMPT_SYSTEM = (
-    "Ты - контент-стратег в Нише «маркетинг». Тебе дали существующую Тему для "
-    "контент-плана и комментарий, что в ней поправить. Предложи обновлённый "
-    "вариант этой же Темы. Ответь строго в формате:\n"
-    "Title: <заголовок>\n"
-    "Summary: <краткое описание в 1-2 предложения>\n"
-    "Keywords: <ключевые слова через запятую>"
-)
+def _regenerate_prompt_system(niche: str) -> str:
+    return (
+        f"Ты - контент-стратег в Нише «{niche}». Тебе дали существующую Тему для "
+        "контент-плана и комментарий, что в ней поправить. Предложи обновлённый "
+        "вариант этой же Темы. Ответь строго в формате:\n"
+        "Title: <заголовок>\n"
+        "Summary: <краткое описание в 1-2 предложения>\n"
+        "Keywords: <ключевые слова через запятую>"
+    )
 
 
 def make_regenerate_topic_handler(
     item_reader: PlanItemReader,
     text_generator: TextGenerator,
+    owner_settings: OwnerSettingsOperations,
 ) -> JobHandler:
     async def handle(payload: dict[str, Any]) -> dict[str, Any]:
         plan_item_id = PlanItemId(payload["plan_item_id"])
         comment = payload.get("comment")
         current = await item_reader.get_item(plan_item_id)
-        draft = await _redraft_topic(text_generator, current, comment)
+        niche = await _current_niche(owner_settings)
+        draft = await _redraft_topic(text_generator, current, comment, niche)
         return {
             "plan_item_id": plan_item_id,
             "title": draft.title,
@@ -123,7 +143,7 @@ def make_regenerate_topic_handler(
 
 
 async def _redraft_topic(
-    text_generator: TextGenerator, current: PlanItemDetail, comment: str | None
+    text_generator: TextGenerator, current: PlanItemDetail, comment: str | None, niche: str
 ) -> TopicDraft:
     user_text = (
         f"Текущая Тема:\nTitle: {current.title}\nSummary: {current.summary}\n"
@@ -132,7 +152,7 @@ async def _redraft_topic(
     )
     text = await text_generator.complete(
         [
-            Message(role="system", text=_REGENERATE_PROMPT_SYSTEM),
+            Message(role="system", text=_regenerate_prompt_system(niche)),
             Message(role="user", text=user_text),
         ]
     )
@@ -160,10 +180,10 @@ def _growth_ratio(points: list[KeywordDynamicsPoint]) -> float | None:
     return last / first
 
 
-async def _draft_topic(text_generator: TextGenerator, keyword: str) -> TopicDraft:
+async def _draft_topic(text_generator: TextGenerator, keyword: str, niche: str) -> TopicDraft:
     text = await text_generator.complete(
         [
-            Message(role="system", text=_TOPIC_PROMPT_SYSTEM),
+            Message(role="system", text=_topic_prompt_system(niche)),
             Message(role="user", text=f"Растущий поисковый запрос: «{keyword}». Предложи Тему."),
         ]
     )
