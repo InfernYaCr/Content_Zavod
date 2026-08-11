@@ -40,6 +40,15 @@ class FakeArticleReader:
         return self._view
 
 
+class FakeOwnerSettingsStore:
+    def __init__(self, voice: str | None = None) -> None:
+        self._voice = voice
+
+    async def get(self, key: str) -> str | None:
+        assert key == "voice"
+        return self._voice
+
+
 def _completion(text: str, *, tokens: int = 10, model: str = "yandexgpt/latest") -> Completion:
     return Completion(text=text, model=model, tokens=tokens)
 
@@ -55,7 +64,7 @@ async def test_generate_article_runs_four_steps_and_assembles_reachable_sources(
         ]
     )
     url_checker = FakeUrlReachabilityChecker({"https://good.example/a"})
-    handler = make_generate_article_handler(text_generator, url_checker)
+    handler = make_generate_article_handler(text_generator, url_checker, FakeOwnerSettingsStore())
 
     output = await handler(
         {
@@ -88,7 +97,7 @@ async def test_generate_article_omits_sources_section_when_nothing_is_reachable(
         ]
     )
     url_checker = FakeUrlReachabilityChecker(set())
-    handler = make_generate_article_handler(text_generator, url_checker)
+    handler = make_generate_article_handler(text_generator, url_checker, FakeOwnerSettingsStore())
 
     output = await handler(
         {"article_id": "a", "title": "T", "summary": "", "keywords": [], "platform": "vc"}
@@ -103,7 +112,7 @@ async def test_generate_article_uses_a_stricter_sources_prompt_for_money_or_lega
         [_completion("outline"), _completion("draft"), _completion("rewrite"), _completion("")]
     )
     url_checker = FakeUrlReachabilityChecker(set())
-    handler = make_generate_article_handler(text_generator, url_checker)
+    handler = make_generate_article_handler(text_generator, url_checker, FakeOwnerSettingsStore())
 
     await handler(
         {
@@ -125,7 +134,7 @@ async def test_generate_article_asks_the_model_for_markdown_formatting_in_outlin
         [_completion("outline"), _completion("draft"), _completion("rewrite"), _completion("")]
     )
     url_checker = FakeUrlReachabilityChecker(set())
-    handler = make_generate_article_handler(text_generator, url_checker)
+    handler = make_generate_article_handler(text_generator, url_checker, FakeOwnerSettingsStore())
 
     await handler(
         {"article_id": "a", "title": "T", "summary": "", "keywords": [], "platform": "vc"}
@@ -155,7 +164,7 @@ async def test_regenerate_article_sources_facts_from_the_current_version_not_a_f
         [_completion("outline"), _completion("draft"), _completion("new body"), _completion("")]
     )
     url_checker = FakeUrlReachabilityChecker(set())
-    handler = make_regenerate_article_handler(article_reader, text_generator, url_checker)
+    handler = make_regenerate_article_handler(article_reader, text_generator, url_checker, FakeOwnerSettingsStore())
 
     output = await handler({"article_id": "article-1", "comment": "shorter please"})
 
@@ -164,3 +173,45 @@ async def test_regenerate_article_sources_facts_from_the_current_version_not_a_f
     outline_user_prompt = text_generator.calls[0][1].text
     assert "old content" in outline_user_prompt
     assert "shorter please" in outline_user_prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_article_uses_default_voice_when_no_override_is_stored() -> None:
+    text_generator = ScriptedTextGenerator(
+        [_completion("outline"), _completion("draft"), _completion("rewrite"), _completion("")]
+    )
+    url_checker = FakeUrlReachabilityChecker(set())
+    handler = make_generate_article_handler(text_generator, url_checker, FakeOwnerSettingsStore(None))
+
+    await handler(
+        {"article_id": "a", "title": "T", "summary": "", "keywords": [], "platform": "vc"}
+    )
+
+    outline_system_prompt = text_generator.calls[0][0].text
+    draft_system_prompt = text_generator.calls[1][0].text
+    assert "маркетолог-практик" in outline_system_prompt
+    assert "маркетолог-практик" in draft_system_prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_article_uses_stored_voice_override_in_outline_and_draft() -> None:
+    text_generator = ScriptedTextGenerator(
+        [_completion("outline"), _completion("draft"), _completion("rewrite"), _completion("")]
+    )
+    url_checker = FakeUrlReachabilityChecker(set())
+    handler = make_generate_article_handler(
+        text_generator, url_checker, FakeOwnerSettingsStore("технооптимист-фаундер")
+    )
+
+    await handler(
+        {"article_id": "a", "title": "T", "summary": "", "keywords": [], "platform": "vc"}
+    )
+
+    outline_system_prompt = text_generator.calls[0][0].text
+    draft_system_prompt = text_generator.calls[1][0].text
+    rewrite_system_prompt = text_generator.calls[2][0].text
+    assert "технооптимист-фаундер" in outline_system_prompt
+    assert "технооптимист-фаундер" in draft_system_prompt
+    assert "маркетолог-практик" not in outline_system_prompt
+    assert "маркетолог-практик" not in draft_system_prompt
+    assert "маркетолог-практик" not in rewrite_system_prompt
