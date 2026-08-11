@@ -293,10 +293,13 @@ class Plan:
         )
 
     async def apply_cover(self, plan_item_id: PlanItemId, image: bytes, mime_type: str) -> None:
+        """Bumps `updated_at` (like `apply_regeneration`) so a later `request_cover` call - e.g. the
+        manual "🖼 Обложка" re-request button (#15) - derives a fresh idempotency key instead of
+        colliding with this now-completed Job's key and silently no-op'ing."""
         await self._pool.execute(
             """
             UPDATE plan_items
-            SET cover_image = $2, cover_mime_type = $3, cover_generated_at = now()
+            SET cover_image = $2, cover_mime_type = $3, cover_generated_at = now(), updated_at = now()
             WHERE id = $1
             """,
             plan_item_id,

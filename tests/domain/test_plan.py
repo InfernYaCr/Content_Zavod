@@ -320,6 +320,24 @@ async def test_request_cover_raises_for_unknown_item(plan: Plan) -> None:
         await plan.request_cover("missing")
 
 
+async def test_request_cover_after_apply_cover_enqueues_a_fresh_job(plan: Plan, queue: JobQueue) -> None:
+    """A manual re-request (e.g. the "🖼 Обложка" button, #15) after a cover already finished must
+    enqueue a new Job rather than colliding with the completed one's idempotency key."""
+    plan_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
+    view = await plan.get(plan_id)
+    item_id = view.items[0].id
+    await plan.request_cover(item_id)
+    first_claim = await queue.claim_next()
+    assert first_claim is not None
+    await plan.apply_cover(item_id, b"fake-image-bytes", "image/jpeg")
+
+    await plan.request_cover(item_id)
+
+    second_claim = await queue.claim_next()
+    assert second_claim is not None
+    assert second_claim.id != first_claim.id
+
+
 async def test_find_active_returns_pending_or_approved_plan_for_the_week(plan: Plan) -> None:
     plan_id, _ = await _create_plan(plan)
 
