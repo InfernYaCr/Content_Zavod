@@ -30,6 +30,7 @@ class FakeBot:
     def __init__(self) -> None:
         self.sent_messages: list[tuple[int, str, InlineKeyboardMarkup | None]] = []
         self.sent_documents: list[tuple[int, BufferedInputFile, str | None]] = []
+        self.sent_photos: list[tuple[int, BufferedInputFile, str | None]] = []
         self.edited_messages: list[tuple[int, int, str, InlineKeyboardMarkup | None]] = []
 
     async def send_message(self, chat_id, text, reply_markup=None) -> int:
@@ -38,6 +39,9 @@ class FakeBot:
 
     async def send_document(self, chat_id, document, caption=None) -> None:
         self.sent_documents.append((chat_id, document, caption))
+
+    async def send_photo(self, chat_id, photo, caption=None) -> None:
+        self.sent_photos.append((chat_id, photo, caption))
 
     async def edit_message_text(self, chat_id, message_id, text, reply_markup=None) -> None:
         self.edited_messages.append((chat_id, message_id, text, reply_markup))
@@ -230,6 +234,7 @@ async def test_send_error_with_retry_attaches_retry_keyboard() -> None:
 def make_article() -> ArticleView:
     return ArticleView(
         id=ArticleId("article-1"),
+        plan_item_id=PlanItemId("item-1"),
         title="Как выбрать нишу",
         platform="Дзен",
         filename="article.docx",
@@ -267,6 +272,24 @@ async def test_send_article_ready_attaches_regenerate_and_approve_keyboard() -> 
     (regenerate_button, approve_button) = keyboard.inline_keyboard[0]
     assert decode_callback_data(regenerate_button.callback_data) == ("regenerate_article", "article-1")
     assert decode_callback_data(approve_button.callback_data) == ("approve", "article-1")
+    (cover_button,) = keyboard.inline_keyboard[1]
+    assert decode_callback_data(cover_button.callback_data) == ("request_cover", "item-1")
+
+
+@pytest.mark.asyncio
+async def test_send_cover_sends_photo_with_filename_and_caption() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    await gateway.send_cover(chat_id=42, image=b"fake jpeg bytes", mime_type="image/jpeg", title="Topic A")
+
+    assert len(bot.sent_photos) == 1
+    chat_id, photo, caption = bot.sent_photos[0]
+    assert chat_id == 42
+    assert isinstance(photo, BufferedInputFile)
+    assert photo.filename == "cover.jpeg"
+    assert photo.data == b"fake jpeg bytes"
+    assert "Topic A" in caption
 
 
 @pytest.mark.asyncio

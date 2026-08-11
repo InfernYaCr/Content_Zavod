@@ -22,6 +22,7 @@ Action = Literal[
     "regenerate",
     "approve_all",
     "regenerate_article",
+    "request_cover",
     "approve",
     "page",
     "confirm_regenerate_plan",
@@ -41,6 +42,7 @@ _ACTION_CODES: dict[Action, str] = {
     "regenerate": "r",
     "approve_all": "a",
     "regenerate_article": "ar",
+    "request_cover": "cv",
     "approve": "p",
     "page": "pg",
     "confirm_regenerate_plan": "cy",
@@ -274,7 +276,7 @@ def build_members_keyboard(members: list[tuple[int, str]]) -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_article_keyboard(article_id: str) -> InlineKeyboardMarkup:
+def build_article_keyboard(article_id: str, plan_item_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -286,7 +288,13 @@ def build_article_keyboard(article_id: str) -> InlineKeyboardMarkup:
                     text="✅",
                     callback_data=encode_callback_data("approve", article_id),
                 ),
-            ]
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🖼 Обложка",
+                    callback_data=encode_callback_data("request_cover", plan_item_id),
+                ),
+            ],
         ]
     )
 
@@ -306,6 +314,13 @@ class BotClient(Protocol):
         self,
         chat_id: int,
         document: BufferedInputFile,
+        caption: str | None = None,
+    ) -> None: ...
+
+    async def send_photo(
+        self,
+        chat_id: int,
+        photo: BufferedInputFile,
         caption: str | None = None,
     ) -> None: ...
 
@@ -365,8 +380,13 @@ class TelegramGateway:
         await self._bot.send_message(
             chat_id,
             "Принять эту Статью или запросить перегенерацию?",
-            reply_markup=build_article_keyboard(article.id),
+            reply_markup=build_article_keyboard(article.id, article.plan_item_id),
         )
+
+    async def send_cover(self, chat_id: int, image: bytes, mime_type: str, title: str) -> None:
+        extension = mime_type.rpartition("/")[2] or "jpg"
+        photo = BufferedInputFile(image, filename=f"cover.{extension}")
+        await self._bot.send_photo(chat_id, photo, caption=f"🖼 Обложка готова: {title}")
 
     async def send_error(self, chat_id: int, text: str) -> None:
         for chunk in chunk_text(text):
