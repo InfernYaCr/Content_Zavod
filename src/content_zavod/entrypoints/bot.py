@@ -313,6 +313,10 @@ def _build_router(
                 await callback.answer()
                 await plan_review.handle_action(chat_id, user_id, PlanItemId(id_), action)
                 await _generate_articles_for_approved_plan(plan, article, PlanId(id_))
+            elif action == "delete":
+                await callback.answer()
+                await plan_review.handle_action(chat_id, user_id, PlanItemId(id_), action)
+                await gateway.send_notice(chat_id, "Тема удалена.")
             else:
                 await callback.answer()
                 await plan_review.handle_action(chat_id, user_id, PlanItemId(id_), action)
