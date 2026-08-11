@@ -278,6 +278,15 @@ def build_history_weeks_keyboard(
 _DOWNLOADABLE_ARTICLE_STATUSES = frozenset({"ready", "regenerating", "exported"})
 
 
+def _export_button_row(article_id: str, *, docx_label: str, md_label: str) -> list[InlineKeyboardButton]:
+    """The .docx/.md export button pair, shared by the generation-time keyboard and the
+    /history download row (#28/#30) - only the labels differ between the two call sites."""
+    return [
+        InlineKeyboardButton(text=docx_label, callback_data=encode_export_callback(article_id, "docx")),
+        InlineKeyboardButton(text=md_label, callback_data=encode_export_callback(article_id, "md")),
+    ]
+
+
 def render_history_articles_text(plan_summary: PlanSummary, articles: Sequence[ArticleSummary]) -> str:
     lines = [f"📄 Статьи: {format_week_range(plan_summary.week_label)} ({plan_summary.status})", ""]
     if not articles:
@@ -299,16 +308,7 @@ def build_history_articles_keyboard(
         if item.status not in _DOWNLOADABLE_ARTICLE_STATUSES:
             continue
         rows.append(
-            [
-                InlineKeyboardButton(
-                    text=f"⬇️ {index}. .docx",
-                    callback_data=encode_export_callback(item.id, "docx"),
-                ),
-                InlineKeyboardButton(
-                    text=f"⬇️ {index}. .md",
-                    callback_data=encode_export_callback(item.id, "md"),
-                ),
-            ]
+            _export_button_row(item.id, docx_label=f"⬇️ {index}. .docx", md_label=f"⬇️ {index}. .md")
         )
     rows.append([InlineKeyboardButton(text="◀ Назад", callback_data=encode_history_page_callback(back_page))])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -401,16 +401,7 @@ def build_members_keyboard(members: list[tuple[int, str]]) -> InlineKeyboardMark
 def build_article_keyboard(article_id: str, plan_item_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📄 .docx",
-                    callback_data=encode_export_callback(article_id, "docx"),
-                ),
-                InlineKeyboardButton(
-                    text="📝 .md",
-                    callback_data=encode_export_callback(article_id, "md"),
-                ),
-            ],
+            _export_button_row(article_id, docx_label="📄 .docx", md_label="📝 .md"),
             [
                 InlineKeyboardButton(
                     text="🔄 Перегенерировать",
