@@ -14,6 +14,8 @@ from aiogram.types import (
 from .types import (
     ArticleFormat,
     ArticleSummary,
+    ArticleVersionSummary,
+    ArticleVersionView,
     ArticleView,
     PlanSummary,
     PlanView,
@@ -43,6 +45,8 @@ Action = Literal[
     "remove_member",
     "history_page",
     "history_week",
+    "history_versions",
+    "history_version",
 ]
 
 # Codes are 1-2 chars to leave room for id payloads within CALLBACK_DATA_LIMIT.
@@ -67,6 +71,8 @@ _ACTION_CODES: dict[Action, str] = {
     "remove_member": "rm",
     "history_page": "hp",
     "history_week": "hw",
+    "history_versions": "hv",
+    "history_version": "hd",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
 
@@ -107,6 +113,28 @@ def encode_history_week_callback(plan_id: str, page: int) -> str:
 def decode_history_week_id(id_: str) -> tuple[str, int]:
     plan_id, _, page = id_.rpartition(":")
     return plan_id, int(page)
+
+
+def encode_history_versions_callback(article_id: str, back_page: int) -> str:
+    """`back_page` is the week-list page to return to once the whole (versions -> article
+    list -> week list) back chain unwinds - the article list itself is re-derived from the
+    Статья's plan_id, so it doesn't need to travel in this id."""
+    return encode_callback_data("history_versions", f"{article_id}:{back_page}")
+
+
+def decode_history_versions_id(id_: str) -> tuple[str, int]:
+    article_id, _, back_page = id_.rpartition(":")
+    return article_id, int(back_page)
+
+
+def encode_history_version_callback(article_id: str, version_id: int, back_page: int) -> str:
+    return encode_callback_data("history_version", f"{article_id}:{version_id}:{back_page}")
+
+
+def decode_history_version_id(id_: str) -> tuple[str, int, int]:
+    rest, _, back_page = id_.rpartition(":")
+    article_id, _, version_id = rest.rpartition(":")
+    return article_id, int(version_id), int(back_page)
 
 
 def encode_export_callback(article_id: str, article_format: ArticleFormat) -> str:
@@ -277,6 +305,12 @@ def build_history_weeks_keyboard(
 # "regenerating" still serves its prior ready Версия, so it stays downloadable too (#30).
 _DOWNLOADABLE_ARTICLE_STATUSES = frozenset({"ready", "regenerating", "exported"})
 
+# A Статья has version history to browse as soon as it's recorded a first Версия - unlike
+# export, that includes "error" (a later regeneration can fail after an earlier one
+# succeeded, but the prior Версии are still there to look at). Only "queued"/"generating"
+# are structurally guaranteed to have zero rows in article_versions (#26).
+_VERSION_BROWSABLE_ARTICLE_STATUSES = frozenset({"ready", "regenerating", "exported", "error"})
+
 
 def _export_button_row(article_id: str, *, docx_label: str, md_label: str) -> list[InlineKeyboardButton]:
     """The .docx/.md export button pair, shared by the generation-time keyboard and the
@@ -300,18 +334,90 @@ def render_history_articles_text(plan_summary: PlanSummary, articles: Sequence[A
 def build_history_articles_keyboard(
     articles: Sequence[ArticleSummary], *, back_page: int
 ) -> InlineKeyboardMarkup:
-    """One "скачать" row (.docx / .md) per Статья with a downloadable last Версия, numbered to
-    match `render_history_articles_text` (#30) - articles still `queued`/`generating`/`error`
-    have no Версия yet, so they get no row. Always ends with the "Назад" row."""
+    """One row per Статья that has recorded at least one Версия, numbered to match
+    `render_history_articles_text` (#30). The row always carries a "Версии" button into the
+    version history (#26); a downloadable last Версия additionally gets the .docx / .md export
+    pair (#28). Articles still `queued`/`generating` have no Версия yet, so they get no row at
+    all. Always ends with the "Назад" row."""
     rows: list[list[InlineKeyboardButton]] = []
     for index, item in enumerate(articles, start=1):
-        if item.status not in _DOWNLOADABLE_ARTICLE_STATUSES:
+        if item.status not in _VERSION_BROWSABLE_ARTICLE_STATUSES:
             continue
-        rows.append(
-            _export_button_row(item.id, docx_label=f"⬇️ {index}. .docx", md_label=f"⬇️ {index}. .md")
+        row: list[InlineKeyboardButton] = []
+        if item.status in _DOWNLOADABLE_ARTICLE_STATUSES:
+            row.extend(_export_button_row(item.id, docx_label=f"⬇️ {index}. .docx", md_label=f"⬇️ {index}. .md"))
+        row.append(
+            InlineKeyboardButton(
+                text=f"🕓 {index}. Версии",
+                callback_data=encode_history_versions_callback(item.id, back_page),
+            )
         )
+        rows.append(row)
     rows.append([InlineKeyboardButton(text="◀ Назад", callback_data=encode_history_page_callback(back_page))])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def render_history_versions_text(article: ArticleSummary, versions: Sequence[ArticleVersionSummary]) -> str:
+    lines = [f"🕓 Версии: {article.title} ({article.platform})", ""]
+    if not versions:
+        lines.append("Версий пока нет.")
+        return "\n".join(lines)
+    for index, version in enumerate(versions, start=1):
+        lines.append(
+            f"{index}. {version.created_at:%d.%m.%Y %H:%M} — {version.model}, "
+            f"{version.tokens} ток., {version.cost:.4f}"
+        )
+    return "\n".join(lines)
+
+
+def build_history_versions_keyboard(
+    article_id: str, plan_id: str, versions: Sequence[ArticleVersionSummary], *, back_page: int
+) -> InlineKeyboardMarkup:
+    """One button per Версия, numbered to match `render_history_versions_text`, opening that
+    Версия's content (#26). "Назад" returns to this Статья's row in the article list, which is
+    re-derived from `plan_id` rather than carried through the versions id (see
+    `encode_history_versions_callback`)."""
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text=f"{index}. {version.created_at:%d.%m %H:%M}",
+                callback_data=encode_history_version_callback(article_id, version.id, back_page),
+            )
+        ]
+        for index, version in enumerate(versions, start=1)
+    ]
+    rows.append(
+        [InlineKeyboardButton(text="◀ Назад", callback_data=encode_history_week_callback(plan_id, back_page))]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+_TRUNCATION_NOTICE = "\n\n[…обрезано, версия длиннее лимита сообщения Telegram - только последняя версия доступна целиком через экспорт]"
+
+
+def render_history_version_text(article: ArticleSummary, version: ArticleVersionView) -> str:
+    header = (
+        f"🕓 {article.title} ({article.platform})\n"
+        f"{version.created_at:%d.%m.%Y %H:%M} — {version.model}, {version.tokens} ток., {version.cost:.4f}\n\n"
+    )
+    remaining = MESSAGE_LIMIT - len(header)
+    content = version.content
+    if len(content) > remaining:
+        content = content[: remaining - len(_TRUNCATION_NOTICE)].rstrip() + _TRUNCATION_NOTICE
+    return header + content
+
+
+def build_history_version_keyboard(article_id: str, *, back_page: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="◀ Назад",
+                    callback_data=encode_history_versions_callback(article_id, back_page),
+                )
+            ]
+        ]
+    )
 
 
 def build_skip_keyboard(id_: str, action: Action = "regenerate") -> InlineKeyboardMarkup:
@@ -532,6 +638,39 @@ class TelegramGateway:
             message_id,
             render_history_articles_text(plan_summary, articles),
             reply_markup=build_history_articles_keyboard(articles, back_page=back_page),
+        )
+
+    async def edit_history_versions(
+        self,
+        chat_id: int,
+        message_id: int,
+        article: ArticleSummary,
+        plan_id: str,
+        versions: Sequence[ArticleVersionSummary],
+        *,
+        back_page: int,
+    ) -> None:
+        await self._bot.edit_message_text(
+            chat_id,
+            message_id,
+            render_history_versions_text(article, versions),
+            reply_markup=build_history_versions_keyboard(article.id, plan_id, versions, back_page=back_page),
+        )
+
+    async def edit_history_version(
+        self,
+        chat_id: int,
+        message_id: int,
+        article: ArticleSummary,
+        version: ArticleVersionView,
+        *,
+        back_page: int,
+    ) -> None:
+        await self._bot.edit_message_text(
+            chat_id,
+            message_id,
+            render_history_version_text(article, version),
+            reply_markup=build_history_version_keyboard(article.id, back_page=back_page),
         )
 
     async def edit_notice(self, chat_id: int, message_id: int, text: str) -> None:

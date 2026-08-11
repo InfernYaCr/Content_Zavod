@@ -17,8 +17,18 @@ from uuid import uuid4
 import asyncpg
 
 from ..job_queue import JobQueue
-from .errors import ArticleNotFound, ArticleNotReady, ArticleNotRegenerable
-from .types import ArticleId, ArticleStatus, ArticleSummary, ArticleView, GeneratedVersion, PlanId, PlanItemId
+from .errors import ArticleNotFound, ArticleNotReady, ArticleNotRegenerable, ArticleVersionNotFound
+from .types import (
+    ArticleId,
+    ArticleStatus,
+    ArticleSummary,
+    ArticleVersionSummary,
+    ArticleVersionView,
+    ArticleView,
+    GeneratedVersion,
+    PlanId,
+    PlanItemId,
+)
 
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
@@ -113,6 +123,60 @@ class Article:
             ArticleSummary(id=ArticleId(row["id"]), title=row["title"], platform=row["platform"], status=row["status"])
             for row in rows
         ]
+
+    async def get_summary(self, article_id: ArticleId) -> ArticleSummary:
+        row = await self._pool.fetchrow(
+            "SELECT id, title, platform, status FROM articles WHERE id = $1", article_id
+        )
+        if row is None:
+            raise ArticleNotFound(article_id)
+        return ArticleSummary(id=ArticleId(row["id"]), title=row["title"], platform=row["platform"], status=row["status"])
+
+    async def get_plan_id(self, article_id: ArticleId) -> PlanId:
+        row = await self._pool.fetchrow("SELECT plan_id FROM articles WHERE id = $1", article_id)
+        if row is None:
+            raise ArticleNotFound(article_id)
+        return PlanId(row["plan_id"])
+
+    async def list_versions(self, article_id: ArticleId) -> list[ArticleVersionSummary]:
+        """Every Версия's metadata, newest first, for /history's version list (#26)."""
+        article_row = await self._pool.fetchrow("SELECT id FROM articles WHERE id = $1", article_id)
+        if article_row is None:
+            raise ArticleNotFound(article_id)
+        rows = await self._pool.fetch(
+            "SELECT id, model, tokens, cost, created_at FROM article_versions "
+            "WHERE article_id = $1 ORDER BY created_at DESC, id DESC",
+            article_id,
+        )
+        return [
+            ArticleVersionSummary(
+                id=row["id"],
+                model=row["model"],
+                tokens=row["tokens"],
+                cost=float(row["cost"]),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    async def get_version(self, article_id: ArticleId, version_id: int) -> ArticleVersionView:
+        """One Версия's full content, for /history's version detail screen (#26)."""
+        row = await self._pool.fetchrow(
+            "SELECT id, content, model, tokens, cost, created_at FROM article_versions "
+            "WHERE article_id = $1 AND id = $2",
+            article_id,
+            version_id,
+        )
+        if row is None:
+            raise ArticleVersionNotFound(article_id, version_id)
+        return ArticleVersionView(
+            id=row["id"],
+            content=row["content"],
+            model=row["model"],
+            tokens=row["tokens"],
+            cost=float(row["cost"]),
+            created_at=row["created_at"],
+        )
 
     async def record_version(self, article_id: ArticleId, version: GeneratedVersion) -> None:
         article_row = await self._pool.fetchrow("SELECT id FROM articles WHERE id = $1", article_id)

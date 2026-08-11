@@ -47,3 +47,10 @@ class ArticleNotRegenerable(DomainError):
 
     def __init__(self, article_id: object, status: str) -> None:
         super().__init__(f"Article {article_id!r} cannot be regenerated (status={status!r})")
+
+
+class ArticleVersionNotFound(DomainError):
+    """No article version exists with the given id for the given article."""
+
+    def __init__(self, article_id: object, version_id: object) -> None:
+        super().__init__(f"No version {version_id!r} for article {article_id!r}")

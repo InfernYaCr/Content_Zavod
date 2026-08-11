@@ -6,6 +6,7 @@ from content_zavod.domain import (
     ArticleNotReady,
     ArticleNotRegenerable,
     ArticleSummary,
+    ArticleVersionNotFound,
     GeneratedVersion,
     Plan,
     PlanId,
@@ -168,6 +169,95 @@ async def test_create_is_idempotent_on_plan_item_and_platform(article: Article, 
     second_id = await article.create(plan_id, item_id, "Topic A", "zen")
 
     assert first_id == second_id
+
+
+async def test_get_summary_returns_header_regardless_of_version_state(article: Article, plan: Plan) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.create(plan_id, item_id, "Topic A", "zen")
+
+    summary = await article.get_summary(article_id)
+
+    assert summary == ArticleSummary(id=article_id, title="Topic A", platform="zen", status="queued")
+
+
+async def test_get_summary_raises_for_unknown_article(article: Article) -> None:
+    with pytest.raises(ArticleNotFound):
+        await article.get_summary("missing")
+
+
+async def test_get_plan_id_returns_the_owning_plan(article: Article, plan: Plan) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.create(plan_id, item_id, "Topic A", "zen")
+
+    assert await article.get_plan_id(article_id) == plan_id
+
+
+async def test_get_plan_id_raises_for_unknown_article(article: Article) -> None:
+    with pytest.raises(ArticleNotFound):
+        await article.get_plan_id("missing")
+
+
+async def test_list_versions_is_empty_for_an_article_with_no_version_yet(article: Article, plan: Plan) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.create(plan_id, item_id, "Topic A", "zen")
+
+    assert await article.list_versions(article_id) == []
+
+
+async def test_list_versions_raises_for_unknown_article(article: Article) -> None:
+    with pytest.raises(ArticleNotFound):
+        await article.list_versions("missing")
+
+
+async def test_list_versions_lists_every_version_newest_first_without_content(
+    article: Article, plan: Plan
+) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.create(plan_id, item_id, "Topic A", "zen")
+    await article.record_version(article_id, _VERSION)
+    second = GeneratedVersion(content="Second draft.", prompt="rewrite", model="yandexgpt-2", tokens=10, cost=0.02)
+    await article.record_version(article_id, second)
+
+    versions = await article.list_versions(article_id)
+
+    assert [v.model for v in versions] == ["yandexgpt-2", "yandexgpt"]
+    assert [v.tokens for v in versions] == [10, 42]
+    assert not hasattr(versions[0], "content")
+
+
+async def test_get_version_returns_the_requested_versions_full_content(article: Article, plan: Plan) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.create(plan_id, item_id, "Topic A", "zen")
+    await article.record_version(article_id, _VERSION)
+    versions = await article.list_versions(article_id)
+
+    view = await article.get_version(article_id, versions[0].id)
+
+    assert view.content == "Hello, world."
+    assert view.model == "yandexgpt"
+    assert view.tokens == 42
+
+
+async def test_get_version_raises_for_unknown_version_id(article: Article, plan: Plan) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.create(plan_id, item_id, "Topic A", "zen")
+    await article.record_version(article_id, _VERSION)
+
+    with pytest.raises(ArticleVersionNotFound):
+        await article.get_version(article_id, 999999)
+
+
+async def test_get_version_raises_when_version_belongs_to_a_different_article(
+    article: Article, plan: Plan
+) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.create(plan_id, item_id, "Topic A", "zen")
+    other_id = await article.create(plan_id, item_id, "Topic A", "vc")
+    await article.record_version(article_id, _VERSION)
+    versions = await article.list_versions(article_id)
+
+    with pytest.raises(ArticleVersionNotFound):
+        await article.get_version(other_id, versions[0].id)
 
 
 async def test_request_generation_creates_the_article_and_enqueues_generate_article(

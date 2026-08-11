@@ -1,9 +1,13 @@
+from datetime import datetime, timezone
+
 import pytest
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
 
 from content_zavod.telegram import (
     ArticleId,
     ArticleSummary,
+    ArticleVersionSummary,
+    ArticleVersionView,
     ArticleView,
     PlanId,
     PlanItemId,
@@ -14,10 +18,14 @@ from content_zavod.telegram import (
     TelegramGateway,
     decode_callback_data,
     decode_export_id,
+    decode_history_version_id,
+    decode_history_versions_id,
     decode_history_week_id,
     decode_page_id,
     encode_callback_data,
     encode_history_page_callback,
+    encode_history_version_callback,
+    encode_history_versions_callback,
     encode_history_week_callback,
     encode_page_callback,
 )
@@ -26,11 +34,15 @@ from content_zavod.telegram.gateway import (
     ITEMS_PER_PAGE,
     MESSAGE_LIMIT,
     build_history_articles_keyboard,
+    build_history_version_keyboard,
+    build_history_versions_keyboard,
     build_history_weeks_keyboard,
     build_plan_keyboard,
     chunk_text,
     format_week_range,
     render_history_articles_text,
+    render_history_version_text,
+    render_history_versions_text,
     render_history_weeks_text,
     render_plan_text,
 )
@@ -398,17 +410,29 @@ def test_build_history_articles_keyboard_back_button_returns_to_the_given_page()
     assert decode_callback_data(back_button.callback_data) == ("history_page", "3")
 
 
-def test_build_history_articles_keyboard_adds_no_download_row_for_not_yet_generated_articles() -> None:
+def test_build_history_articles_keyboard_adds_no_row_for_articles_with_no_version_yet() -> None:
     articles = [
         ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="queued"),
         ArticleSummary(id=ArticleId("a-2"), title="Topic A", platform="vc", status="generating"),
-        ArticleSummary(id=ArticleId("a-3"), title="Topic A", platform="zen", status="error"),
     ]
 
     keyboard = build_history_articles_keyboard(articles, back_page=0)
 
-    # No download rows - just the trailing "Назад" row.
+    # No rows for a Статья with no recorded Версия yet - just the trailing "Назад" row.
     assert len(keyboard.inline_keyboard) == 1
+
+
+def test_build_history_articles_keyboard_error_status_gets_a_versions_only_row() -> None:
+    """`error` isn't downloadable (no *last* ready Версия), but a prior successful Версия
+    could still exist from before a later regeneration failed - so it still gets a "Версии"
+    row, just without the export buttons (#26)."""
+    articles = [ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="error")]
+
+    keyboard = build_history_articles_keyboard(articles, back_page=0)
+
+    assert len(keyboard.inline_keyboard) == 2
+    (versions_button,) = keyboard.inline_keyboard[0]
+    assert decode_callback_data(versions_button.callback_data) == ("history_versions", "a-1:0")
 
 
 def test_build_history_articles_keyboard_adds_a_download_row_per_article_with_content() -> None:
@@ -422,12 +446,13 @@ def test_build_history_articles_keyboard_adds_a_download_row_per_article_with_co
 
     # 3 download rows + trailing "Назад" row.
     assert len(keyboard.inline_keyboard) == 4
-    docx_button, md_button = keyboard.inline_keyboard[0]
+    docx_button, md_button, versions_button = keyboard.inline_keyboard[0]
     assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == ("a-1", "docx")
     assert decode_export_id(decode_callback_data(md_button.callback_data)[1]) == ("a-1", "md")
-    docx_button, md_button = keyboard.inline_keyboard[1]
+    assert decode_callback_data(versions_button.callback_data) == ("history_versions", "a-1:1")
+    docx_button, md_button, versions_button = keyboard.inline_keyboard[1]
     assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == ("a-2", "docx")
-    docx_button, md_button = keyboard.inline_keyboard[2]
+    docx_button, md_button, versions_button = keyboard.inline_keyboard[2]
     assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == ("a-3", "docx")
     (back_button,) = keyboard.inline_keyboard[3]
     assert decode_callback_data(back_button.callback_data) == ("history_page", "1")
@@ -507,9 +532,10 @@ async def test_edit_history_articles_adds_a_download_row_for_a_ready_article() -
     await gateway.edit_history_articles(chat_id=1, message_id=9, plan_summary=plan_summary, articles=articles, back_page=2)
 
     _, _, _, keyboard = bot.edited_messages[0]
-    docx_button, md_button = keyboard.inline_keyboard[0]
+    docx_button, md_button, versions_button = keyboard.inline_keyboard[0]
     assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == ("a-1", "docx")
     assert decode_export_id(decode_callback_data(md_button.callback_data)[1]) == ("a-1", "md")
+    assert decode_callback_data(versions_button.callback_data) == ("history_versions", "a-1:2")
     (back_button,) = keyboard.inline_keyboard[1]
     assert decode_callback_data(back_button.callback_data) == ("history_page", "2")
 
@@ -565,3 +591,137 @@ async def test_comment_prompt_with_article_action_encodes_regenerate_article_on_
 
     (skip_button,) = bot.sent_messages[0][2].inline_keyboard[0]
     assert decode_callback_data(skip_button.callback_data) == ("regenerate_article", "article-1")
+
+
+def make_article_summary() -> ArticleSummary:
+    return ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="ready")
+
+
+def make_version_summary(id_: int = 2, model: str = "yandexgpt") -> ArticleVersionSummary:
+    return ArticleVersionSummary(
+        id=id_, model=model, tokens=42, cost=0.0123, created_at=datetime(2026, 8, 11, 14, 3, tzinfo=timezone.utc)
+    )
+
+
+def make_version_view(content: str = "Hello, world.") -> ArticleVersionView:
+    return ArticleVersionView(
+        id=2, content=content, model="yandexgpt", tokens=42, cost=0.0123,
+        created_at=datetime(2026, 8, 11, 14, 3, tzinfo=timezone.utc),
+    )
+
+
+def test_encode_decode_history_versions_callback_roundtrips() -> None:
+    data = encode_history_versions_callback("article-1", 2)
+
+    assert decode_history_versions_id(decode_callback_data(data)[1]) == ("article-1", 2)
+
+
+def test_history_versions_callback_data_stays_under_limit_for_max_length_article_id() -> None:
+    uuid_hex_article_id = "a" * 32
+    data = encode_history_versions_callback(uuid_hex_article_id, 999)
+
+    assert len(data.encode("utf-8")) <= CALLBACK_DATA_LIMIT
+
+
+def test_encode_decode_history_version_callback_roundtrips() -> None:
+    data = encode_history_version_callback("article-1", 7, 2)
+
+    assert decode_history_version_id(decode_callback_data(data)[1]) == ("article-1", 7, 2)
+
+
+def test_history_version_callback_data_stays_under_limit_for_max_length_article_id() -> None:
+    uuid_hex_article_id = "a" * 32
+    data = encode_history_version_callback(uuid_hex_article_id, 999999, 999)
+
+    assert len(data.encode("utf-8")) <= CALLBACK_DATA_LIMIT
+
+
+def test_render_history_versions_text_lists_every_version_newest_first() -> None:
+    text = render_history_versions_text(
+        make_article_summary(), [make_version_summary(id_=2, model="yandexgpt-2"), make_version_summary(id_=1)]
+    )
+
+    assert "Topic A (zen)" in text
+    assert "1. 11.08.2026 14:03 — yandexgpt-2, 42 ток." in text
+    assert "2. 11.08.2026 14:03 — yandexgpt, 42 ток." in text
+
+
+def test_render_history_versions_text_empty() -> None:
+    text = render_history_versions_text(make_article_summary(), [])
+
+    assert "Версий пока нет." in text
+
+
+def test_build_history_versions_keyboard_one_button_per_version_and_a_back_button() -> None:
+    versions = [make_version_summary(id_=2), make_version_summary(id_=1)]
+
+    keyboard = build_history_versions_keyboard("article-1", "plan-1", versions, back_page=3)
+
+    assert len(keyboard.inline_keyboard) == 3
+    action, id_ = decode_callback_data(keyboard.inline_keyboard[0][0].callback_data)
+    assert action == "history_version"
+    assert decode_history_version_id(id_) == ("article-1", 2, 3)
+    action, id_ = decode_callback_data(keyboard.inline_keyboard[1][0].callback_data)
+    assert decode_history_version_id(id_) == ("article-1", 1, 3)
+    (back_button,) = keyboard.inline_keyboard[2]
+    assert decode_callback_data(back_button.callback_data) == ("history_week", "plan-1:3")
+
+
+def test_render_history_version_text_shows_header_and_content() -> None:
+    text = render_history_version_text(make_article_summary(), make_version_view())
+
+    assert "Topic A (zen)" in text
+    assert "11.08.2026 14:03 — yandexgpt, 42 ток." in text
+    assert text.endswith("Hello, world.")
+
+
+def test_render_history_version_text_truncates_content_over_the_message_limit() -> None:
+    version = make_version_view(content="x" * (MESSAGE_LIMIT * 2))
+
+    text = render_history_version_text(make_article_summary(), version)
+
+    assert len(text) <= MESSAGE_LIMIT
+    assert "обрезано" in text
+
+
+def test_build_history_version_keyboard_back_button_returns_to_the_versions_list() -> None:
+    keyboard = build_history_version_keyboard("article-1", back_page=3)
+
+    (back_button,) = keyboard.inline_keyboard[0]
+    assert decode_callback_data(back_button.callback_data) == ("history_versions", "article-1:3")
+
+
+@pytest.mark.asyncio
+async def test_edit_history_versions_edits_the_message_with_version_buttons() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+    versions = [make_version_summary()]
+
+    await gateway.edit_history_versions(
+        chat_id=1, message_id=9, article=make_article_summary(), plan_id="plan-1", versions=versions, back_page=2
+    )
+
+    chat_id, message_id, text, keyboard = bot.edited_messages[0]
+    assert (chat_id, message_id) == (1, 9)
+    assert "Topic A (zen)" in text
+    action, id_ = decode_callback_data(keyboard.inline_keyboard[0][0].callback_data)
+    assert action == "history_version"
+    assert decode_history_version_id(id_) == ("a-1", 2, 2)
+    (back_button,) = keyboard.inline_keyboard[1]
+    assert decode_callback_data(back_button.callback_data) == ("history_week", "plan-1:2")
+
+
+@pytest.mark.asyncio
+async def test_edit_history_version_edits_the_message_with_the_versions_content() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    await gateway.edit_history_version(
+        chat_id=1, message_id=9, article=make_article_summary(), version=make_version_view(), back_page=2
+    )
+
+    chat_id, message_id, text, keyboard = bot.edited_messages[0]
+    assert (chat_id, message_id) == (1, 9)
+    assert text.endswith("Hello, world.")
+    (back_button,) = keyboard.inline_keyboard[0]
+    assert decode_callback_data(back_button.callback_data) == ("history_versions", "a-1:2")

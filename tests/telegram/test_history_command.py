@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
-from content_zavod.domain import ArticleId, ArticleSummary, PlanId, PlanSummary
+from content_zavod.domain import (
+    ArticleId,
+    ArticleSummary,
+    ArticleVersionSummary,
+    ArticleVersionView,
+    PlanId,
+    PlanSummary,
+)
 from content_zavod.telegram.gateway import ITEMS_PER_PAGE, TelegramGateway, decode_callback_data
 from content_zavod.telegram.history_command import (
     handle_history_command,
     handle_history_page,
+    handle_history_version,
+    handle_history_versions,
     handle_history_week,
 )
 
@@ -40,11 +51,46 @@ class FakePlans:
 
 
 class FakeArticles:
-    def __init__(self, by_plan: dict[str, list[ArticleSummary]]) -> None:
+    def __init__(
+        self,
+        by_plan: dict[str, list[ArticleSummary]],
+        *,
+        plan_id_by_article: dict[str, str] | None = None,
+        versions_by_article: dict[str, list[ArticleVersionSummary]] | None = None,
+        version_content: dict[tuple[str, int], str] | None = None,
+    ) -> None:
         self._by_plan = by_plan
+        self._plan_id_by_article = plan_id_by_article or {}
+        self._versions_by_article = versions_by_article or {}
+        self._version_content = version_content or {}
 
     async def list_summary_for_plan(self, plan_id: PlanId) -> list[ArticleSummary]:
         return self._by_plan.get(plan_id, [])
+
+    async def get_summary(self, article_id: ArticleId) -> ArticleSummary:
+        for articles in self._by_plan.values():
+            for item in articles:
+                if item.id == article_id:
+                    return item
+        raise AssertionError(f"no such article {article_id!r}")
+
+    async def get_plan_id(self, article_id: ArticleId) -> PlanId:
+        return PlanId(self._plan_id_by_article[article_id])
+
+    async def list_versions(self, article_id: ArticleId) -> list[ArticleVersionSummary]:
+        return self._versions_by_article.get(article_id, [])
+
+    async def get_version(self, article_id: ArticleId, version_id: int) -> ArticleVersionView:
+        content = self._version_content[(article_id, version_id)]
+        (summary,) = [v for v in self._versions_by_article[article_id] if v.id == version_id]
+        return ArticleVersionView(
+            id=summary.id,
+            content=content,
+            model=summary.model,
+            tokens=summary.tokens,
+            cost=summary.cost,
+            created_at=summary.created_at,
+        )
 
 
 def _plan(n: int, status: str = "pending_review") -> PlanSummary:
@@ -113,7 +159,7 @@ async def test_history_week_edits_the_message_with_that_weeks_articles() -> None
         {
             "plan-1": [
                 ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="queued"),
-                ArticleSummary(id=ArticleId("a-2"), title="Topic A", platform="vc", status="error"),
+                ArticleSummary(id=ArticleId("a-2"), title="Topic A", platform="vc", status="generating"),
             ]
         }
     )
@@ -124,7 +170,7 @@ async def test_history_week_edits_the_message_with_that_weeks_articles() -> None
     chat_id, message_id, text, keyboard = gateway._bot.edited_messages[0]
     assert (chat_id, message_id) == (1, 5)
     assert "Topic A (zen) — queued" in text
-    assert "Topic A (vc) — error" in text
+    assert "Topic A (vc) — generating" in text
     # A single "Назад" button, returning to the week list's page 0.
     assert len(keyboard.inline_keyboard) == 1
     back_button = keyboard.inline_keyboard[0][0]
@@ -142,3 +188,60 @@ async def test_history_week_with_no_articles_yet() -> None:
 
     _, _, text, _ = gateway._bot.edited_messages[0]
     assert "Статей пока нет" in text
+
+
+def _version(id_: int, model: str = "yandexgpt") -> ArticleVersionSummary:
+    return ArticleVersionSummary(
+        id=id_, model=model, tokens=42, cost=0.01, created_at=datetime(2026, 8, 11, 14, 3, tzinfo=timezone.utc)
+    )
+
+
+@pytest.mark.asyncio
+async def test_history_versions_edits_the_message_with_that_articles_versions() -> None:
+    article_summary = ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="ready")
+    articles = FakeArticles(
+        {"plan-1": [article_summary]},
+        plan_id_by_article={"a-1": "plan-1"},
+        versions_by_article={"a-1": [_version(2, "yandexgpt-2"), _version(1)]},
+    )
+    gateway = TelegramGateway(FakeBot())
+
+    await handle_history_versions(articles, gateway, chat_id=1, message_id=5, id_="a-1:0")
+
+    chat_id, message_id, text, keyboard = gateway._bot.edited_messages[0]
+    assert (chat_id, message_id) == (1, 5)
+    assert "Topic A (zen)" in text
+    action, id_ = decode_callback_data(keyboard.inline_keyboard[-1][0].callback_data)
+    assert (action, id_) == ("history_week", "plan-1:0")
+
+
+@pytest.mark.asyncio
+async def test_history_versions_with_no_versions_yet() -> None:
+    article_summary = ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="queued")
+    articles = FakeArticles({"plan-1": [article_summary]}, plan_id_by_article={"a-1": "plan-1"})
+    gateway = TelegramGateway(FakeBot())
+
+    await handle_history_versions(articles, gateway, chat_id=1, message_id=5, id_="a-1:0")
+
+    _, _, text, _ = gateway._bot.edited_messages[0]
+    assert "Версий пока нет" in text
+
+
+@pytest.mark.asyncio
+async def test_history_version_edits_the_message_with_that_versions_content() -> None:
+    article_summary = ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="ready")
+    articles = FakeArticles(
+        {"plan-1": [article_summary]},
+        plan_id_by_article={"a-1": "plan-1"},
+        versions_by_article={"a-1": [_version(2)]},
+        version_content={("a-1", 2): "Hello, world."},
+    )
+    gateway = TelegramGateway(FakeBot())
+
+    await handle_history_version(articles, gateway, chat_id=1, message_id=5, id_="a-1:2:0")
+
+    chat_id, message_id, text, keyboard = gateway._bot.edited_messages[0]
+    assert (chat_id, message_id) == (1, 5)
+    assert text.endswith("Hello, world.")
+    (back_button,) = keyboard.inline_keyboard[0]
+    assert decode_callback_data(back_button.callback_data) == ("history_versions", "a-1:0")

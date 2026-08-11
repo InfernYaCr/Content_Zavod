@@ -62,6 +62,8 @@ from ..telegram import (
     handle_generate_plan_command,
     handle_history_command,
     handle_history_page,
+    handle_history_version,
+    handle_history_versions,
     handle_history_week,
     handle_members_command,
     handle_schedule_command,
@@ -311,6 +313,12 @@ def _build_router(
             elif action == "history_week":
                 await callback.answer()
                 await handle_history_week(plan, article, gateway, chat_id, message_id, id_)
+            elif action == "history_versions":
+                await callback.answer()
+                await handle_history_versions(article, gateway, chat_id, message_id, id_)
+            elif action == "history_version":
+                await callback.answer()
+                await handle_history_version(article, gateway, chat_id, message_id, id_)
             elif action == "confirm_regenerate_plan":
                 await callback.answer()
                 await handle_confirm_regenerate_plan(plan, gateway, chat_id, message_id, PlanId(id_))
