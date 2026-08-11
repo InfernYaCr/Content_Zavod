@@ -32,3 +32,70 @@ def test_build_export_document_docx_contains_the_content_as_paragraphs() -> None
     paragraphs = [p.text for p in document.paragraphs]
 
     assert paragraphs == ["Первый абзац.", "", "Второй абзац."]
+
+
+def test_build_export_document_docx_renders_markdown_headings_as_word_headings() -> None:
+    article = ArticleView(
+        id=_ARTICLE.id,
+        plan_item_id=_ARTICLE.plan_item_id,
+        title=_ARTICLE.title,
+        platform=_ARTICLE.platform,
+        content="# Заголовок\n\nАбзац.".encode("utf-8"),
+    )
+
+    document = Document(BytesIO(build_export_document(article, "docx")))
+
+    heading = document.paragraphs[0]
+    assert heading.text == "Заголовок"
+    assert heading.style.name == "Heading 1"
+
+
+def test_build_export_document_docx_renders_bold_inside_a_heading() -> None:
+    article = ArticleView(
+        id=_ARTICLE.id,
+        plan_item_id=_ARTICLE.plan_item_id,
+        title=_ARTICLE.title,
+        platform=_ARTICLE.platform,
+        content="## Что **важно** знать".encode("utf-8"),
+    )
+
+    document = Document(BytesIO(build_export_document(article, "docx")))
+    heading = document.paragraphs[0]
+
+    assert heading.text == "Что важно знать"
+    assert heading.style.name == "Heading 2"
+    bold_runs = [r for r in heading.runs if r.bold]
+    assert [r.text for r in bold_runs] == ["важно"]
+
+
+def test_build_export_document_docx_renders_markdown_bullets_as_list_items() -> None:
+    article = ArticleView(
+        id=_ARTICLE.id,
+        plan_item_id=_ARTICLE.plan_item_id,
+        title=_ARTICLE.title,
+        platform=_ARTICLE.platform,
+        content="- Первый пункт\n- Второй пункт".encode("utf-8"),
+    )
+
+    document = Document(BytesIO(build_export_document(article, "docx")))
+    paragraphs = document.paragraphs
+
+    assert [p.text for p in paragraphs] == ["Первый пункт", "Второй пункт"]
+    assert all(p.style.name == "List Bullet" for p in paragraphs)
+
+
+def test_build_export_document_docx_renders_markdown_bold_as_a_bold_run() -> None:
+    article = ArticleView(
+        id=_ARTICLE.id,
+        plan_item_id=_ARTICLE.plan_item_id,
+        title=_ARTICLE.title,
+        platform=_ARTICLE.platform,
+        content="Обычный текст с **важным** словом.".encode("utf-8"),
+    )
+
+    document = Document(BytesIO(build_export_document(article, "docx")))
+    runs = document.paragraphs[0].runs
+
+    bold_runs = [r for r in runs if r.bold]
+    assert [r.text for r in bold_runs] == ["важным"]
+    assert document.paragraphs[0].text == "Обычный текст с важным словом."

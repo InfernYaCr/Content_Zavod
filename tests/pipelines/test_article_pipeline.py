@@ -120,6 +120,28 @@ async def test_generate_article_uses_a_stricter_sources_prompt_for_money_or_lega
 
 
 @pytest.mark.asyncio
+async def test_generate_article_asks_the_model_for_markdown_formatting_in_outline_draft_and_rewrite() -> None:
+    text_generator = ScriptedTextGenerator(
+        [_completion("outline"), _completion("draft"), _completion("rewrite"), _completion("")]
+    )
+    url_checker = FakeUrlReachabilityChecker(set())
+    handler = make_generate_article_handler(text_generator, url_checker)
+
+    await handler(
+        {"article_id": "a", "title": "T", "summary": "", "keywords": [], "platform": "vc"}
+    )
+
+    outline_system_prompt = text_generator.calls[0][0].text
+    draft_system_prompt = text_generator.calls[1][0].text
+    rewrite_system_prompt = text_generator.calls[2][0].text
+    sources_system_prompt = text_generator.calls[3][0].text
+    assert "markdown" in outline_system_prompt.lower()
+    assert "markdown" in draft_system_prompt.lower()
+    assert "markdown" in rewrite_system_prompt.lower()
+    assert "markdown" in sources_system_prompt.lower()
+
+
+@pytest.mark.asyncio
 async def test_regenerate_article_sources_facts_from_the_current_version_not_a_fresh_payload() -> None:
     view = ArticleView(
         id="article-1",

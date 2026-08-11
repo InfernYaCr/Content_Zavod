@@ -138,7 +138,10 @@ def _outline_messages(
     previous_content: str | None,
     comment: str | None,
 ) -> list[Message]:
-    system = f"Ты - маркетолог-практик, пишущий Статью для площадки «{platform}». Составь аутлайн."
+    system = (
+        f"Ты - маркетолог-практик, пишущий Статью для площадки «{platform}». Составь аутлайн "
+        "в Markdown: разделы — заголовками (##), подпункты каждого раздела — списком (-)."
+    )
     if previous_content is not None:
         user = (
             f"Перегенерация статьи «{title}» по комментарию: {comment or '(без комментария)'}.\n\n"
@@ -153,23 +156,35 @@ def _outline_messages(
 
 
 def _draft_messages(title: str, platform: str, outline: str) -> list[Message]:
-    system = f"Ты - маркетолог-практик. Напиши черновик статьи «{title}» для «{platform}» по аутлайну."
+    system = (
+        f"Ты - маркетолог-практик. Напиши черновик статьи «{title}» для «{platform}» по аутлайну. "
+        "Форматируй текст в Markdown: заголовки разделов — ##/###, перечисления — списком (-), "
+        "ключевые термины и акценты — **жирным**."
+    )
     return [Message(role="system", text=system), Message(role="user", text=outline)]
 
 
 def _rewrite_messages(platform: str, draft: str) -> list[Message]:
-    system = f"Отредактируй черновик под тон и формат площадки «{platform}», сохранив факты."
+    system = (
+        f"Отредактируй черновик под тон и формат площадки «{platform}», сохранив факты. "
+        "Сохрани и, где уместно, доработай Markdown-разметку: заголовки (##/###), списки (-), "
+        "**выделения** — не превращай текст в плейн-текст."
+    )
     return [Message(role="system", text=system), Message(role="user", text=draft)]
 
 
 def _sources_messages(rewrite: str, *, sensitive: bool) -> list[Message]:
     if sensitive:
         system = (
-            "Тема касается денег или права. Составь строгий список источников (по одной ссылке "
-            "на строку) для каждого утверждения с цифрой или юридическим фактом в тексте ниже."
+            "Тема касается денег или права. Составь строгий Markdown-список источников (по одной "
+            "ссылке на строку, начиная с «- ») для каждого утверждения с цифрой или юридическим "
+            "фактом в тексте ниже."
         )
     else:
-        system = "Составь список источников (по одной ссылке на строку), подтверждающих факты и цифры в тексте ниже."
+        system = (
+            "Составь Markdown-список источников (по одной ссылке на строку, начиная с «- »), "
+            "подтверждающих факты и цифры в тексте ниже."
+        )
     return [Message(role="system", text=system), Message(role="user", text=rewrite)]
 
 
