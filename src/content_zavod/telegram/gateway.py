@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal, Protocol
+from typing import Literal, Protocol, Sequence
 
 from aiogram.types import (
     BotCommand,
@@ -11,7 +11,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 
-from .types import ArticleView, PlanView
+from .types import ArticleSummary, ArticleView, PlanSummary, PlanView
 
 MESSAGE_LIMIT = 4096
 CALLBACK_DATA_LIMIT = 64
@@ -31,6 +31,8 @@ Action = Literal[
     "approve_join",
     "decline_join",
     "remove_member",
+    "history_page",
+    "history_week",
 ]
 
 # Codes are 1-2 chars to leave room for id payloads within CALLBACK_DATA_LIMIT.
@@ -50,6 +52,8 @@ _ACTION_CODES: dict[Action, str] = {
     "approve_join": "aj",
     "decline_join": "dj",
     "remove_member": "rm",
+    "history_page": "hp",
+    "history_week": "hw",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
 
@@ -77,6 +81,21 @@ def decode_page_id(id_: str) -> tuple[str, int]:
     return plan_id, int(page)
 
 
+def encode_history_page_callback(page: int) -> str:
+    return encode_callback_data("history_page", str(page))
+
+
+def encode_history_week_callback(plan_id: str, page: int) -> str:
+    """`page` is the week-list page the button was shown on, so the article screen's
+    "Назад" button can return to that exact page instead of always page 0."""
+    return encode_callback_data("history_week", f"{plan_id}:{page}")
+
+
+def decode_history_week_id(id_: str) -> tuple[str, int]:
+    plan_id, _, page = id_.rpartition(":")
+    return plan_id, int(page)
+
+
 def chunk_text(text: str, limit: int = MESSAGE_LIMIT) -> list[str]:
     if len(text) <= limit:
         return [text]
@@ -93,7 +112,7 @@ def chunk_text(text: str, limit: int = MESSAGE_LIMIT) -> list[str]:
     return chunks
 
 
-def _total_pages(item_count: int) -> int:
+def total_pages(item_count: int) -> int:
     return max(1, -(-item_count // ITEMS_PER_PAGE))  # ceil division
 
 
@@ -131,11 +150,11 @@ def format_week_range(week_label: str) -> str:
 
 
 def render_plan_text(plan: PlanView, *, page: int = 0) -> str:
-    total_pages = _total_pages(len(plan.items))
+    page_count = total_pages(len(plan.items))
     start = page * ITEMS_PER_PAGE
     lines = [f"📋 План: {format_week_range(plan.week_label)}"]
-    if total_pages > 1:
-        lines.append(f"Страница {page + 1}/{total_pages}")
+    if page_count > 1:
+        lines.append(f"Страница {page + 1}/{page_count}")
     lines.append("")
     # Numbered by absolute position across pages, not reset per page, so an
     # item number always refers to the same item regardless of which page shows it.
@@ -146,7 +165,7 @@ def render_plan_text(plan: PlanView, *, page: int = 0) -> str:
 
 
 def build_plan_keyboard(plan: PlanView, *, page: int = 0) -> InlineKeyboardMarkup:
-    total_pages = _total_pages(len(plan.items))
+    page_count = total_pages(len(plan.items))
     start = page * ITEMS_PER_PAGE
     page_items = plan.items[start : start + ITEMS_PER_PAGE]
     rows: list[list[InlineKeyboardButton]] = []
@@ -163,7 +182,7 @@ def build_plan_keyboard(plan: PlanView, *, page: int = 0) -> InlineKeyboardMarku
                 ),
             ]
         )
-    if total_pages > 1:
+    if page_count > 1:
         nav_row: list[InlineKeyboardButton] = []
         if page > 0:
             nav_row.append(
@@ -171,7 +190,7 @@ def build_plan_keyboard(plan: PlanView, *, page: int = 0) -> InlineKeyboardMarku
                     text="◀ Назад", callback_data=encode_page_callback(plan.id, page - 1)
                 )
             )
-        if page < total_pages - 1:
+        if page < page_count - 1:
             nav_row.append(
                 InlineKeyboardButton(
                     text="Вперёд ▶", callback_data=encode_page_callback(plan.id, page + 1)
@@ -188,6 +207,64 @@ def build_plan_keyboard(plan: PlanView, *, page: int = 0) -> InlineKeyboardMarku
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def render_history_weeks_text(plans_page: Sequence[PlanSummary], *, page: int, page_count: int) -> str:
+    lines = ["🗂 История"]
+    if page_count > 1:
+        lines.append(f"Страница {page + 1}/{page_count}")
+    lines.append("")
+    if not plans_page:
+        lines.append("Планов пока нет.")
+        return "\n".join(lines)
+    for item in plans_page:
+        lines.append(f"{format_week_range(item.week_label)} — {item.status}")
+    return "\n".join(lines)
+
+
+def build_history_weeks_keyboard(
+    plans_page: Sequence[PlanSummary], *, page: int, page_count: int
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text=f"{format_week_range(item.week_label)} — {item.status}",
+                callback_data=encode_history_week_callback(item.id, page),
+            )
+        ]
+        for item in plans_page
+    ]
+    if page_count > 1:
+        nav_row: list[InlineKeyboardButton] = []
+        if page > 0:
+            nav_row.append(
+                InlineKeyboardButton(text="◀ Назад", callback_data=encode_history_page_callback(page - 1))
+            )
+        if page < page_count - 1:
+            nav_row.append(
+                InlineKeyboardButton(text="Вперёд ▶", callback_data=encode_history_page_callback(page + 1))
+            )
+        if nav_row:
+            rows.append(nav_row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def render_history_articles_text(plan_summary: PlanSummary, articles: Sequence[ArticleSummary]) -> str:
+    lines = [f"📄 Статьи: {format_week_range(plan_summary.week_label)} ({plan_summary.status})", ""]
+    if not articles:
+        lines.append("Статей пока нет.")
+        return "\n".join(lines)
+    for item in articles:
+        lines.append(f"{item.title} ({item.platform}) — {item.status}")
+    return "\n".join(lines)
+
+
+def build_history_articles_keyboard(*, back_page: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="◀ Назад", callback_data=encode_history_page_callback(back_page))]
+        ]
+    )
 
 
 def build_skip_keyboard(id_: str, action: Action = "regenerate") -> InlineKeyboardMarkup:
@@ -353,6 +430,47 @@ class TelegramGateway:
             message_id,
             render_plan_text(plan, page=page),
             reply_markup=build_plan_keyboard(plan, page=page),
+        )
+
+    async def send_history_weeks(
+        self, chat_id: int, plans_page: Sequence[PlanSummary], *, page: int, page_count: int
+    ) -> int:
+        return await self._bot.send_message(
+            chat_id,
+            render_history_weeks_text(plans_page, page=page, page_count=page_count),
+            reply_markup=build_history_weeks_keyboard(plans_page, page=page, page_count=page_count),
+        )
+
+    async def edit_history_weeks(
+        self,
+        chat_id: int,
+        message_id: int,
+        plans_page: Sequence[PlanSummary],
+        *,
+        page: int,
+        page_count: int,
+    ) -> None:
+        await self._bot.edit_message_text(
+            chat_id,
+            message_id,
+            render_history_weeks_text(plans_page, page=page, page_count=page_count),
+            reply_markup=build_history_weeks_keyboard(plans_page, page=page, page_count=page_count),
+        )
+
+    async def edit_history_articles(
+        self,
+        chat_id: int,
+        message_id: int,
+        plan_summary: PlanSummary,
+        articles: Sequence[ArticleSummary],
+        *,
+        back_page: int,
+    ) -> None:
+        await self._bot.edit_message_text(
+            chat_id,
+            message_id,
+            render_history_articles_text(plan_summary, articles),
+            reply_markup=build_history_articles_keyboard(back_page=back_page),
         )
 
     async def edit_notice(self, chat_id: int, message_id: int, text: str) -> None:

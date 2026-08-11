@@ -19,7 +19,7 @@ import asyncpg
 
 from ..job_queue import JobQueue
 from .errors import ArticleNotFound, ArticleNotReady, ArticleNotRegenerable
-from .types import ArticleId, ArticleStatus, ArticleView, GeneratedVersion, PlanId, PlanItemId
+from .types import ArticleId, ArticleStatus, ArticleSummary, ArticleView, GeneratedVersion, PlanId, PlanItemId
 
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
@@ -93,6 +93,19 @@ class Article:
                 continue
             views.append(_to_view(article_id, row["title"], row["platform"], content))
         return views
+
+    async def list_summary_for_plan(self, plan_id: PlanId) -> list[ArticleSummary]:
+        """Every Статья for a Plan, whatever its status - unlike `list_for_plan`, doesn't skip
+        ones with no generated content yet. Powers /history's article list (#29), where a
+        `queued`/`generating`/`error` Статья must still show up with a status label."""
+        rows = await self._pool.fetch(
+            "SELECT id, title, platform, status FROM articles WHERE plan_id = $1 ORDER BY created_at",
+            plan_id,
+        )
+        return [
+            ArticleSummary(id=ArticleId(row["id"]), title=row["title"], platform=row["platform"], status=row["status"])
+            for row in rows
+        ]
 
     async def record_version(self, article_id: ArticleId, version: GeneratedVersion) -> None:
         article_row = await self._pool.fetchrow("SELECT id FROM articles WHERE id = $1", article_id)

@@ -9,6 +9,7 @@ from content_zavod.domain import (
     PlanItemNotEditable,
     PlanItemNotFound,
     PlanNotFound,
+    PlanSummary,
     PlanView,
     TopicDraft,
 )
@@ -117,6 +118,51 @@ async def test_approve_all_is_idempotent(plan: Plan) -> None:
 async def test_approve_all_raises_for_unknown_plan(plan: Plan) -> None:
     with pytest.raises(PlanNotFound):
         await plan.approve_all("missing")
+
+
+async def test_get_summary_returns_id_week_label_and_status(plan: Plan) -> None:
+    plan_id, view = await _create_plan(plan)
+
+    summary = await plan.get_summary(plan_id)
+
+    assert summary == PlanSummary(id=plan_id, week_label="Week 1", status="pending_review")
+
+
+async def test_get_summary_raises_for_unknown_plan(plan: Plan) -> None:
+    with pytest.raises(PlanNotFound):
+        await plan.get_summary("missing")
+
+
+async def test_list_page_orders_newest_first(plan: Plan) -> None:
+    older_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
+    newer_id = await plan.add_topics("Week 2", [TopicDraft(title="Topic B")])
+
+    page, total = await plan.list_page(page=0, page_size=10)
+
+    assert total == 2
+    assert [item.id for item in page] == [newer_id, older_id]
+
+
+async def test_list_page_includes_every_status(plan: Plan) -> None:
+    _, view = await _create_plan(plan)
+    await plan.approve_all(view.id)
+
+    page, total = await plan.list_page(page=0, page_size=10)
+
+    assert total == 1
+    assert page[0].status == "approved"
+
+
+async def test_list_page_paginates(plan: Plan) -> None:
+    for i in range(3):
+        await plan.add_topics(f"Week {i}", [TopicDraft(title="Topic")])
+
+    first_page, total = await plan.list_page(page=0, page_size=2)
+    second_page, _ = await plan.list_page(page=1, page_size=2)
+
+    assert total == 3
+    assert len(first_page) == 2
+    assert len(second_page) == 1
 
 
 async def test_approved_items_returns_only_approved_items_with_full_detail(plan: Plan) -> None:

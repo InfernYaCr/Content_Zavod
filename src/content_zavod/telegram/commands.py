@@ -18,6 +18,7 @@ from .gateway import BotClient
 SHARED_COMMANDS: list[BotCommand] = [
     BotCommand(command="topic", description="Предложить Тему"),
     BotCommand(command="generate_plan", description="Сгенерировать План вручную"),
+    BotCommand(command="history", description="История Планов по неделям"),
     BotCommand(command="help", description="Список команд"),
 ]
 

@@ -5,6 +5,7 @@ from content_zavod.domain import (
     ArticleNotFound,
     ArticleNotReady,
     ArticleNotRegenerable,
+    ArticleSummary,
     GeneratedVersion,
     Plan,
     PlanId,
@@ -76,6 +77,33 @@ async def test_list_for_plan_only_returns_articles_with_a_version(article: Artic
     views = await article.list_for_plan(plan_id)
 
     assert [v.platform for v in views] == ["zen"]
+
+
+async def test_list_summary_for_plan_includes_articles_without_a_version_yet(
+    article: Article, plan: Plan
+) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    ready_id = await article.create(plan_id, item_id, "Topic A", "zen")
+    queued_id = await article.create(plan_id, item_id, "Topic A", "vc")  # still queued, no version
+    await article.record_version(ready_id, _VERSION)
+
+    summaries = await article.list_summary_for_plan(plan_id)
+
+    assert {(s.id, s.platform, s.status) for s in summaries} == {
+        (ready_id, "zen", "ready"),
+        (queued_id, "vc", "queued"),
+    }
+
+
+async def test_list_summary_for_plan_reflects_current_status(article: Article, plan: Plan) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.create(plan_id, item_id, "Topic A", "zen")
+    await article.record_version(article_id, _VERSION)
+
+    await article.mark_exported(article_id)
+
+    summaries = await article.list_summary_for_plan(plan_id)
+    assert summaries == [ArticleSummary(id=article_id, title="Topic A", platform="zen", status="exported")]
 
 
 async def test_request_regeneration_moves_ready_article_to_regenerating_and_enqueues_a_job(

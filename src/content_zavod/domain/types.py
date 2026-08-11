@@ -45,6 +45,26 @@ class ArticleView:
 
 
 @dataclass(frozen=True)
+class PlanSummary:
+    """A Plan's header only, for /history's week list - no items join."""
+
+    id: PlanId
+    week_label: str
+    status: str
+
+
+@dataclass(frozen=True)
+class ArticleSummary:
+    """An Article's header only, for /history's article list - no content lookup,
+    so a not-yet-generated Статья (`queued`/`generating`/`error`) still shows up."""
+
+    id: ArticleId
+    title: str
+    platform: str
+    status: str
+
+
+@dataclass(frozen=True)
 class TopicDraft:
     """A Тема ready to be stored, either from automatic Wordstat sourcing or a manual proposal."""
 
