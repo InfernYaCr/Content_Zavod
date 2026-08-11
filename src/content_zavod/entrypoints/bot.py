@@ -76,6 +76,7 @@ from ..telegram import (
     handle_set_voice_command,
     handle_topic_command,
     handle_voice_command,
+    handle_voice_template_callback,
     render_help_text,
     sync_commands,
 )
@@ -382,6 +383,12 @@ def _build_router(
                     return
                 await callback.answer()
                 await membership.remove_member(int(id_))
+            elif action == "voice_template":
+                if role != "owner":
+                    await callback.answer(_OWNER_ONLY_TEXT, show_alert=True)
+                    return
+                await callback.answer()
+                await handle_voice_template_callback(owner_settings, gateway, chat_id, int(id_))
             elif action == "page":
                 await callback.answer()
                 page_plan_id, page = decode_page_id(id_)

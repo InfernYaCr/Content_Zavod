@@ -5,6 +5,12 @@ before touching the store - empty/whitespace-only input gets a plain error
 reply and no side effects. Multi-line text is accepted as-is. `article_pipeline`
 reads the new value straight from `OwnerSettingsStore` on its next call, so no
 live process state needs updating here.
+
+`/voice` also offers a hardcoded list of ready-made persona templates as inline
+buttons (#39). Picking one calls `handle_set_voice_command` with the template's
+full text - the same save path as typing `/set_voice <текст>` by hand - so there
+is no separate dialog/FSM state to keep in sync, matching the bot's existing
+stateless-button pattern (Plan pagination, export format, confirm/skip).
 """
 
 from __future__ import annotations
@@ -12,7 +18,17 @@ from __future__ import annotations
 from typing import Protocol
 
 from ..pipelines.article_pipeline import DEFAULT_VOICE, VOICE_KEY
-from .gateway import TelegramGateway
+from .gateway import TelegramGateway, build_voice_keyboard
+
+# (title, text) pairs shown as buttons under /voice. Lives in the command layer,
+# not article_pipeline, since these are Telegram UI shortcuts for `/set_voice`,
+# not part of the Voice domain itself.
+VOICE_TEMPLATES: list[tuple[str, str]] = [
+    ("Маркетолог-практик", "маркетолог-практик"),
+    ("Технооптимист-фаундер", "технооптимист-фаундер"),
+    ("Дотошный аналитик", "дотошный аналитик"),
+    ("Ироничный эксперт", "ироничный эксперт"),
+]
 
 
 class OwnerSettingsOperations(Protocol):
@@ -23,7 +39,18 @@ class OwnerSettingsOperations(Protocol):
 
 async def handle_voice_command(settings_store: OwnerSettingsOperations, gateway: TelegramGateway, chat_id: int) -> None:
     value = await settings_store.get(VOICE_KEY)
-    await gateway.send_notice(chat_id, f"Текущий Голос: {value or DEFAULT_VOICE}")
+    await gateway.send_notice(
+        chat_id,
+        f"Текущий Голос: {value or DEFAULT_VOICE}",
+        reply_markup=build_voice_keyboard(VOICE_TEMPLATES),
+    )
+
+
+async def handle_voice_template_callback(
+    settings_store: OwnerSettingsOperations, gateway: TelegramGateway, chat_id: int, template_index: int
+) -> None:
+    _title, text = VOICE_TEMPLATES[template_index]
+    await handle_set_voice_command(settings_store, gateway, chat_id, text)
 
 
 async def handle_set_voice_command(
