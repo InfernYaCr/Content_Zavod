@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 from uuid import uuid4
 
 import asyncpg
@@ -42,19 +42,32 @@ class Article:
         await self._pool.execute(_SCHEMA_SQL)
 
     async def create(self, plan_id: PlanId, plan_item_id: PlanItemId, title: str, platform: str) -> ArticleId:
-        article_id = self._new_id()
-        await self._pool.execute(
+        """Idempotent on (plan_item_id, platform): a second call for the same pair reuses the
+        existing Статья's id instead of inserting a duplicate row (#14)."""
+        row = await self._pool.fetchrow(
             """
             INSERT INTO articles (id, plan_id, plan_item_id, title, platform)
             VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (plan_item_id, platform) DO NOTHING
+            RETURNING id
             """,
-            article_id,
+            self._new_id(),
             plan_id,
             plan_item_id,
             title,
             platform,
         )
-        return ArticleId(article_id)
+        if row is not None:
+            return ArticleId(row["id"])
+        existing = await self._pool.fetchrow(
+            "SELECT id FROM articles WHERE plan_item_id = $1 AND platform = $2", plan_item_id, platform
+        )
+        if existing is None:
+            raise RuntimeError(
+                f"articles insert conflicted for plan_item_id={plan_item_id!r} platform={platform!r} "
+                "but no existing row was found"
+            )
+        return ArticleId(existing["id"])
 
     async def get(self, article_id: ArticleId) -> ArticleView:
         article_row = await self._pool.fetchrow(
@@ -102,6 +115,34 @@ class Article:
                 await conn.execute(
                     "UPDATE articles SET status = 'ready', updated_at = now() WHERE id = $1", article_id
                 )
+
+    async def request_generation(
+        self,
+        plan_id: PlanId,
+        plan_item_id: PlanItemId,
+        title: str,
+        summary: str,
+        keywords: Sequence[str],
+        platform: str,
+    ) -> ArticleId:
+        """Create (or reuse) the Статья for one (Тема, Площадка) pair and enqueue its `generate_article`
+        Job. Fully idempotent: `create` reuses the existing row on a (plan_item_id, platform)
+        conflict, and the Job enqueue is keyed on the resulting article_id - so replaying this for
+        an already-processed pair (a retried `approve_all` callback, or a crash between approving
+        the Plan and enqueueing) creates neither a duplicate Статья nor a duplicate Job (#14)."""
+        article_id = await self.create(plan_id, plan_item_id, title, platform)
+        await self._queue.enqueue(
+            "generate_article",
+            {
+                "article_id": article_id,
+                "title": title,
+                "platform": platform,
+                "summary": summary,
+                "keywords": list(keywords),
+            },
+            idempotency_key=f"generate_article:{article_id}",
+        )
+        return article_id
 
     async def request_regeneration(self, article_id: ArticleId, comment: str | None) -> None:
         row = await self._pool.fetchrow(

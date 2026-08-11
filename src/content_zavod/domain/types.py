@@ -17,6 +17,9 @@ PlanStatus = Literal["pending_review", "approved", "archived"]
 PlanItemStatus = Literal["pending_review", "approved", "rejected", "archived"]
 ArticleStatus = Literal["queued", "generating", "error", "ready", "regenerating", "exported"]
 
+# MVP Площадки (see CONTEXT.md) - one Статья per Площадка is fanned out per approved Тема (#14).
+PLATFORMS: tuple[str, ...] = ("zen", "vc")
+
 
 @dataclass(frozen=True)
 class PlanItemView:

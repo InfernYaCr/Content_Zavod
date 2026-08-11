@@ -119,6 +119,32 @@ async def test_approve_all_raises_for_unknown_plan(plan: Plan) -> None:
         await plan.approve_all("missing")
 
 
+async def test_approved_items_returns_only_approved_items_with_full_detail(plan: Plan) -> None:
+    plan_id = await plan.add_topics(
+        "Week 1",
+        [
+            TopicDraft(title="Topic A", summary="s", keywords=["k1", "k2"]),
+            TopicDraft(title="Topic B"),
+        ],
+    )
+    view = await plan.get(plan_id)
+    kept_id, rejected_id = view.items[0].id, view.items[1].id
+    await plan.delete_item(rejected_id)
+
+    await plan.approve_all(plan_id)
+
+    items = await plan.approved_items(plan_id)
+
+    assert len(items) == 1
+    assert items[0] == PlanItemDetail(id=kept_id, title="Topic A", summary="s", keywords=["k1", "k2"])
+
+
+async def test_approved_items_is_empty_for_a_plan_with_no_approved_items(plan: Plan) -> None:
+    plan_id, _ = await _create_plan(plan)
+
+    assert await plan.approved_items(plan_id) == []
+
+
 async def test_regenerate_item_enqueues_a_job_instead_of_calling_an_llm_directly(
     plan: Plan, queue: JobQueue
 ) -> None:

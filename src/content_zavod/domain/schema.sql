@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS articles (
 
 CREATE INDEX IF NOT EXISTS articles_plan_id_idx ON articles (plan_id, created_at);
 
+CREATE UNIQUE INDEX IF NOT EXISTS articles_plan_item_id_platform_key ON articles (plan_item_id, platform);
+
 CREATE TABLE IF NOT EXISTS article_versions (
     id BIGSERIAL PRIMARY KEY,
     article_id TEXT NOT NULL REFERENCES articles (id),

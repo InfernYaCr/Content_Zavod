@@ -34,6 +34,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from ..access import AccessError, JoinRequests, Membership, Role
 from ..config import Settings, load_settings
 from ..domain import (
+    PLATFORMS,
     Article,
     ArticleId,
     DomainError,
@@ -123,6 +124,17 @@ async def _role_for(membership: Membership, gateway: TelegramGateway, chat_id: i
     if role is None:
         await gateway.send_error(chat_id, _ACCESS_DENIED_TEXT)
     return role
+
+
+async def _generate_articles_for_approved_plan(plan: Plan, article: Article, plan_id: PlanId) -> None:
+    """Fan out each approved Тема into one Статья per Площадка and enqueue its `generate_article`
+    Job (#14). Reads current DB state (`Plan.approved_items`) rather than acting only on items this
+    call just approved, and `Article.request_generation` is itself idempotent - so replaying this
+    for an already-approved Plan (a retried `approve_all` callback, or a crash between approving and
+    enqueueing) creates neither duplicate Статьи nor duplicate Jobs."""
+    for item in await plan.approved_items(plan_id):
+        for platform in PLATFORMS:
+            await article.request_generation(plan_id, item.id, item.title, item.summary, item.keywords, platform)
 
 
 def _build_router(
@@ -297,6 +309,10 @@ def _build_router(
                 if will_enqueue:
                     await gateway.edit_notice(chat_id, message_id, "⏳ Генерирую...")
                 await plan_review.handle_action(chat_id, user_id, PlanItemId(id_), action)
+            elif action == "approve_all":
+                await callback.answer()
+                await plan_review.handle_action(chat_id, user_id, PlanItemId(id_), action)
+                await _generate_articles_for_approved_plan(plan, article, PlanId(id_))
             else:
                 await callback.answer()
                 await plan_review.handle_action(chat_id, user_id, PlanItemId(id_), action)
