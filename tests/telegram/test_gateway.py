@@ -21,6 +21,7 @@ from content_zavod.telegram.gateway import (
     MESSAGE_LIMIT,
     build_plan_keyboard,
     chunk_text,
+    format_week_range,
     render_plan_text,
 )
 
@@ -141,6 +142,27 @@ def test_render_plan_text_shows_absolute_item_numbers_across_pages() -> None:
     assert f"{ITEMS_PER_PAGE + 1}." in text
     assert f"{ITEMS_PER_PAGE + 3}." in text
     assert "\n1. " not in text
+
+
+def test_render_plan_text_shows_date_range_not_week_label() -> None:
+    plan = make_plan(item_count=1)
+
+    text = render_plan_text(plan)
+
+    assert "2026-W32" not in text
+    assert "3–9 августа 2026" in text
+
+
+def test_format_week_range_within_single_month() -> None:
+    assert format_week_range("2026-W32") == "3–9 августа 2026"
+
+
+def test_format_week_range_spanning_two_months() -> None:
+    assert format_week_range("2026-W31") == "27 июля – 2 августа 2026"
+
+
+def test_format_week_range_spanning_year_boundary() -> None:
+    assert format_week_range("2026-W01") == "29 декабря 2025 – 4 января 2026"
 
 
 def test_encode_decode_page_callback_roundtrips() -> None:
