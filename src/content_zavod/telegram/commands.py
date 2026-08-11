@@ -30,6 +30,8 @@ OWNER_COMMANDS: list[BotCommand] = SHARED_COMMANDS + [
     BotCommand(command="set_niche", description="Изменить Нишу"),
     BotCommand(command="directions", description="Текущие Направления"),
     BotCommand(command="set_directions", description="Изменить Направления"),
+    BotCommand(command="voice", description="Текущий Голос"),
+    BotCommand(command="set_voice", description="Изменить Голос"),
 ]
 
 

@@ -62,6 +62,7 @@ from .types import (
     PlanSummary,
     PlanView,
 )
+from .voice_command import handle_set_voice_command, handle_voice_command
 
 __all__ = [
     "Action",
@@ -123,7 +124,9 @@ __all__ = [
     "handle_set_directions_command",
     "handle_set_niche_command",
     "handle_set_schedule_command",
+    "handle_set_voice_command",
     "handle_topic_command",
+    "handle_voice_command",
     "render_help_text",
     "render_plan_text",
     "sync_commands",

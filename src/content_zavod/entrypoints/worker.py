@@ -81,8 +81,10 @@ async def main(settings: Settings | None = None) -> None:
             "generate_plan": make_generate_plan_handler(
                 keyword_stats, text_generator, plan.recent_topic_titles, owner_settings
             ),
-            "generate_article": make_generate_article_handler(text_generator, url_checker),
-            "regenerate_article": make_regenerate_article_handler(article, text_generator, url_checker),
+            "generate_article": make_generate_article_handler(text_generator, url_checker, owner_settings),
+            "regenerate_article": make_regenerate_article_handler(
+                article, text_generator, url_checker, owner_settings
+            ),
             "generate_cover": make_generate_cover_handler(image_generator),
             "regenerate_topic": make_regenerate_topic_handler(plan, text_generator, owner_settings),
         }

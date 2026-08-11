@@ -73,7 +73,9 @@ from ..telegram import (
     handle_set_directions_command,
     handle_set_niche_command,
     handle_set_schedule_command,
+    handle_set_voice_command,
     handle_topic_command,
+    handle_voice_command,
     render_help_text,
     sync_commands,
 )
@@ -311,6 +313,30 @@ def _build_router(
             await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
             return
         await handle_set_directions_command(owner_settings, gateway, message.chat.id, command.args or "")
+
+    @router.message(Command("voice"))
+    async def on_voice(message: Message) -> None:
+        if message.from_user is None:
+            return
+        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
+        if role is None:
+            return
+        if role != "owner":
+            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
+            return
+        await handle_voice_command(owner_settings, gateway, message.chat.id)
+
+    @router.message(Command("set_voice"))
+    async def on_set_voice(message: Message, command: CommandObject) -> None:
+        if message.from_user is None:
+            return
+        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
+        if role is None:
+            return
+        if role != "owner":
+            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
+            return
+        await handle_set_voice_command(owner_settings, gateway, message.chat.id, command.args or "")
 
     @router.callback_query()
     async def on_callback(callback: CallbackQuery) -> None:
