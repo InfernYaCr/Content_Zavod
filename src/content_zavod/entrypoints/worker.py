@@ -19,6 +19,7 @@ import asyncpg
 from ..config import Settings, YandexCredentials, load_settings
 from ..domain import Article, Plan
 from ..job_queue import JobHandler, JobQueue, run_worker
+from ..owner_settings import OwnerSettingsStore
 from ..pipelines import (
     HttpxUrlReachabilityChecker,
     make_generate_article_handler,
@@ -62,6 +63,8 @@ async def main(settings: Settings | None = None) -> None:
         await plan.ensure_schema()
         article = Article(pool, queue)
         await article.ensure_schema()
+        owner_settings = OwnerSettingsStore(pool)
+        await owner_settings.ensure_schema()
 
         text_generator = _build_yandex_client(
             settings.yandex, TextGenerator.with_service_account_key, TextGenerator.with_oauth_token
@@ -76,12 +79,12 @@ async def main(settings: Settings | None = None) -> None:
 
         handlers: dict[str, JobHandler] = {
             "generate_plan": make_generate_plan_handler(
-                keyword_stats, text_generator, plan.recent_topic_titles
+                keyword_stats, text_generator, plan.recent_topic_titles, owner_settings
             ),
             "generate_article": make_generate_article_handler(text_generator, url_checker),
             "regenerate_article": make_regenerate_article_handler(article, text_generator, url_checker),
             "generate_cover": make_generate_cover_handler(image_generator),
-            "regenerate_topic": make_regenerate_topic_handler(plan, text_generator),
+            "regenerate_topic": make_regenerate_topic_handler(plan, text_generator, owner_settings),
         }
 
         stop = asyncio.Event()

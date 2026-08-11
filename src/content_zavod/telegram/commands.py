@@ -26,6 +26,8 @@ OWNER_COMMANDS: list[BotCommand] = SHARED_COMMANDS + [
     BotCommand(command="members", description="Участники и доступ"),
     BotCommand(command="schedule", description="Текущее расписание Плана"),
     BotCommand(command="set_schedule", description="Изменить расписание Плана"),
+    BotCommand(command="niche", description="Текущая Ниша"),
+    BotCommand(command="set_niche", description="Изменить Нишу"),
 ]
 
 
