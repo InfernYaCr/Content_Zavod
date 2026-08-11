@@ -48,6 +48,7 @@ from .members_command import handle_members_command
 from .niche_command import handle_niche_command, handle_set_niche_command
 from .plan_review import PlanOperations, PlanReview
 from .schedule_command import handle_schedule_command, handle_set_schedule_command
+from .settings_command import handle_settings_command
 from .topic_command import PlanProposal, handle_topic_command
 from .types import (
     ArticleFormat,
@@ -125,6 +126,7 @@ __all__ = [
     "handle_set_niche_command",
     "handle_set_schedule_command",
     "handle_set_voice_command",
+    "handle_settings_command",
     "handle_topic_command",
     "handle_voice_command",
     "render_help_text",
