@@ -3,25 +3,34 @@ from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
 
 from content_zavod.telegram import (
     ArticleId,
+    ArticleSummary,
     ArticleView,
     PlanId,
     PlanItemId,
     PlanItemView,
+    PlanSummary,
     PlanView,
     TelegramCommentPrompt,
     TelegramGateway,
     decode_callback_data,
+    decode_history_week_id,
     decode_page_id,
     encode_callback_data,
+    encode_history_page_callback,
+    encode_history_week_callback,
     encode_page_callback,
 )
 from content_zavod.telegram.gateway import (
     CALLBACK_DATA_LIMIT,
     ITEMS_PER_PAGE,
     MESSAGE_LIMIT,
+    build_history_articles_keyboard,
+    build_history_weeks_keyboard,
     build_plan_keyboard,
     chunk_text,
     format_week_range,
+    render_history_articles_text,
+    render_history_weeks_text,
     render_plan_text,
 )
 
@@ -304,6 +313,123 @@ async def test_send_error_chunks_long_text() -> None:
     for _, text, keyboard in bot.sent_messages:
         assert len(text) <= MESSAGE_LIMIT
         assert keyboard is None
+
+
+def make_plan_summaries(count: int) -> list[PlanSummary]:
+    return [PlanSummary(id=PlanId(f"plan-{i}"), week_label="2026-W32", status="pending_review") for i in range(count)]
+
+
+def test_render_history_weeks_text_lists_week_range_and_status() -> None:
+    text = render_history_weeks_text(make_plan_summaries(1), page=0, page_count=1)
+
+    assert "3–9 августа 2026 — pending_review" in text
+
+
+def test_render_history_weeks_text_empty_page() -> None:
+    text = render_history_weeks_text([], page=0, page_count=1)
+
+    assert "Планов пока нет." in text
+
+
+def test_build_history_weeks_keyboard_one_button_per_week() -> None:
+    keyboard = build_history_weeks_keyboard(make_plan_summaries(2), page=0, page_count=1)
+
+    assert len(keyboard.inline_keyboard) == 2
+    action, id_ = decode_callback_data(keyboard.inline_keyboard[0][0].callback_data)
+    assert action == "history_week"
+    assert decode_history_week_id(id_) == ("plan-0", 0)
+
+
+def test_build_history_weeks_keyboard_paginates() -> None:
+    keyboard = build_history_weeks_keyboard(make_plan_summaries(1), page=0, page_count=2)
+
+    nav_row = keyboard.inline_keyboard[1]
+    assert len(nav_row) == 1
+    assert decode_callback_data(nav_row[0].callback_data) == ("history_page", "1")
+
+
+def test_render_history_articles_text_shows_every_status_untranslated() -> None:
+    plan_summary = PlanSummary(id=PlanId("plan-1"), week_label="2026-W32", status="approved")
+    articles = [
+        ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="queued"),
+        ArticleSummary(id=ArticleId("a-2"), title="Topic A", platform="vc", status="ready"),
+    ]
+
+    text = render_history_articles_text(plan_summary, articles)
+
+    assert "Topic A (zen) — queued" in text
+    assert "Topic A (vc) — ready" in text
+
+
+def test_build_history_articles_keyboard_back_button_returns_to_the_given_page() -> None:
+    keyboard = build_history_articles_keyboard(back_page=3)
+
+    (back_button,) = keyboard.inline_keyboard[0]
+    assert decode_callback_data(back_button.callback_data) == ("history_page", "3")
+
+
+def test_encode_decode_history_week_callback_roundtrips() -> None:
+    data = encode_history_week_callback("plan-1", 2)
+
+    assert decode_history_week_id(decode_callback_data(data)[1]) == ("plan-1", 2)
+
+
+def test_history_week_callback_data_stays_under_limit_for_max_length_plan_id() -> None:
+    uuid_hex_plan_id = "a" * 32
+    data = encode_history_week_callback(uuid_hex_plan_id, 999)
+
+    assert len(data.encode("utf-8")) <= CALLBACK_DATA_LIMIT
+
+
+def test_encode_decode_history_page_callback_roundtrips() -> None:
+    data = encode_history_page_callback(5)
+
+    assert decode_callback_data(data) == ("history_page", "5")
+
+
+@pytest.mark.asyncio
+async def test_send_history_weeks_sends_a_single_message_with_keyboard() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    await gateway.send_history_weeks(chat_id=1, plans_page=make_plan_summaries(1), page=0, page_count=1)
+
+    assert len(bot.sent_messages) == 1
+    chat_id, text, keyboard = bot.sent_messages[0]
+    assert chat_id == 1
+    assert "pending_review" in text
+    assert keyboard is not None
+
+
+@pytest.mark.asyncio
+async def test_edit_history_weeks_edits_the_message() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    await gateway.edit_history_weeks(
+        chat_id=1, message_id=9, plans_page=make_plan_summaries(1), page=0, page_count=1
+    )
+
+    assert len(bot.edited_messages) == 1
+    chat_id, message_id, text, keyboard = bot.edited_messages[0]
+    assert (chat_id, message_id) == (1, 9)
+    assert keyboard is not None
+
+
+@pytest.mark.asyncio
+async def test_edit_history_articles_edits_the_message_with_a_back_button() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+    plan_summary = PlanSummary(id=PlanId("plan-1"), week_label="2026-W32", status="approved")
+    articles = [ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="ready")]
+
+    await gateway.edit_history_articles(chat_id=1, message_id=9, plan_summary=plan_summary, articles=articles, back_page=2)
+
+    chat_id, message_id, text, keyboard = bot.edited_messages[0]
+    assert (chat_id, message_id) == (1, 9)
+    assert "Topic A (zen) — ready" in text
+    (back_button,) = keyboard.inline_keyboard[0]
+    assert decode_callback_data(back_button.callback_data) == ("history_page", "2")
 
 
 def test_chunk_text_returns_single_chunk_when_under_limit() -> None:

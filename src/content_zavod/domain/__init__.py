@@ -13,6 +13,7 @@ from .types import (
     PLATFORMS,
     ArticleId,
     ArticleStatus,
+    ArticleSummary,
     ArticleView,
     GeneratedVersion,
     PlanId,
@@ -20,6 +21,7 @@ from .types import (
     PlanItemStatus,
     PlanItemView,
     PlanStatus,
+    PlanSummary,
     PlanView,
     TopicDraft,
 )
@@ -32,6 +34,7 @@ __all__ = [
     "ArticleNotReady",
     "ArticleNotRegenerable",
     "ArticleStatus",
+    "ArticleSummary",
     "ArticleView",
     "DomainError",
     "GeneratedVersion",
@@ -45,6 +48,7 @@ __all__ = [
     "PlanItemView",
     "PlanNotFound",
     "PlanStatus",
+    "PlanSummary",
     "PlanView",
     "TopicDraft",
 ]

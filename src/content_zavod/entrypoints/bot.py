@@ -59,6 +59,9 @@ from ..telegram import (
     handle_cancel_regenerate_plan,
     handle_confirm_regenerate_plan,
     handle_generate_plan_command,
+    handle_history_command,
+    handle_history_page,
+    handle_history_week,
     handle_members_command,
     handle_schedule_command,
     handle_set_schedule_command,
@@ -206,6 +209,14 @@ def _build_router(
             return
         await handle_generate_plan_command(plan, gateway, message.chat.id, tz=settings.timezone)
 
+    @router.message(Command("history"))
+    async def on_history(message: Message) -> None:
+        if message.from_user is None:
+            return
+        if await _role_for(membership, gateway, message.chat.id, message.from_user.id) is None:
+            return
+        await handle_history_command(plan, gateway, message.chat.id)
+
     @router.message(Command("members"))
     async def on_members(message: Message) -> None:
         if message.from_user is None:
@@ -293,6 +304,12 @@ def _build_router(
                 page_plan_id, page = decode_page_id(id_)
                 view = await plan.get(PlanId(page_plan_id))
                 await gateway.edit_plan(chat_id, message_id, view, page=page)
+            elif action == "history_page":
+                await callback.answer()
+                await handle_history_page(plan, gateway, chat_id, message_id, int(id_))
+            elif action == "history_week":
+                await callback.answer()
+                await handle_history_week(plan, article, gateway, chat_id, message_id, id_)
             elif action == "confirm_regenerate_plan":
                 await callback.answer()
                 await handle_confirm_regenerate_plan(plan, gateway, chat_id, message_id, PlanId(id_))

@@ -40,7 +40,7 @@ import asyncpg
 
 from ..job_queue import JobId, JobQueue
 from .errors import PlanItemNotEditable, PlanItemNotFound, PlanNotFound
-from .types import PlanId, PlanItemId, PlanItemStatus, PlanItemView, PlanView, TopicDraft
+from .types import PlanId, PlanItemId, PlanItemStatus, PlanItemView, PlanSummary, PlanView, TopicDraft
 
 
 @dataclass(frozen=True)
@@ -93,6 +93,30 @@ class Plan:
             for row in item_rows
         ]
         return PlanView(id=PlanId(plan_row["id"]), week_label=plan_row["week_label"], items=items)
+
+    async def get_summary(self, plan_id: PlanId) -> PlanSummary:
+        """A Plan's header only (no items join) - what /history's week-select screen resolves
+        a chosen week's `plan_id` to before listing its Статьи."""
+        row = await self._pool.fetchrow("SELECT id, week_label, status FROM plans WHERE id = $1", plan_id)
+        if row is None:
+            raise PlanNotFound(plan_id)
+        return PlanSummary(id=PlanId(row["id"]), week_label=row["week_label"], status=row["status"])
+
+    async def list_page(self, *, page: int, page_size: int) -> tuple[list[PlanSummary], int]:
+        """One page of every Plan regardless of status (including the current unfinished
+        `pending_review` week), newest first - the /history week list (#29). Returns the page
+        alongside the total Plan count so the caller can compute how many pages exist."""
+        total = await self._pool.fetchval("SELECT count(*) FROM plans")
+        rows = await self._pool.fetch(
+            "SELECT id, week_label, status FROM plans ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+            page_size,
+            page * page_size,
+        )
+        plans = [
+            PlanSummary(id=PlanId(row["id"]), week_label=row["week_label"], status=row["status"])
+            for row in rows
+        ]
+        return plans, total
 
     async def get_item(self, plan_item_id: PlanItemId) -> PlanItemDetail:
         row = await self._pool.fetchrow(
