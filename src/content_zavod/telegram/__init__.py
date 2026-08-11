@@ -14,6 +14,7 @@ from .gateway import (
     build_request_access_keyboard,
     build_retry_keyboard,
     build_skip_keyboard,
+    build_voice_keyboard,
     decode_callback_data,
     decode_export_id,
     decode_history_version_id,
@@ -62,7 +63,12 @@ from .types import (
     PlanSummary,
     PlanView,
 )
-from .voice_command import handle_set_voice_command, handle_voice_command
+from .voice_command import (
+    VOICE_TEMPLATES,
+    handle_set_voice_command,
+    handle_voice_command,
+    handle_voice_template_callback,
+)
 
 __all__ = [
     "Action",
@@ -88,6 +94,7 @@ __all__ = [
     "PlanView",
     "TelegramCommentPrompt",
     "TelegramGateway",
+    "VOICE_TEMPLATES",
     "build_article_keyboard",
     "build_confirm_keyboard",
     "build_join_request_keyboard",
@@ -96,6 +103,7 @@ __all__ = [
     "build_request_access_keyboard",
     "build_retry_keyboard",
     "build_skip_keyboard",
+    "build_voice_keyboard",
     "decode_callback_data",
     "decode_export_id",
     "decode_history_version_id",
@@ -127,6 +135,7 @@ __all__ = [
     "handle_set_voice_command",
     "handle_topic_command",
     "handle_voice_command",
+    "handle_voice_template_callback",
     "render_help_text",
     "render_plan_text",
     "sync_commands",
