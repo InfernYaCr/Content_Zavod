@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Literal, Protocol
 
 from aiogram.types import (
@@ -96,10 +97,43 @@ def _total_pages(item_count: int) -> int:
     return max(1, -(-item_count // ITEMS_PER_PAGE))  # ceil division
 
 
+_MONTHS_RU_GENITIVE = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+
+
+def format_week_range(week_label: str) -> str:
+    """Render an ISO week_label (e.g. "2026-W33") as a human date range, e.g.
+    "10–16 августа 2026". `week_label` itself stays the Plan's idempotency
+    key (see `week_label_for` in scheduling/weekly_plan_trigger.py) and is
+    never shown to the Контент-менеджер directly."""
+    year_part, _, week_part = week_label.partition("-W")
+    monday = date.fromisocalendar(int(year_part), int(week_part), 1)
+    sunday = date.fromisocalendar(int(year_part), int(week_part), 7)
+    start_month = _MONTHS_RU_GENITIVE[monday.month - 1]
+    end_month = _MONTHS_RU_GENITIVE[sunday.month - 1]
+    if monday.year != sunday.year:
+        return f"{monday.day} {start_month} {monday.year} – {sunday.day} {end_month} {sunday.year}"
+    if monday.month != sunday.month:
+        return f"{monday.day} {start_month} – {sunday.day} {end_month} {sunday.year}"
+    return f"{monday.day}–{sunday.day} {end_month} {sunday.year}"
+
+
 def render_plan_text(plan: PlanView, *, page: int = 0) -> str:
     total_pages = _total_pages(len(plan.items))
     start = page * ITEMS_PER_PAGE
-    lines = [f"📋 План: {plan.week_label}"]
+    lines = [f"📋 План: {format_week_range(plan.week_label)}"]
     if total_pages > 1:
         lines.append(f"Страница {page + 1}/{total_pages}")
     lines.append("")
