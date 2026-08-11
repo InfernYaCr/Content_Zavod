@@ -4,6 +4,7 @@ import pytest
 
 from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.pipelines.plan_pipeline import (
+    DEFAULT_DIRECTIONS,
     make_generate_plan_handler,
     make_regenerate_topic_handler,
 )
@@ -20,12 +21,15 @@ class FakePlanItemReader:
 
 
 class FakeOwnerSettingsStore:
-    def __init__(self, niche: str | None = None) -> None:
+    def __init__(self, niche: str | None = None, directions: str | None = None) -> None:
         self._niche = niche
+        self._directions = directions
 
     async def get(self, key: str) -> str | None:
-        assert key == "niche"
-        return self._niche
+        if key == "niche":
+            return self._niche
+        assert key == "directions"
+        return self._directions
 
     def set_niche(self, niche: str | None) -> None:
         self._niche = niche
@@ -227,6 +231,43 @@ async def test_handler_reads_niche_from_owner_settings_store() -> None:
 
     system_message = text_generator.calls[0][0]
     assert "«edtech»" in system_message.text
+
+
+@pytest.mark.asyncio
+async def test_handler_uses_default_directions_when_seed_keywords_and_store_are_unset() -> None:
+    keyword_stats = FakeKeywordStats({})
+    text_generator = FakeTextGenerator({})
+    handler = make_generate_plan_handler(
+        keyword_stats,
+        text_generator,
+        _no_recent_titles,
+        FakeOwnerSettingsStore(),
+        now=lambda: datetime(2026, 8, 7, tzinfo=timezone.utc),
+    )
+
+    await handler({"week_label": "Week 1"})
+
+    assert keyword_stats.calls == list(DEFAULT_DIRECTIONS)
+
+
+@pytest.mark.asyncio
+async def test_handler_reads_directions_from_owner_settings_store() -> None:
+    keyword_stats = FakeKeywordStats({"новая ниша": _growing(100, 500)})
+    text_generator = FakeTextGenerator(
+        {"новая ниша": "Title: New Topic\nSummary: s\nKeywords: новая ниша"}
+    )
+    handler = make_generate_plan_handler(
+        keyword_stats,
+        text_generator,
+        _no_recent_titles,
+        FakeOwnerSettingsStore(directions="новая ниша"),
+        now=lambda: datetime(2026, 8, 7, tzinfo=timezone.utc),
+    )
+
+    output = await handler({"week_label": "Week 1"})
+
+    assert keyword_stats.calls == ["новая ниша"]
+    assert [t["title"] for t in output["topics"]] == ["New Topic"]
 
 
 @pytest.mark.asyncio

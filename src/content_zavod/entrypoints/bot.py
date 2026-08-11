@@ -60,6 +60,7 @@ from ..telegram import (
     decode_page_id,
     handle_cancel_regenerate_plan,
     handle_confirm_regenerate_plan,
+    handle_directions_command,
     handle_generate_plan_command,
     handle_history_command,
     handle_history_page,
@@ -69,6 +70,7 @@ from ..telegram import (
     handle_members_command,
     handle_niche_command,
     handle_schedule_command,
+    handle_set_directions_command,
     handle_set_niche_command,
     handle_set_schedule_command,
     handle_topic_command,
@@ -285,6 +287,30 @@ def _build_router(
             await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
             return
         await handle_set_niche_command(owner_settings, gateway, message.chat.id, command.args or "")
+
+    @router.message(Command("directions"))
+    async def on_directions(message: Message) -> None:
+        if message.from_user is None:
+            return
+        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
+        if role is None:
+            return
+        if role != "owner":
+            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
+            return
+        await handle_directions_command(owner_settings, gateway, message.chat.id)
+
+    @router.message(Command("set_directions"))
+    async def on_set_directions(message: Message, command: CommandObject) -> None:
+        if message.from_user is None:
+            return
+        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
+        if role is None:
+            return
+        if role != "owner":
+            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
+            return
+        await handle_set_directions_command(owner_settings, gateway, message.chat.id, command.args or "")
 
     @router.callback_query()
     async def on_callback(callback: CallbackQuery) -> None:
