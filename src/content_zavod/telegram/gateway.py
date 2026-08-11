@@ -11,7 +11,15 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 
-from .types import ArticleSummary, ArticleView, PlanSummary, PlanView
+from .types import (
+    ArticleFormat,
+    ArticleSummary,
+    ArticleView,
+    PlanSummary,
+    PlanView,
+    build_export_document,
+    build_export_filename,
+)
 
 MESSAGE_LIMIT = 4096
 CALLBACK_DATA_LIMIT = 64
@@ -24,6 +32,7 @@ Action = Literal[
     "regenerate_article",
     "request_cover",
     "approve",
+    "export_article",
     "page",
     "confirm_regenerate_plan",
     "cancel_regenerate_plan",
@@ -39,6 +48,7 @@ Action = Literal[
 # Codes are 1-2 chars to leave room for id payloads within CALLBACK_DATA_LIMIT.
 # "page" packs "<plan_id>:<page>" into its id via encode_page_callback/decode_page_id -
 # for a 32-char uuid4().hex plan id that's "pg:" + 32 + ":" + up to 3 digits, ~38 bytes.
+# "export_article" similarly packs "<article_id>:<format>" via encode_export_callback/decode_export_id.
 _ACTION_CODES: dict[Action, str] = {
     "delete": "d",
     "regenerate": "r",
@@ -46,6 +56,7 @@ _ACTION_CODES: dict[Action, str] = {
     "regenerate_article": "ar",
     "request_cover": "cv",
     "approve": "p",
+    "export_article": "ex",
     "page": "pg",
     "confirm_regenerate_plan": "cy",
     "cancel_regenerate_plan": "cn",
@@ -96,6 +107,17 @@ def encode_history_week_callback(plan_id: str, page: int) -> str:
 def decode_history_week_id(id_: str) -> tuple[str, int]:
     plan_id, _, page = id_.rpartition(":")
     return plan_id, int(page)
+
+
+def encode_export_callback(article_id: str, article_format: ArticleFormat) -> str:
+    return encode_callback_data("export_article", f"{article_id}:{article_format}")
+
+
+def decode_export_id(id_: str) -> tuple[str, ArticleFormat]:
+    article_id, separator, article_format = id_.rpartition(":")
+    if not separator or article_format not in ("docx", "md"):
+        raise ValueError(f"unrecognized export callback id: {id_!r}")
+    return article_id, article_format  # type: ignore[return-value]
 
 
 def chunk_text(text: str, limit: int = MESSAGE_LIMIT) -> list[str]:
@@ -251,22 +273,45 @@ def build_history_weeks_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+# A Статья has a downloadable last Версия once it's left "queued"/"generating"/"error" -
+# "regenerating" still serves its prior ready Версия, so it stays downloadable too (#30).
+_DOWNLOADABLE_ARTICLE_STATUSES = frozenset({"ready", "regenerating", "exported"})
+
+
 def render_history_articles_text(plan_summary: PlanSummary, articles: Sequence[ArticleSummary]) -> str:
     lines = [f"📄 Статьи: {format_week_range(plan_summary.week_label)} ({plan_summary.status})", ""]
     if not articles:
         lines.append("Статей пока нет.")
         return "\n".join(lines)
-    for item in articles:
-        lines.append(f"{item.title} ({item.platform}) — {item.status}")
+    for index, item in enumerate(articles, start=1):
+        lines.append(f"{index}. {item.title} ({item.platform}) — {item.status}")
     return "\n".join(lines)
 
 
-def build_history_articles_keyboard(*, back_page: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="◀ Назад", callback_data=encode_history_page_callback(back_page))]
-        ]
-    )
+def build_history_articles_keyboard(
+    articles: Sequence[ArticleSummary], *, back_page: int
+) -> InlineKeyboardMarkup:
+    """One "скачать" row (.docx / .md) per Статья with a downloadable last Версия, numbered to
+    match `render_history_articles_text` (#30) - articles still `queued`/`generating`/`error`
+    have no Версия yet, so they get no row. Always ends with the "Назад" row."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for index, item in enumerate(articles, start=1):
+        if item.status not in _DOWNLOADABLE_ARTICLE_STATUSES:
+            continue
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"⬇️ {index}. .docx",
+                    callback_data=encode_export_callback(item.id, "docx"),
+                ),
+                InlineKeyboardButton(
+                    text=f"⬇️ {index}. .md",
+                    callback_data=encode_export_callback(item.id, "md"),
+                ),
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="◀ Назад", callback_data=encode_history_page_callback(back_page))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def build_skip_keyboard(id_: str, action: Action = "regenerate") -> InlineKeyboardMarkup:
@@ -356,6 +401,16 @@ def build_members_keyboard(members: list[tuple[int, str]]) -> InlineKeyboardMark
 def build_article_keyboard(article_id: str, plan_item_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📄 .docx",
+                    callback_data=encode_export_callback(article_id, "docx"),
+                ),
+                InlineKeyboardButton(
+                    text="📝 .md",
+                    callback_data=encode_export_callback(article_id, "md"),
+                ),
+            ],
             [
                 InlineKeyboardButton(
                     text="🔄 Перегенерировать",
@@ -485,21 +540,26 @@ class TelegramGateway:
             chat_id,
             message_id,
             render_history_articles_text(plan_summary, articles),
-            reply_markup=build_history_articles_keyboard(back_page=back_page),
+            reply_markup=build_history_articles_keyboard(articles, back_page=back_page),
         )
 
     async def edit_notice(self, chat_id: int, message_id: int, text: str) -> None:
         await self._bot.edit_message_text(chat_id, message_id, text)
 
     async def send_article_ready(self, chat_id: int, article: ArticleView) -> None:
-        document = BufferedInputFile(article.content, filename=article.filename)
+        text = f"📄 {article.title} ({article.platform})\nВыберите формат для скачивания:"
+        await self._bot.send_message(
+            chat_id, text, reply_markup=build_article_keyboard(article.id, article.plan_item_id)
+        )
+
+    async def send_article_document(
+        self, chat_id: int, article: ArticleView, article_format: ArticleFormat
+    ) -> None:
+        filename = build_export_filename(article.title, article.platform, article_format)
+        content = build_export_document(article, article_format)
+        document = BufferedInputFile(content, filename=filename)
         caption = f"📄 {article.title} ({article.platform})"
         await self._bot.send_document(chat_id, document, caption=caption)
-        await self._bot.send_message(
-            chat_id,
-            "Принять эту Статью или запросить перегенерацию?",
-            reply_markup=build_article_keyboard(article.id, article.plan_item_id),
-        )
 
     async def send_cover(self, chat_id: int, image: bytes, mime_type: str, title: str) -> None:
         extension = mime_type.rpartition("/")[2] or "jpg"

@@ -55,6 +55,7 @@ from ..telegram import (
     TelegramGateway,
     build_request_access_keyboard,
     decode_callback_data,
+    decode_export_id,
     decode_page_id,
     handle_cancel_regenerate_plan,
     handle_confirm_regenerate_plan,
@@ -332,6 +333,11 @@ def _build_router(
             elif action == "request_cover":
                 await callback.answer("Генерирую обложку...")
                 await plan.request_cover(PlanItemId(id_))
+            elif action == "export_article":
+                await callback.answer()
+                export_article_id, export_format = decode_export_id(id_)
+                view = await article.get(ArticleId(export_article_id))
+                await gateway.send_article_document(chat_id, view, export_format)
             elif action == "regenerate":
                 will_enqueue = plan_review.will_enqueue_regeneration(chat_id, user_id, PlanItemId(id_))
                 await callback.answer("Принято, генерирую..." if will_enqueue else None)

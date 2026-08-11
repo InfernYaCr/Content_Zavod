@@ -5,7 +5,9 @@ Available to both roles. Lists every Plan regardless of status - including the
 current unfinished `pending_review` week - newest first, paginated the same
 way a Plan's item list already is. Selecting a week edits the same message
 into that week's Статьи, each with its status shown as plain text; nothing is
-hidden or filtered. No download button yet (a follow-up ticket).
+hidden or filtered. Each Статья with a downloadable last Версия gets a
+"скачать" row (.docx/.md), reusing the `export_article` callback/keyboard
+machinery from #28 (#30).
 """
 
 from __future__ import annotations

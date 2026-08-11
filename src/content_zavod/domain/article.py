@@ -10,7 +10,6 @@ idempotent on their target state so a retried Telegram callback is a no-op.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Callable, Sequence
 from uuid import uuid4
@@ -219,11 +218,5 @@ def _to_view(article_id: ArticleId, plan_item_id: PlanItemId, title: str, platfo
         plan_item_id=plan_item_id,
         title=title,
         platform=platform,
-        filename=_build_filename(title, platform),
         content=content.encode("utf-8"),
     )
-
-
-def _build_filename(title: str, platform: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "article"
-    return f"{slug}-{platform}.txt"

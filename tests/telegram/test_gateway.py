@@ -13,6 +13,7 @@ from content_zavod.telegram import (
     TelegramCommentPrompt,
     TelegramGateway,
     decode_callback_data,
+    decode_export_id,
     decode_history_week_id,
     decode_page_id,
     encode_callback_data,
@@ -244,32 +245,29 @@ def make_article() -> ArticleView:
     return ArticleView(
         id=ArticleId("article-1"),
         plan_item_id=PlanItemId("item-1"),
-        title="Как выбрать нишу",
-        platform="Дзен",
-        filename="article.docx",
-        content=b"fake docx bytes",
+        title="Best Niche Guide",
+        platform="zen",
+        content=b"Hello, world.",
     )
 
 
 @pytest.mark.asyncio
-async def test_send_article_ready_sends_document_with_filename_and_caption() -> None:
+async def test_send_article_ready_sends_no_document_only_format_choice() -> None:
     bot = FakeBot()
     gateway = TelegramGateway(bot)
 
     await gateway.send_article_ready(chat_id=42, article=make_article())
 
-    assert len(bot.sent_documents) == 1
-    chat_id, document, caption = bot.sent_documents[0]
+    assert bot.sent_documents == []
+    assert len(bot.sent_messages) == 1
+    chat_id, text, _ = bot.sent_messages[0]
     assert chat_id == 42
-    assert isinstance(document, BufferedInputFile)
-    assert document.filename == "article.docx"
-    assert document.data == b"fake docx bytes"
-    assert "Как выбрать нишу" in caption
-    assert "Дзен" in caption
+    assert "Best Niche Guide" in text
+    assert "zen" in text
 
 
 @pytest.mark.asyncio
-async def test_send_article_ready_attaches_regenerate_and_approve_keyboard() -> None:
+async def test_send_article_ready_attaches_export_regenerate_and_approve_keyboard() -> None:
     bot = FakeBot()
     gateway = TelegramGateway(bot)
 
@@ -278,10 +276,13 @@ async def test_send_article_ready_attaches_regenerate_and_approve_keyboard() -> 
     assert len(bot.sent_messages) == 1
     chat_id, _, keyboard = bot.sent_messages[0]
     assert chat_id == 42
-    (regenerate_button, approve_button) = keyboard.inline_keyboard[0]
+    (docx_button, md_button) = keyboard.inline_keyboard[0]
+    (regenerate_button, approve_button) = keyboard.inline_keyboard[1]
+    assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == ("article-1", "docx")
+    assert decode_export_id(decode_callback_data(md_button.callback_data)[1]) == ("article-1", "md")
     assert decode_callback_data(regenerate_button.callback_data) == ("regenerate_article", "article-1")
     assert decode_callback_data(approve_button.callback_data) == ("approve", "article-1")
-    (cover_button,) = keyboard.inline_keyboard[1]
+    (cover_button,) = keyboard.inline_keyboard[2]
     assert decode_callback_data(cover_button.callback_data) == ("request_cover", "item-1")
 
 
@@ -299,6 +300,35 @@ async def test_send_cover_sends_photo_with_filename_and_caption() -> None:
     assert photo.filename == "cover.jpeg"
     assert photo.data == b"fake jpeg bytes"
     assert "Topic A" in caption
+
+
+@pytest.mark.asyncio
+async def test_send_article_document_sends_docx_with_built_filename_and_caption() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    await gateway.send_article_document(chat_id=42, article=make_article(), article_format="docx")
+
+    assert len(bot.sent_documents) == 1
+    chat_id, document, caption = bot.sent_documents[0]
+    assert chat_id == 42
+    assert isinstance(document, BufferedInputFile)
+    assert document.filename == "best-niche-guide-zen.docx"
+    assert "Best Niche Guide" in caption
+    assert "zen" in caption
+
+
+@pytest.mark.asyncio
+async def test_send_article_document_sends_md_as_plain_text_content() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    await gateway.send_article_document(chat_id=42, article=make_article(), article_format="md")
+
+    assert len(bot.sent_documents) == 1
+    _, document, _ = bot.sent_documents[0]
+    assert document.filename == "best-niche-guide-zen.md"
+    assert document.data == b"Hello, world."
 
 
 @pytest.mark.asyncio
@@ -362,10 +392,45 @@ def test_render_history_articles_text_shows_every_status_untranslated() -> None:
 
 
 def test_build_history_articles_keyboard_back_button_returns_to_the_given_page() -> None:
-    keyboard = build_history_articles_keyboard(back_page=3)
+    keyboard = build_history_articles_keyboard([], back_page=3)
 
     (back_button,) = keyboard.inline_keyboard[0]
     assert decode_callback_data(back_button.callback_data) == ("history_page", "3")
+
+
+def test_build_history_articles_keyboard_adds_no_download_row_for_not_yet_generated_articles() -> None:
+    articles = [
+        ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="queued"),
+        ArticleSummary(id=ArticleId("a-2"), title="Topic A", platform="vc", status="generating"),
+        ArticleSummary(id=ArticleId("a-3"), title="Topic A", platform="zen", status="error"),
+    ]
+
+    keyboard = build_history_articles_keyboard(articles, back_page=0)
+
+    # No download rows - just the trailing "Назад" row.
+    assert len(keyboard.inline_keyboard) == 1
+
+
+def test_build_history_articles_keyboard_adds_a_download_row_per_article_with_content() -> None:
+    articles = [
+        ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="ready"),
+        ArticleSummary(id=ArticleId("a-2"), title="Topic B", platform="vc", status="regenerating"),
+        ArticleSummary(id=ArticleId("a-3"), title="Topic C", platform="zen", status="exported"),
+    ]
+
+    keyboard = build_history_articles_keyboard(articles, back_page=1)
+
+    # 3 download rows + trailing "Назад" row.
+    assert len(keyboard.inline_keyboard) == 4
+    docx_button, md_button = keyboard.inline_keyboard[0]
+    assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == ("a-1", "docx")
+    assert decode_export_id(decode_callback_data(md_button.callback_data)[1]) == ("a-1", "md")
+    docx_button, md_button = keyboard.inline_keyboard[1]
+    assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == ("a-2", "docx")
+    docx_button, md_button = keyboard.inline_keyboard[2]
+    assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == ("a-3", "docx")
+    (back_button,) = keyboard.inline_keyboard[3]
+    assert decode_callback_data(back_button.callback_data) == ("history_page", "1")
 
 
 def test_encode_decode_history_week_callback_roundtrips() -> None:
@@ -421,14 +486,31 @@ async def test_edit_history_articles_edits_the_message_with_a_back_button() -> N
     bot = FakeBot()
     gateway = TelegramGateway(bot)
     plan_summary = PlanSummary(id=PlanId("plan-1"), week_label="2026-W32", status="approved")
-    articles = [ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="ready")]
+    articles = [ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="queued")]
 
     await gateway.edit_history_articles(chat_id=1, message_id=9, plan_summary=plan_summary, articles=articles, back_page=2)
 
     chat_id, message_id, text, keyboard = bot.edited_messages[0]
     assert (chat_id, message_id) == (1, 9)
-    assert "Topic A (zen) — ready" in text
+    assert "Topic A (zen) — queued" in text
     (back_button,) = keyboard.inline_keyboard[0]
+    assert decode_callback_data(back_button.callback_data) == ("history_page", "2")
+
+
+@pytest.mark.asyncio
+async def test_edit_history_articles_adds_a_download_row_for_a_ready_article() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+    plan_summary = PlanSummary(id=PlanId("plan-1"), week_label="2026-W32", status="approved")
+    articles = [ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="ready")]
+
+    await gateway.edit_history_articles(chat_id=1, message_id=9, plan_summary=plan_summary, articles=articles, back_page=2)
+
+    _, _, _, keyboard = bot.edited_messages[0]
+    docx_button, md_button = keyboard.inline_keyboard[0]
+    assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == ("a-1", "docx")
+    assert decode_export_id(decode_callback_data(md_button.callback_data)[1]) == ("a-1", "md")
+    (back_button,) = keyboard.inline_keyboard[1]
     assert decode_callback_data(back_button.callback_data) == ("history_page", "2")
 
 

@@ -45,9 +45,7 @@ class FakeArticle:
         self.recorded_versions.append((article_id, version))
 
     async def get(self, article_id: str) -> ArticleView:
-        return ArticleView(
-            id=article_id, plan_item_id="item-1", title="T", platform="P", filename="f.txt", content=b"c"
-        )
+        return ArticleView(id=article_id, plan_item_id="item-1", title="T", platform="P", content=b"c")
 
 
 class FakeGateway:

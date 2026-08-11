@@ -16,6 +16,7 @@ ArticleId = NewType("ArticleId", str)
 PlanStatus = Literal["pending_review", "approved", "archived"]
 PlanItemStatus = Literal["pending_review", "approved", "rejected", "archived"]
 ArticleStatus = Literal["queued", "generating", "error", "ready", "regenerating", "exported"]
+ArticleFormat = Literal["docx", "md"]
 
 # MVP Площадки (see CONTEXT.md) - one Статья per Площадка is fanned out per approved Тема (#14).
 PLATFORMS: tuple[str, ...] = ("zen", "vc")
@@ -41,7 +42,6 @@ class ArticleView:
     plan_item_id: PlanItemId
     title: str
     platform: str
-    filename: str
     content: bytes
 
 
