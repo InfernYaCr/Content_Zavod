@@ -7,6 +7,7 @@ Telegram layer (#4) was built against — keep their shape stable.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal, NewType, Sequence
 
 PlanId = NewType("PlanId", str)
@@ -83,3 +84,27 @@ class GeneratedVersion:
     model: str
     tokens: int
     cost: float
+
+
+@dataclass(frozen=True)
+class ArticleVersionSummary:
+    """One Версия's metadata only, for /history's version list (#26) - no content, so the
+    list stays cheap even for an Article with many regenerations."""
+
+    id: int
+    model: str
+    tokens: int
+    cost: float
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class ArticleVersionView:
+    """One Версия's full content, for /history's version detail screen (#26)."""
+
+    id: int
+    content: str
+    model: str
+    tokens: int
+    cost: float
+    created_at: datetime
