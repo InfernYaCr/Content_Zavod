@@ -10,6 +10,7 @@ from .errors import (
 )
 from .plan import Plan, PlanItemDetail
 from .types import (
+    PLATFORMS,
     ArticleId,
     ArticleStatus,
     ArticleView,
@@ -24,6 +25,7 @@ from .types import (
 )
 
 __all__ = [
+    "PLATFORMS",
     "Article",
     "ArticleId",
     "ArticleNotFound",

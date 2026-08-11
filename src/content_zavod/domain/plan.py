@@ -221,6 +221,25 @@ class Plan:
                     plan_id,
                 )
 
+    async def approved_items(self, plan_id: PlanId) -> list[PlanItemDetail]:
+        """The Plan's currently-approved items, full detail - what `approve_all`'s Article/Job
+        fan-out iterates over (#14). Safe to call repeatedly: it reflects current DB state rather
+        than "items approved by this call", so replaying the fan-out after `approve_all` itself
+        already returned early (already-approved Plan) still finds every approved item."""
+        rows = await self._pool.fetch(
+            "SELECT id, title, summary, keywords FROM plan_items WHERE plan_id = $1 AND status = 'approved'",
+            plan_id,
+        )
+        return [
+            PlanItemDetail(
+                id=PlanItemId(row["id"]),
+                title=row["title"],
+                summary=row["summary"],
+                keywords=json.loads(row["keywords"]),
+            )
+            for row in rows
+        ]
+
     async def archive(self, plan_id: PlanId) -> None:
         """Soft-archive a Plan and its items so /generate_plan can regenerate the week without data loss.
 

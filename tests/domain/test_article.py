@@ -132,3 +132,50 @@ async def test_mark_exported_is_idempotent(article: Article, plan: Plan) -> None
 
     await article.mark_exported(article_id)
     await article.mark_exported(article_id)  # no-op, must not raise
+
+
+async def test_create_is_idempotent_on_plan_item_and_platform(article: Article, plan: Plan) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    first_id = await article.create(plan_id, item_id, "Topic A", "zen")
+
+    second_id = await article.create(plan_id, item_id, "Topic A", "zen")
+
+    assert first_id == second_id
+
+
+async def test_request_generation_creates_the_article_and_enqueues_generate_article(
+    article: Article, plan: Plan, queue: JobQueue
+) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+
+    article_id = await article.request_generation(
+        plan_id, item_id, "Topic A", "summary text", ["kw1", "kw2"], "zen"
+    )
+
+    claimed = await queue.claim_next()
+    assert claimed is not None
+    assert claimed.job_type == "generate_article"
+    assert claimed.payload == {
+        "article_id": article_id,
+        "title": "Topic A",
+        "platform": "zen",
+        "summary": "summary text",
+        "keywords": ["kw1", "kw2"],
+    }
+    with pytest.raises(ArticleNotReady):
+        await article.get(article_id)
+
+
+async def test_request_generation_is_idempotent_for_the_same_plan_item_and_platform(
+    article: Article, plan: Plan, queue: JobQueue
+) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+
+    first_id = await article.request_generation(plan_id, item_id, "Topic A", "s", [], "zen")
+    second_id = await article.request_generation(plan_id, item_id, "Topic A", "s", [], "zen")
+
+    assert first_id == second_id
+    first_claim = await queue.claim_next()
+    assert first_claim is not None
+    second_claim = await queue.claim_next()
+    assert second_claim is None
