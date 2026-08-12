@@ -302,6 +302,70 @@ Telegram остаётся каналом взаимодействия, а web �
 
 Юридические документы и локальные требования должны проверяться профильным юристом перед продажей.
 
+## Поток D — архитектурное углубление модулей
+
+Источник этого потока — `docs/reviews/architecture-review-2026-08-11.html`. Эти задачи дополняют hardening: они не заменяют исправления A1–A10, а уменьшают стоимость дальнейшего развития.
+
+### D1. Углубить модуль настроек Владельца
+
+**Приоритет:** выполнить рано, до дальнейшего расширения SaaS-настроек.
+
+Сейчас ключи хранения, defaults и parsing Ниши/Голоса/Направлений протекают между `telegram` и pipelines. Ввести предметный интерфейс `OwnerSettings`:
+
+- `niche()` / `set_niche()`;
+- `directions()` / `set_directions()`;
+- `voice()` / `set_voice()`.
+
+Ключи БД, defaults и `parse_directions` остаются внутри реализации. Команды Telegram отвечают за ввод/рендер, pipelines — за генерацию prompts.
+
+```mermaid
+flowchart LR
+    T["Telegram-команды"] --> O["OwnerSettings API"]
+    P["Plan и Article pipelines"] --> O
+    O --> D[("owner_settings")]
+```
+
+**Acceptance:** нет импортов storage keys/defaults из pipeline в Telegram; один Protocol/API и один набор unit tests.
+
+### D2. Централизовать role gate команд
+
+Вместо повторения membership/role preamble в каждом handler создать регистрацию вида `register(router, command, required_role, handler)`. Из той же декларации строится меню команд.
+
+**Acceptance:** требуемая роль определена один раз; новую owner-only команду невозможно добавить в меню без соответствующего gate.
+
+### D3. Вынести callback dispatcher из aiogram adapter
+
+`entrypoints/bot.py` должен преобразовывать `CallbackQuery` в простой `CallbackContext`, а отдельный dispatcher — разбирать action/id и вызывать домен.
+
+```mermaid
+flowchart LR
+    Q["aiogram CallbackQuery"] --> A["Aiogram adapter"]
+    A --> C["CallbackContext"]
+    C --> D["dispatch(action, id, context)"]
+    D --> X["Plan / Article / JobQueue / Gateway"]
+    T["Простые unit tests"] --> D
+```
+
+**Acceptance:** callback actions тестируются без сборки aiogram-объектов; owner-only actions находятся в одной таблице; `bot.py` не содержит длинную цепочку `elif`.
+
+### D4. Сузить публичный интерфейс `telegram`
+
+Разделить текущий gateway на:
+
+- внутренний `callback_codec.py`;
+- внутренние чистые renderers/keyboards;
+- внешний Telegram adapter с коротким публичным API.
+
+Не выполнять как самостоятельную косметическую перестановку: совместить с A3/D3, когда всё равно меняются notification и callback seams.
+
+**Acceptance:** `telegram/__init__.py` экспортирует только используемый внешний контракт; renderers тестируются напрямую как внутренние функции.
+
+### D5. Объединить Postgres test fixtures
+
+Перенести общий `postgres_container` и pool в `tests/conftest.py`; в пакетных `conftest.py` оставить только предметные fixtures.
+
+**Acceptance:** один контейнер на полный прогон, нет пяти копий setup-кода. Это дешёвая задача и хороший первый PR перед конкурентными тестами A2/A5.
+
 ## Предлагаемые этапы выпуска
 
 ### Этап 1 — Technical hardening

@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Архитектурный обзор — Content Zavod</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose", flowchart: { curve: "basis" } });
+    </script>
+    <style>
+      .seam { stroke-dasharray: 5 4; }
+      .deep { background: linear-gradient(135deg, #0f172a, #1e293b); }
+      .label { font-size: 0.625rem; letter-spacing: 0.09em; text-transform: uppercase; }
+      .mermaid { font-size: 13px; }
+      .hatch {
+        background-image: repeating-linear-gradient(45deg, #fecaca 0 6px, #fee2e2 6px 12px);
+      }
+      .hatch-ok {
+        background-image: repeating-linear-gradient(45deg, #a7f3d0 0 6px, #d1fae5 6px 12px);
+      }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans antialiased">
+    <main class="max-w-5xl mx-auto px-6 py-14 space-y-16">
+
+      <!-- ══════════════════════════ ШАПКА ══════════════════════════ -->
+      <header class="space-y-6">
+        <div class="flex items-baseline justify-between flex-wrap gap-3">
+          <h1 class="font-serif text-4xl tracking-tight">Архитектурный обзор</h1>
+          <p class="font-mono text-xs text-slate-500">Content_Zavod · ветка claude/improve-codebase-architecture-4462fd · 11.08.2026</p>
+        </div>
+        <p class="text-sm text-slate-600 max-w-3xl">
+          Скоуп — горячие точки последних ~20 коммитов: <span class="font-mono text-xs">entrypoints/bot.py</span>,
+          <span class="font-mono text-xs">telegram/</span>, <span class="font-mono text-xs">pipelines/</span>.
+          Пять кандидатов на углубление (deepening).
+        </p>
+        <div class="flex flex-wrap gap-x-8 gap-y-2 text-xs text-slate-600 border-t border-b border-slate-200 py-3">
+          <span class="flex items-center gap-2"><span class="inline-block w-6 h-4 border-2 border-slate-700 bg-white"></span> модуль</span>
+          <span class="flex items-center gap-2">
+            <svg width="26" height="8"><line class="seam" x1="0" y1="4" x2="26" y2="4" stroke="#475569" stroke-width="2"/></svg> шов (<i>seam</i>)
+          </span>
+          <span class="flex items-center gap-2">
+            <svg width="26" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke="#dc2626" stroke-width="2"/><path d="M22 1 L26 4 L22 7 Z" fill="#dc2626"/></svg> утечка через шов
+          </span>
+          <span class="flex items-center gap-2"><span class="inline-block w-6 h-4 deep border-2 border-slate-900"></span> глубокий (<i>deep</i>) модуль</span>
+        </div>
+        <p class="text-xs text-slate-500 max-w-3xl">
+          Термины архитектуры даны по словарю <span class="font-mono">/codebase-design</span>: <b>модуль</b>, <b>интерфейс</b>,
+          <b>реализация</b>, <b>шов</b> (<i>seam</i>), <b>адаптер</b>, <b>глубина</b> (<i>depth</i>: глубокий / поверхностный),
+          <i>leverage</i> — то, что интерфейс даёт вызывающему коду, <i>locality</i> — то, что глубина даёт сопровождающему.
+          Термины предметной области — по <span class="font-mono">CONTEXT.md</span>.
+        </p>
+      </header>
+
+      <section id="candidates" class="space-y-16">
+
+        <!-- ══════════════════════════ КАНДИДАТ 1 ══════════════════════════ -->
+        <article id="c1" class="space-y-6">
+          <div class="space-y-3">
+            <h2 class="font-serif text-2xl">1 · Углубить модуль настроек Владельца вокруг Ниши / Голоса / Направлений</h2>
+            <div class="flex flex-wrap gap-2">
+              <span class="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-900 text-xs font-medium">Уверенно</span>
+              <span class="px-2.5 py-1 rounded-full bg-slate-200 text-slate-700 text-xs font-mono">внутри процесса</span>
+              <span class="px-2.5 py-1 rounded-full bg-slate-200 text-slate-700 text-xs font-mono">горячая точка · последние 6 коммитов</span>
+            </div>
+          </div>
+
+          <ul class="font-mono text-sm text-slate-700 space-y-0.5">
+            <li>src/content_zavod/owner_settings/settings_store.py</li>
+            <li>src/content_zavod/telegram/{niche,directions,voice,settings}_command.py</li>
+            <li>src/content_zavod/pipelines/{plan,article}_pipeline.py</li>
+          </ul>
+
+          <div class="grid md:grid-cols-2 gap-5">
+            <!-- ДО -->
+            <div class="rounded-lg border border-slate-200 bg-white p-4 space-y-3">
+              <p class="label text-red-700 font-semibold">Было — ключ, дефолт и разбор разбросаны</p>
+              <pre class="mermaid">
+flowchart TB
+  subgraph TG["telegram/ (командные модули)"]
+    N["niche_command"]
+    D["directions_command"]
+    V["voice_command"]
+    S["settings_command"]
+  end
+  subgraph PL["pipelines/ (сборка промптов)"]
+    PP["plan_pipeline<br/>NICHE_KEY, DEFAULT_NICHE<br/>DIRECTIONS_KEY, parse_directions"]
+    AP["article_pipeline<br/>VOICE_KEY, DEFAULT_VOICE"]
+  end
+  ST["OwnerSettingsStore<br/>get(key) / set(key,value)"]
+  N -.->|импорт ключа и дефолта| PP
+  D -.->|импорт ключа и дефолта| PP
+  V -.->|импорт ключа и дефолта| AP
+  S -.->|импорт ключа и дефолта| PP
+  S -.->|импорт ключа и дефолта| AP
+  N --> ST
+  D --> ST
+  V --> ST
+  S --> ST
+  PP --> ST
+  AP --> ST
+  classDef leak stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+  classDef store fill:#f1f5f9,stroke:#94a3b8;
+  class N,D,V,S,PP,AP leak
+  class ST store
+              </pre>
+              <p class="text-xs text-slate-500">Шесть модулей держат по куску одного понятия предметной области. Протокол <span class="font-mono">OwnerSettingsOperations</span> объявлен <strong>6&nbsp;раз</strong>.</p>
+            </div>
+
+            <!-- СТАЛО -->
+            <div class="rounded-lg border-2 border-slate-900 bg-white p-4 space-y-3">
+              <p class="label text-emerald-800 font-semibold">Станет — один глубокий модуль, один шов</p>
+              <pre class="mermaid">
+flowchart TB
+  subgraph TG2["telegram/"]
+    N2["команды niche / directions / voice / settings<br/>только рендер и валидация"]
+  end
+  subgraph PL2["pipelines/"]
+    P2["plan_pipeline · article_pipeline<br/>только текст промптов"]
+  end
+  OS["OwnerSettings<br/>niche() · set_niche()<br/>directions() · set_directions()<br/>voice() · set_voice()"]
+  DB[("таблица owner_settings<br/>key, value, updated_at")]
+  N2 --> OS
+  P2 --> OS
+  OS --> DB
+  classDef deep fill:#0f172a,stroke:#0f172a,color:#f8fafc,stroke-width:3px;
+  classDef plain fill:#ffffff,stroke:#334155;
+  class OS deep
+  class N2,P2,DB plain
+              </pre>
+              <p class="text-xs text-slate-500">Ключ, дефолт и нормализация уезжают внутрь реализации. Вызывающий код называет понятие, а не строковый ключ.</p>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <p class="label text-slate-500 mb-1">Проблема</p>
+              <p>Чтобы ответить «какая сейчас Ниша?», командный модуль Telegram импортирует <span class="font-mono text-xs">NICHE_KEY</span> и <span class="font-mono text-xs">DEFAULT_NICHE</span> из пайплайна сборки промптов.</p>
+            </div>
+            <div>
+              <p class="label text-slate-500 mb-1">Решение</p>
+              <p>Убрать ключ, дефолт и <span class="font-mono text-xs">parse_directions</span> за один интерфейс модуля <span class="font-mono text-xs">owner_settings</span>, названный по понятиям. И пайплайны, и команды зовут его.</p>
+            </div>
+            <div>
+              <p class="label text-slate-500 mb-1">Выигрыш</p>
+              <ul class="space-y-1 list-disc list-inside marker:text-emerald-600">
+                <li><i>locality</i>: одно определение Ниши</li>
+                <li>Минус 6 дублей протокола</li>
+                <li>Минус 5 рёбер telegram→pipelines</li>
+                <li>Интерфейс сжимается до понятий</li>
+                <li>Тесты подменяют один интерфейс</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="rounded border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm">
+            <strong>Задевает ADR-0008</strong> — там сказано: <em>«get() возвращает None, и вызывающий код сам подставляет текущий хардкод как дефолт»</em>. Стоит переоткрыть: этот дефолт сейчас подставляется в пяти местах, и <span class="font-mono text-xs">settings_command</span> лезет за ним сразу в два пайплайна. Сама общая таблица <span class="font-mono text-xs">owner_settings(key, value)</span> — предмет того ADR — не меняется.
+          </div>
+        </article>
+
+        <!-- ══════════════════════════ КАНДИДАТ 2 ══════════════════════════ -->
+        <article id="c2" class="space-y-6">
+          <div class="space-y-3">
+            <h2 class="font-serif text-2xl">2 · Схлопнуть скопированный ролевой гейт в точке входа бота</h2>
+            <div class="flex flex-wrap gap-2">
+              <span class="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-900 text-xs font-medium">Уверенно</span>
+              <span class="px-2.5 py-1 rounded-full bg-slate-200 text-slate-700 text-xs font-mono">внутри процесса</span>
+            </div>
+          </div>
+
+          <ul class="font-mono text-sm text-slate-700 space-y-0.5">
+            <li>src/content_zavod/entrypoints/bot.py:181–353</li>
+            <li>src/content_zavod/telegram/commands.py</li>
+          </ul>
+
+          <div class="grid md:grid-cols-2 gap-5">
+            <div class="rounded-lg border border-slate-200 bg-white p-5 space-y-4">
+              <p class="label text-red-700 font-semibold">Было — 6 тонких слоёв, повторённых 13 раз</p>
+              <div class="space-y-1.5">
+                <div class="h-8 border-l-4 border-red-400 bg-red-50 flex items-center px-3 font-mono text-xs">if message.from_user is None: return</div>
+                <div class="h-8 border-l-4 border-red-400 bg-red-50 flex items-center px-3 font-mono text-xs">role = await _role_for(...)</div>
+                <div class="h-8 border-l-4 border-red-400 bg-red-50 flex items-center px-3 font-mono text-xs">if role is None: return</div>
+                <div class="h-8 border-l-4 border-red-400 bg-red-50 flex items-center px-3 font-mono text-xs">if role != "owner":</div>
+                <div class="h-8 border-l-4 border-red-400 bg-red-50 flex items-center px-3 font-mono text-xs">&nbsp;&nbsp;&nbsp;&nbsp;send_error(_OWNER_ONLY_TEXT); return</div>
+                <div class="h-8 border-l-4 border-slate-800 bg-slate-100 flex items-center px-3 font-mono text-xs font-semibold">await handle_niche_command(...)</div>
+              </div>
+              <div class="flex items-center gap-3 pt-2">
+                <div class="flex-1 hatch h-14 rounded border border-red-300 flex items-center justify-center text-xs text-red-900 font-medium">× 13 хендлеров ≈ 90 строк из 629</div>
+              </div>
+              <p class="text-xs text-slate-500">«Кому что можно» лежит в двух местах: меню в <span class="font-mono">commands.py</span> и гейт здесь.</p>
+            </div>
+
+            <div class="rounded-lg border-2 border-slate-900 bg-white p-5 space-y-4">
+              <p class="label text-emerald-800 font-semibold">Станет — гейт при регистрации, один толстый слой</p>
+              <div class="space-y-1.5">
+                <div class="deep h-24 rounded flex flex-col items-center justify-center text-slate-100 px-4 text-center">
+                  <span class="label opacity-70">модуль регистрации команд</span>
+                  <span class="font-mono text-xs mt-1">register(router, "niche", role="owner")</span>
+                  <span class="text-[0.65rem] opacity-60 mt-1">from_user · поиск роли · проверка владельца · текст ошибки</span>
+                </div>
+                <div class="h-8 border-l-4 border-slate-800 bg-slate-100 flex items-center px-3 font-mono text-xs font-semibold">await handle_niche_command(...)</div>
+              </div>
+              <div class="flex items-center gap-3 pt-2">
+                <div class="flex-1 hatch-ok h-14 rounded border border-emerald-300 flex items-center justify-center text-xs text-emerald-900 font-medium">13 хендлеров × 1 строка</div>
+              </div>
+              <p class="text-xs text-slate-500">Требуемая роль становится фактом в точке регистрации — оттуда же её может читать <span class="font-mono">commands.py</span>.</p>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <p class="label text-slate-500 mb-1">Проблема</p>
+              <p>Новая команда Владельца — это снова та же пятистрочная преамбула плюс не забыть добавить её в <span class="font-mono text-xs">OWNER_COMMANDS</span>. Забыть можно любое из двух, и в одну сторону это ломается молча.</p>
+            </div>
+            <div>
+              <p class="label text-slate-500 mb-1">Решение</p>
+              <p>Модуль регистрации с интерфейсом <span class="font-mono text-xs">register(router, name, role, handler)</span>. Гейт становится реализацией, роль — данными, которые читает и меню команд.</p>
+            </div>
+            <div>
+              <p class="label text-slate-500 mb-1">Выигрыш</p>
+              <ul class="space-y-1 list-disc list-inside marker:text-emerald-600">
+                <li><i>locality</i>: одна проверка доступа</li>
+                <li>Меню и гейт делят один факт</li>
+                <li><i>leverage</i>: 1 интерфейс, 16 хендлеров</li>
+                <li>Гейт становится тестируемым напрямую</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- ══════════════════════════ КАНДИДАТ 3 ══════════════════════════ -->
+        <article id="c3" class="space-y-6">
+          <div class="space-y-3">
+            <h2 class="font-serif text-2xl">3 · Сделать шов под диспетчером коллбэков</h2>
+            <div class="flex flex-wrap gap-2">
+              <span class="px-2.5 py-1 rounded-full bg-amber-100 text-amber-900 text-xs font-medium">Стоит обсудить</span>
+              <span class="px-2.5 py-1 rounded-full bg-slate-200 text-slate-700 text-xs font-mono">порты и адаптеры</span>
+              <span class="px-2.5 py-1 rounded-full bg-red-100 text-red-800 text-xs font-mono">без тестов</span>
+            </div>
+          </div>
+
+          <ul class="font-mono text-sm text-slate-700 space-y-0.5">
+            <li>src/content_zavod/entrypoints/bot.py:355–467 &nbsp;<span class="text-slate-400">(on_callback — 17 веток elif)</span></li>
+            <li>src/content_zavod/telegram/gateway.py &nbsp;<span class="text-slate-400">(13 функций encode/decode)</span></li>
+          </ul>
+
+          <div class="grid md:grid-cols-2 gap-5">
+            <div class="rounded-lg border border-slate-200 bg-white p-4 space-y-3">
+              <p class="label text-red-700 font-semibold">Было — под aiogram нет шва</p>
+              <pre class="mermaid">
+flowchart TB
+  CQ["aiogram CallbackQuery"]
+  OC["on_callback<br/><i>17 веток elif</i>"]
+  R1["проверки роли ×3"]
+  R2["бухгалтерия callback.answer()"]
+  R3["decode_page_id / decode_export_id<br/>decode_history_*_id"]
+  R4["вызовы Plan · Article · JobQueue"]
+  R5["рендер через gateway"]
+  CQ --> OC
+  OC --> R1
+  OC --> R2
+  OC --> R3
+  OC --> R4
+  OC --> R5
+  T["тесты"] -. "надо собрать<br/>CallbackQuery" .-> CQ
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  classDef ghost fill:#fef2f2,stroke:#fca5a5,color:#7f1d1d;
+  class OC leak
+  class T ghost
+              </pre>
+            </div>
+
+            <div class="rounded-lg border-2 border-slate-900 bg-white p-4 space-y-3">
+              <p class="label text-emerald-800 font-semibold">Станет — dispatch(action, id, ctx)</p>
+              <pre class="mermaid">
+flowchart TB
+  CQ2["aiogram CallbackQuery"]
+  AD["адаптер: собрать CallbackContext<br/>chat_id · message_id · user_id · role · ack"]
+  DP["модуль маршрутизации коллбэков<br/><b>dispatch(action, id_, ctx)</b>"]
+  DOM["Plan · Article · JobQueue · gateway"]
+  CQ2 --> AD --> DP --> DOM
+  T2["тесты"] --> DP
+  classDef deep fill:#0f172a,stroke:#0f172a,color:#f8fafc,stroke-width:3px;
+  classDef ok fill:#ecfdf5,stroke:#34d399,color:#065f46;
+  class DP deep
+  class T2 ok
+              </pre>
+              <p class="text-xs text-slate-500">Шов оправдан двумя адаптерами: aiogram в проде, простая запись-контекст в тестах.</p>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <p class="label text-slate-500 mb-1">Проблема</p>
+              <p>Каждая кнопка продукта проходит через одну цепочку из 110 строк, до которой можно добраться только собрав aiogram-объект <span class="font-mono text-xs">CallbackQuery</span> — поэтому она не покрыта тестами вовсе.</p>
+            </div>
+            <div>
+              <p class="label text-slate-500 mb-1">Решение</p>
+              <p>Вынести цепочку веток в модуль, принимающий простую запись-контекст. Хендлер aiogram становится адаптером, который её собирает.</p>
+            </div>
+            <div>
+              <p class="label text-slate-500 mb-1">Выигрыш</p>
+              <ul class="space-y-1 list-disc list-inside marker:text-emerald-600">
+                <li>Интерфейс = поверхность тестирования</li>
+                <li>17 веток становятся достижимы</li>
+                <li>Действия только-для-Владельца в одной таблице</li>
+                <li>bot.py теряет ~110 строк</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- ══════════════════════════ КАНДИДАТ 4 ══════════════════════════ -->
+        <article id="c4" class="space-y-6">
+          <div class="space-y-3">
+            <h2 class="font-serif text-2xl">4 · Сузить интерфейс пакета <span class="font-mono text-xl">telegram</span></h2>
+            <div class="flex flex-wrap gap-2">
+              <span class="px-2.5 py-1 rounded-full bg-amber-100 text-amber-900 text-xs font-medium">Стоит обсудить</span>
+              <span class="px-2.5 py-1 rounded-full bg-slate-200 text-slate-700 text-xs font-mono">внутри процесса</span>
+            </div>
+          </div>
+
+          <ul class="font-mono text-sm text-slate-700 space-y-0.5">
+            <li>src/content_zavod/telegram/__init__.py &nbsp;<span class="text-slate-400">(69 экспортов)</span></li>
+            <li>src/content_zavod/telegram/gateway.py &nbsp;<span class="text-slate-400">(758 строк)</span></li>
+          </ul>
+
+          <div class="grid md:grid-cols-2 gap-5">
+            <div class="rounded-lg border border-slate-200 bg-white p-5 space-y-4">
+              <p class="label text-red-700 font-semibold">Было — интерфейс почти той же высоты, что реализация</p>
+              <div class="flex items-end gap-6 h-56">
+                <div class="flex-1 flex flex-col justify-end">
+                  <div class="bg-red-200 border-2 border-red-500 rounded-t h-40 flex items-center justify-center text-xs text-red-900 text-center px-2 font-medium">интерфейс<br/>69 экспортов<br/>15 методов gateway</div>
+                  <div class="bg-slate-200 border-2 border-t-0 border-slate-500 h-14 flex items-center justify-center text-xs text-slate-700">реализация</div>
+                </div>
+                <div class="flex-1 text-xs text-slate-600 space-y-2 pb-2">
+                  <p>В <span class="font-mono">gateway.py</span> лежат три несвязанные вещи:</p>
+                  <ul class="list-disc list-inside space-y-0.5">
+                    <li>кодек коллбэков из 13 функций</li>
+                    <li>31 чистый рендерер / сборщик клавиатур</li>
+                    <li>адаптер на 15 методов, каждый — один вызов</li>
+                  </ul>
+                </div>
+              </div>
+              <p class="text-xs text-slate-500">Каждый новый экран добавляет <span class="font-mono">send_X</span>, <span class="font-mono">edit_X</span>, <span class="font-mono">render_X</span>, <span class="font-mono">build_X_keyboard</span> — и ещё четыре экспорта.</p>
+            </div>
+
+            <div class="rounded-lg border-2 border-slate-900 bg-white p-5 space-y-4">
+              <p class="label text-emerald-800 font-semibold">Станет — короткий интерфейс, высокая реализация</p>
+              <div class="flex items-end gap-6 h-56">
+                <div class="flex-1 flex flex-col justify-end">
+                  <div class="bg-emerald-200 border-2 border-emerald-600 rounded-t h-12 flex items-center justify-center text-xs text-emerald-900 text-center px-2 font-medium">интерфейс<br/>адаптер + хендлеры</div>
+                  <div class="deep border-2 border-t-0 border-slate-900 flex items-center justify-center text-xs text-slate-100 text-center px-2" style="height:10.5rem">реализация<br/><span class="opacity-60">кодек · рендереры · клавиатуры</span></div>
+                </div>
+                <div class="flex-1 text-xs text-slate-600 space-y-2 pb-2">
+                  <p>Разбить на три модуля и экспортировать только то, что реально нужно <span class="font-mono">bot.py</span>:</p>
+                  <ul class="list-disc list-inside space-y-0.5">
+                    <li><span class="font-mono">callback_codec.py</span> — внутренний</li>
+                    <li><span class="font-mono">render/</span> — внутренний</li>
+                    <li><span class="font-mono">gateway.py</span> — адаптер</li>
+                  </ul>
+                </div>
+              </div>
+              <p class="text-xs text-slate-500">Рендереры остаются чистыми и тестируются отдельно — но как внутренние швы, а не экспорты пакета.</p>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <p class="label text-slate-500 mb-1">Проблема</p>
+              <p>Пакет выставляет 69 имён; <span class="font-mono text-xs">bot.py</span> импортирует 30 из них. Чтение шва почти ничего не говорит о том, чем занят модуль.</p>
+            </div>
+            <div>
+              <p class="label text-slate-500 mb-1">Решение</p>
+              <p>Разрезать <span class="font-mono text-xs">gateway.py</span> по трём уже существующим в нём заботам и экспортировать только адаптер и командные хендлеры.</p>
+            </div>
+            <div>
+              <p class="label text-slate-500 mb-1">Выигрыш</p>
+              <ul class="space-y-1 list-disc list-inside marker:text-emerald-600">
+                <li>Интерфейс сжимается, глубина растёт</li>
+                <li>Кодек становится внутренним швом</li>
+                <li>Модуль на 758 строк → три модуля</li>
+                <li>Навигация для ИИ: шов называет задачу</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- ══════════════════════════ КАНДИДАТ 5 ══════════════════════════ -->
+        <article id="c5" class="space-y-6">
+          <div class="space-y-3">
+            <h2 class="font-serif text-2xl">5 · Одна фикстура Postgres вместо пяти</h2>
+            <div class="flex flex-wrap gap-2">
+              <span class="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-900 text-xs font-medium">Уверенно</span>
+              <span class="px-2.5 py-1 rounded-full bg-slate-200 text-slate-700 text-xs font-mono">локально подменяемое</span>
+              <span class="px-2.5 py-1 rounded-full bg-slate-200 text-slate-700 text-xs font-mono">дёшево</span>
+            </div>
+          </div>
+
+          <ul class="font-mono text-sm text-slate-700 space-y-0.5">
+            <li>tests/{access,domain,job_queue,owner_settings,scheduling}/conftest.py</li>
+            <li>tests/conftest.py &nbsp;<span class="text-slate-400">(не существует)</span></li>
+          </ul>
+
+          <div class="grid md:grid-cols-2 gap-5">
+            <div class="rounded-lg border border-slate-200 bg-white p-5 space-y-4">
+              <p class="label text-red-700 font-semibold">Было — пять одинаковых фикстур, пять контейнеров</p>
+              <div class="grid grid-cols-5 gap-2">
+                <div class="text-center space-y-1"><div class="h-16 rounded border-2 border-red-400 bg-red-50 flex items-center justify-center text-[0.6rem] text-red-900">🐘</div><p class="text-[0.6rem] font-mono text-slate-600">access</p></div>
+                <div class="text-center space-y-1"><div class="h-16 rounded border-2 border-red-400 bg-red-50 flex items-center justify-center text-[0.6rem] text-red-900">🐘</div><p class="text-[0.6rem] font-mono text-slate-600">domain</p></div>
+                <div class="text-center space-y-1"><div class="h-16 rounded border-2 border-red-400 bg-red-50 flex items-center justify-center text-[0.6rem] text-red-900">🐘</div><p class="text-[0.6rem] font-mono text-slate-600">job_queue</p></div>
+                <div class="text-center space-y-1"><div class="h-16 rounded border-2 border-red-400 bg-red-50 flex items-center justify-center text-[0.6rem] text-red-900">🐘</div><p class="text-[0.6rem] font-mono text-slate-600">owner_set…</p></div>
+                <div class="text-center space-y-1"><div class="h-16 rounded border-2 border-red-400 bg-red-50 flex items-center justify-center text-[0.6rem] text-red-900">🐘</div><p class="text-[0.6rem] font-mono text-slate-600">scheduling</p></div>
+              </div>
+              <p class="text-xs text-slate-500">Блок <span class="font-mono">postgres_container</span> + <span class="font-mono">pool</span> <strong>побайтово одинаков</strong> во всех пяти файлах (проверено). Фикстура со <span class="font-mono">scope="session"</span>, объявленная в conftest каждого пакета, кэшируется отдельно на пакет — так что полный прогон может поднять пять контейнеров.</p>
+            </div>
+
+            <div class="rounded-lg border-2 border-slate-900 bg-white p-5 space-y-4">
+              <p class="label text-emerald-800 font-semibold">Станет — одна корневая фикстура</p>
+              <div class="space-y-2">
+                <div class="deep h-16 rounded flex items-center justify-center text-slate-100 text-xs">🐘 &nbsp; tests/conftest.py — postgres_container · pool</div>
+                <div class="grid grid-cols-5 gap-2">
+                  <div class="h-10 rounded border border-slate-400 bg-white flex items-center justify-center text-[0.6rem] font-mono text-slate-600">access</div>
+                  <div class="h-10 rounded border border-slate-400 bg-white flex items-center justify-center text-[0.6rem] font-mono text-slate-600">domain</div>
+                  <div class="h-10 rounded border border-slate-400 bg-white flex items-center justify-center text-[0.6rem] font-mono text-slate-600">job_queue</div>
+                  <div class="h-10 rounded border border-slate-400 bg-white flex items-center justify-center text-[0.6rem] font-mono text-slate-600">owner_set…</div>
+                  <div class="h-10 rounded border border-slate-400 bg-white flex items-center justify-center text-[0.6rem] font-mono text-slate-600">scheduling</div>
+                </div>
+              </div>
+              <p class="text-xs text-slate-500">В conftest пакетов остаются только их собственные предметные фикстуры (<span class="font-mono">plan</span>, <span class="font-mono">queue</span>, <span class="font-mono">membership</span>…).</p>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <p class="label text-slate-500 mb-1">Проблема</p>
+              <p>Один и тот же блок на 30 строк поддерживается в пяти местах, а прогон тестов платит за контейнер на каждый пакет.</p>
+            </div>
+            <div>
+              <p class="label text-slate-500 mb-1">Решение</p>
+              <p>Поднять <span class="font-mono text-xs">postgres_container</span> и <span class="font-mono text-xs">pool</span> в <span class="font-mono text-xs">tests/conftest.py</span>.</p>
+            </div>
+            <div>
+              <p class="label text-slate-500 mb-1">Выигрыш</p>
+              <ul class="space-y-1 list-disc list-inside marker:text-emerald-600">
+                <li><i>locality</i>: одна фикстура на правку</li>
+                <li>Минус ~120 продублированных строк</li>
+                <li>Один контейнер на прогон</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+      </section>
+
+      <!-- ══════════════════════════ ГЛАВНАЯ РЕКОМЕНДАЦИЯ ══════════════════════════ -->
+      <section id="top-recommendation">
+        <div class="deep rounded-xl p-8 text-slate-100 space-y-4">
+          <p class="label opacity-60">Главная рекомендация</p>
+          <h2 class="font-serif text-3xl">
+            <a href="#c1" class="underline decoration-emerald-400 decoration-2 underline-offset-4">1 · Углубить модуль настроек Владельца</a>
+          </h2>
+          <p class="text-slate-300 max-w-3xl">
+            Он лежит ровно на горячей точке — последние шесть коммитов трогали Нишу, Голос и Направления — и это
+            единственный кандидат, который убирает утечку через шов, а не переставляет уже работающий код. Сейчас
+            командный слой Telegram импортирует ключи хранения и дефолты для показа из пайплайнов сборки промптов.
+            Углубите <span class="font-mono text-sm">owner_settings</span> — и оба вызывающих модуля получат интерфейс,
+            названный по понятию предметной области, а не по строковому ключу; шесть дублей протокола исчезнут; а
+            следующая настройка Владельца станет одним методом, а не пятью файлами.
+          </p>
+          <p class="text-sm text-slate-400">Дальше <a href="#c5" class="underline underline-offset-2">5</a> как дешёвое дополнение и <a href="#c2" class="underline underline-offset-2">2</a> — до того, как появится следующая команда.</p>
+        </div>
+      </section>
+
+    </main>
+  </body>
+</html>
