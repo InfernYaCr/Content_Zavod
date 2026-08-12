@@ -8,6 +8,7 @@ from content_zavod.pipelines.plan_pipeline import (
     make_generate_plan_handler,
     make_regenerate_topic_handler,
 )
+from content_zavod.settings import SettingsService
 from content_zavod.yandex import KeywordDynamicsPoint, Message
 
 
@@ -89,7 +90,7 @@ async def test_handler_picks_growing_keywords_and_skips_declining_ones() -> None
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        FakeOwnerSettingsStore(),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("growing kw", "declining kw"),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -120,7 +121,7 @@ async def test_handler_ranks_by_growth_and_respects_topics_per_plan() -> None:
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        FakeOwnerSettingsStore(),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("small growth", "big growth"),
         topics_per_plan=1,
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
@@ -145,7 +146,7 @@ async def test_handler_skips_a_topic_whose_title_was_already_used_recently() -> 
         keyword_stats,
         text_generator,
         recent_titles,
-        FakeOwnerSettingsStore(),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("growing kw",),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -163,7 +164,7 @@ async def test_handler_swallows_a_keyword_dynamics_failure_for_one_keyword() -> 
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        FakeOwnerSettingsStore(),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("broken kw", "ok kw"),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -181,7 +182,7 @@ async def test_handler_requests_a_six_month_monthly_dynamics_window() -> None:
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        FakeOwnerSettingsStore(),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("missing kw",),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -201,7 +202,7 @@ async def test_handler_uses_default_niche_when_unset() -> None:
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        FakeOwnerSettingsStore(None),
+        SettingsService(FakeOwnerSettingsStore(None)),
         seed_keywords=("growing kw",),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -222,7 +223,7 @@ async def test_handler_reads_niche_from_owner_settings_store() -> None:
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        FakeOwnerSettingsStore("edtech"),
+        SettingsService(FakeOwnerSettingsStore("edtech")),
         seed_keywords=("growing kw",),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -241,7 +242,7 @@ async def test_handler_uses_default_directions_when_seed_keywords_and_store_are_
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        FakeOwnerSettingsStore(),
+        SettingsService(FakeOwnerSettingsStore()),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
@@ -260,7 +261,7 @@ async def test_handler_reads_directions_from_owner_settings_store() -> None:
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        FakeOwnerSettingsStore(directions="новая ниша"),
+        SettingsService(FakeOwnerSettingsStore(directions="новая ниша")),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
@@ -279,7 +280,9 @@ async def test_regenerate_topic_handler_redrafts_using_current_item_and_comment(
     text_generator = FakeTextGenerator(
         {"Old Title": "Title: New Title\nSummary: new summary\nKeywords: new kw"}
     )
-    handler = make_regenerate_topic_handler(item_reader, text_generator, FakeOwnerSettingsStore())
+    handler = make_regenerate_topic_handler(
+        item_reader, text_generator, SettingsService(FakeOwnerSettingsStore())
+    )
 
     output = await handler({"plan_item_id": "item-1", "comment": "make it punchier"})
 
@@ -297,7 +300,9 @@ async def test_regenerate_topic_handler_works_without_a_comment() -> None:
     current = PlanItemDetail(id="item-1", title="Old Title", summary="", keywords=[])
     item_reader = FakePlanItemReader(current)
     text_generator = FakeTextGenerator({"Old Title": "Title: New Title\nSummary: \nKeywords: "})
-    handler = make_regenerate_topic_handler(item_reader, text_generator, FakeOwnerSettingsStore())
+    handler = make_regenerate_topic_handler(
+        item_reader, text_generator, SettingsService(FakeOwnerSettingsStore())
+    )
 
     output = await handler({"plan_item_id": "item-1", "comment": None})
 
@@ -310,7 +315,7 @@ async def test_regenerate_topic_handler_reads_niche_from_owner_settings_store() 
     item_reader = FakePlanItemReader(current)
     text_generator = FakeTextGenerator({"Old Title": "Title: New Title\nSummary: \nKeywords: "})
     handler = make_regenerate_topic_handler(
-        item_reader, text_generator, FakeOwnerSettingsStore("edtech")
+        item_reader, text_generator, SettingsService(FakeOwnerSettingsStore("edtech"))
     )
 
     await handler({"plan_item_id": "item-1", "comment": None})

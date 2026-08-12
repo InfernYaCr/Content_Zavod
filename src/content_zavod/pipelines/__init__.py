@@ -2,6 +2,7 @@ from .article_pipeline import (
     DEFAULT_VOICE,
     VOICE_KEY,
     ArticleReader,
+    OwnerSettingsOperations,
     make_generate_article_handler,
     make_regenerate_article_handler,
 )
@@ -11,7 +12,6 @@ from .plan_pipeline import (
     DEFAULT_NICHE,
     DIRECTIONS_KEY,
     NICHE_KEY,
-    OwnerSettingsOperations,
     PlanItemReader,
     make_generate_plan_handler,
     make_regenerate_topic_handler,

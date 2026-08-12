@@ -28,6 +28,7 @@ from ..pipelines import (
     make_regenerate_article_handler,
     make_regenerate_topic_handler,
 )
+from ..settings import SettingsService
 from ..yandex import ImageGenerator, KeywordStats, TextGenerator
 from ._process import register_shutdown
 
@@ -63,6 +64,7 @@ async def main(settings: Settings | None = None) -> None:
         await article.ensure_schema()
         owner_settings = OwnerSettingsStore(pool)
         await owner_settings.ensure_schema()
+        owner_settings_service = SettingsService(owner_settings)
 
         text_generator = _build_yandex_client(
             settings.yandex, TextGenerator.with_service_account_key, TextGenerator.with_oauth_token
@@ -79,7 +81,7 @@ async def main(settings: Settings | None = None) -> None:
 
         handlers: dict[str, JobHandler] = {
             "generate_plan": make_generate_plan_handler(
-                keyword_stats, text_generator, plan.recent_topic_titles, owner_settings
+                keyword_stats, text_generator, plan.recent_topic_titles, owner_settings_service
             ),
             "generate_article": make_generate_article_handler(
                 text_generator, url_checker, owner_settings
@@ -88,7 +90,9 @@ async def main(settings: Settings | None = None) -> None:
                 article, text_generator, url_checker, owner_settings
             ),
             "generate_cover": make_generate_cover_handler(image_generator),
-            "regenerate_topic": make_regenerate_topic_handler(plan, text_generator, owner_settings),
+            "regenerate_topic": make_regenerate_topic_handler(
+                plan, text_generator, owner_settings_service
+            ),
         }
 
         stop = asyncio.Event()

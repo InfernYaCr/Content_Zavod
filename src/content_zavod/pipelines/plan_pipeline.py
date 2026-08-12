@@ -3,12 +3,14 @@
 Per ADR-0006's 2026-08-07 amendment, "growing" is determined from
 `KeywordStats.keyword_dynamics()` month-over-month counts for a seed list of
 Направления (Wordstat seed keywords), not a static high-frequency-now
-snapshot. The seed list is Owner-editable (#38) via `/set_directions`, read
-fresh from `OwnerSettingsStore` on every call so a change takes effect
-without a restart - as is the free-text Niche description embedded in the
-prompts (#36). `seed_keywords` remains an explicit override for callers
-(mainly tests) that want to bypass the store entirely; dedup against topic
-history is delegated to the caller-supplied `recent_topic_titles`.
+snapshot. Ниша and Направления live in the `settings` module (#49), which
+this pipeline reads fresh from a `SettingsReader` at the start of every Job
+run so a change takes effect without a restart - the constants and
+`parse_directions` below are aliases into that module, kept here so `/settings`
+and the other existing importers don't need to change. `seed_keywords`
+remains an explicit override for callers (mainly tests) that want to bypass
+Настройки entirely; dedup against topic history is delegated to the
+caller-supplied `recent_topic_titles`.
 """
 
 from __future__ import annotations
@@ -19,46 +21,29 @@ from typing import Any, Protocol
 
 from ..domain import PlanItemDetail, PlanItemId, TopicDraft
 from ..job_queue import JobHandler
+from ..settings import (
+    DEFAULT_DIRECTIONS,
+    DEFAULT_NICHE,
+    DIRECTIONS_KEY,
+    NICHE_KEY,
+    SettingsReader,
+    parse_directions,
+)
 from ..yandex import KeywordDynamicsPoint, KeywordStats, Message, TextGenerator
 
-NICHE_KEY = "niche"
-DEFAULT_NICHE = "маркетинг"
-
-DIRECTIONS_KEY = "directions"
-DEFAULT_DIRECTIONS: Sequence[str] = (
-    "crm для малого бизнеса",
-    "email маркетинг",
-    "таргетированная реклама",
-    "контент маркетинг",
-    "seo продвижение сайта",
-    "воронка продаж",
-    "юнит экономика",
-    "маркетинговая стратегия",
-)
+__all__ = [
+    "DEFAULT_DIRECTIONS",
+    "DEFAULT_NICHE",
+    "DIRECTIONS_KEY",
+    "NICHE_KEY",
+    "make_generate_plan_handler",
+    "make_regenerate_topic_handler",
+    "parse_directions",
+]
 
 TOPICS_PER_PLAN = 3
 DYNAMICS_MONTHS = 6
 RECENT_HISTORY_DAYS = 90
-
-
-class OwnerSettingsOperations(Protocol):
-    async def get(self, key: str) -> str | None: ...
-
-
-async def _current_niche(owner_settings: OwnerSettingsOperations) -> str:
-    value = await owner_settings.get(NICHE_KEY)
-    return value if value else DEFAULT_NICHE
-
-
-def parse_directions(value: str) -> list[str]:
-    return [item.strip() for item in value.split(",") if item.strip()]
-
-
-async def _current_directions(owner_settings: OwnerSettingsOperations) -> Sequence[str]:
-    value = await owner_settings.get(DIRECTIONS_KEY)
-    if not value:
-        return DEFAULT_DIRECTIONS
-    return parse_directions(value) or DEFAULT_DIRECTIONS
 
 
 def _topic_prompt_system(niche: str) -> str:
@@ -75,7 +60,7 @@ def make_generate_plan_handler(
     keyword_stats: KeywordStats,
     text_generator: TextGenerator,
     recent_topic_titles: Callable[[datetime], Awaitable[list[str]]],
-    owner_settings: OwnerSettingsOperations,
+    settings: SettingsReader,
     *,
     seed_keywords: Sequence[str] | None = None,
     topics_per_plan: int = TOPICS_PER_PLAN,
@@ -85,12 +70,9 @@ def make_generate_plan_handler(
         week_label = payload["week_label"]
         current_time = now()
         from_date, to_date = _dynamics_window(current_time)
-        niche = await _current_niche(owner_settings)
-        directions = (
-            seed_keywords
-            if seed_keywords is not None
-            else await _current_directions(owner_settings)
-        )
+        owner_settings = await settings.read()
+        niche = owner_settings.niche
+        directions = seed_keywords if seed_keywords is not None else owner_settings.directions
 
         growing: list[tuple[float, str]] = []
         for keyword in directions:
@@ -143,14 +125,14 @@ def _regenerate_prompt_system(niche: str) -> str:
 def make_regenerate_topic_handler(
     item_reader: PlanItemReader,
     text_generator: TextGenerator,
-    owner_settings: OwnerSettingsOperations,
+    settings: SettingsReader,
 ) -> JobHandler:
     async def handle(payload: dict[str, Any]) -> dict[str, Any]:
         plan_item_id = PlanItemId(payload["plan_item_id"])
         comment = payload.get("comment")
         current = await item_reader.get_item(plan_item_id)
-        niche = await _current_niche(owner_settings)
-        draft = await _redraft_topic(text_generator, current, comment, niche)
+        owner_settings = await settings.read()
+        draft = await _redraft_topic(text_generator, current, comment, owner_settings.niche)
         return {
             "plan_item_id": plan_item_id,
             "title": draft.title,
