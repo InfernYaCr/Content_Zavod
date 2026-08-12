@@ -54,3 +54,11 @@ class ArticleVersionNotFound(DomainError):
 
     def __init__(self, article_id: object, version_id: object) -> None:
         super().__init__(f"No version {version_id!r} for article {article_id!r}")
+
+
+class InvalidSettingValue(DomainError):
+    """Raised by a Settings typed setter when input normalizes to nothing."""
+
+    def __init__(self, field: str) -> None:
+        super().__init__(f"Setting {field!r} cannot be empty")
+        self.field = field

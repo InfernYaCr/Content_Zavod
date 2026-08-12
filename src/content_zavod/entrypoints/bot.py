@@ -47,6 +47,7 @@ from ..domain import (
 from ..job_queue import JobId, JobQueue, JobResult, run_notifications
 from ..owner_settings import OwnerSettingsStore
 from ..scheduling import ScheduleSettings, schedule_weekly_plan_trigger
+from ..settings import SettingsService
 from ..telegram import (
     BotClient,
     CommentGatedRegeneration,
@@ -182,6 +183,7 @@ def _build_router(
     join_request_flow: JoinRequestFlow,
     schedule_settings: ScheduleSettings,
     owner_settings: OwnerSettingsStore,
+    owner_settings_service: SettingsService,
     queue: JobQueue,
     scheduler: AsyncIOScheduler,
     settings: Settings,
@@ -293,7 +295,7 @@ def _build_router(
         if role != "owner":
             await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
             return
-        await handle_niche_command(owner_settings, gateway, message.chat.id)
+        await handle_niche_command(owner_settings_service, gateway, message.chat.id)
 
     @router.message(Command("set_niche"))
     async def on_set_niche(message: Message, command: CommandObject) -> None:
@@ -305,7 +307,9 @@ def _build_router(
         if role != "owner":
             await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
             return
-        await handle_set_niche_command(owner_settings, gateway, message.chat.id, command.args or "")
+        await handle_set_niche_command(
+            owner_settings_service, gateway, message.chat.id, command.args or ""
+        )
 
     @router.message(Command("directions"))
     async def on_directions(message: Message) -> None:
@@ -317,7 +321,7 @@ def _build_router(
         if role != "owner":
             await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
             return
-        await handle_directions_command(owner_settings, gateway, message.chat.id)
+        await handle_directions_command(owner_settings_service, gateway, message.chat.id)
 
     @router.message(Command("set_directions"))
     async def on_set_directions(message: Message, command: CommandObject) -> None:
@@ -330,7 +334,7 @@ def _build_router(
             await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
             return
         await handle_set_directions_command(
-            owner_settings, gateway, message.chat.id, command.args or ""
+            owner_settings_service, gateway, message.chat.id, command.args or ""
         )
 
     @router.message(Command("voice"))
@@ -593,6 +597,7 @@ async def main(settings: Settings | None = None) -> None:
         await schedule_settings.ensure_schema()
         owner_settings = OwnerSettingsStore(pool)
         await owner_settings.ensure_schema()
+        owner_settings_service = SettingsService(owner_settings)
         plan = Plan(pool, queue)
         await plan.ensure_schema()
         article = Article(pool, queue)
@@ -638,6 +643,7 @@ async def main(settings: Settings | None = None) -> None:
                 join_request_flow,
                 schedule_settings,
                 owner_settings,
+                owner_settings_service,
                 queue,
                 scheduler,
                 settings,
