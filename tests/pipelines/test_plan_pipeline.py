@@ -235,6 +235,30 @@ async def test_handler_reads_niche_from_owner_settings_store() -> None:
 
 
 @pytest.mark.asyncio
+async def test_handler_reads_niche_fresh_on_each_run_without_being_rebuilt() -> None:
+    keyword_stats = FakeKeywordStats({"growing kw": _growing(100, 500)})
+    text_generator = FakeTextGenerator(
+        {"growing kw": "Title: Growing Topic\nSummary: it grows\nKeywords: growing kw"}
+    )
+    store = FakeOwnerSettingsStore("edtech")
+    handler = make_generate_plan_handler(
+        keyword_stats,
+        text_generator,
+        _no_recent_titles,
+        SettingsService(store),
+        seed_keywords=("growing kw",),
+        now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
+    )
+
+    await handler({"week_label": "Week 1"})
+    assert "«edtech»" in text_generator.calls[0][0].text
+
+    store._niche = "b2b saas"
+    await handler({"week_label": "Week 2"})
+    assert "«b2b saas»" in text_generator.calls[-1][0].text
+
+
+@pytest.mark.asyncio
 async def test_handler_uses_default_directions_when_seed_keywords_and_store_are_unset() -> None:
     keyword_stats = FakeKeywordStats({})
     text_generator = FakeTextGenerator({})
@@ -322,3 +346,21 @@ async def test_regenerate_topic_handler_reads_niche_from_owner_settings_store() 
 
     system_message = text_generator.calls[0][0]
     assert "«edtech»" in system_message.text
+
+
+@pytest.mark.asyncio
+async def test_regenerate_topic_handler_reads_niche_fresh_on_each_run_without_being_rebuilt() -> (
+    None
+):
+    current = PlanItemDetail(id="item-1", title="Old Title", summary="", keywords=[])
+    item_reader = FakePlanItemReader(current)
+    text_generator = FakeTextGenerator({"Old Title": "Title: New Title\nSummary: \nKeywords: "})
+    store = FakeOwnerSettingsStore("edtech")
+    handler = make_regenerate_topic_handler(item_reader, text_generator, SettingsService(store))
+
+    await handler({"plan_item_id": "item-1", "comment": None})
+    assert "«edtech»" in text_generator.calls[0][0].text
+
+    store._niche = "b2b saas"
+    await handler({"plan_item_id": "item-1", "comment": None})
+    assert "«b2b saas»" in text_generator.calls[-1][0].text
