@@ -26,7 +26,7 @@ from ..domain.errors import InvalidSettingValue
 from ..settings import (
     PERSONAS,
     OwnerSettings,
-    format_custom_persona,
+    persona_detail_text,
     persona_display_title,
     persona_setting_value,
     resolve_persona,
@@ -53,10 +53,10 @@ class PersonaSettings(Protocol):
 
 
 def _persona_reply_text(current: OwnerSettings) -> str:
+    detail = persona_detail_text(current.persona, current.custom_persona)
     if current.persona is not None:
-        return f"Текущая Персона: {current.persona.title}"
-    body = format_custom_persona(current.custom_persona) if current.custom_persona else ""
-    return f"Текущая Персона:\n{body}"
+        return f"Текущая Персона: {detail}"
+    return f"Текущая Персона:\n{detail}"
 
 
 async def handle_persona_command(

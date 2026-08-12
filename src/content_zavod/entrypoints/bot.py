@@ -182,7 +182,6 @@ def _build_router(
     article_regeneration: CommentGatedRegeneration[ArticleId],
     join_request_flow: JoinRequestFlow,
     schedule_settings: ScheduleSettings,
-    owner_settings: OwnerSettingsStore,
     owner_settings_service: SettingsService,
     queue: JobQueue,
     scheduler: AsyncIOScheduler,
@@ -373,7 +372,7 @@ def _build_router(
         if role != "owner":
             await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
             return
-        await handle_settings_command(owner_settings, gateway, message.chat.id)
+        await handle_settings_command(owner_settings_service, gateway, message.chat.id)
 
     @router.callback_query()
     async def on_callback(callback: CallbackQuery) -> None:
@@ -646,7 +645,6 @@ async def main(settings: Settings | None = None) -> None:
                 article_regeneration,
                 join_request_flow,
                 schedule_settings,
-                owner_settings,
                 owner_settings_service,
                 queue,
                 scheduler,
