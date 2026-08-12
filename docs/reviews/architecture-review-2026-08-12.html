@@ -1,0 +1,669 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Architecture review — Content Zavod</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+    </script>
+    <style>
+      .seam { stroke-dasharray: 5 4; }
+      .deep { background: linear-gradient(140deg, #0f172a, #1e293b); }
+      .hatch {
+        background-image: repeating-linear-gradient(
+          45deg, transparent, transparent 5px, rgba(220,38,38,.10) 5px, rgba(220,38,38,.10) 10px
+        );
+      }
+      .lbl { font-size: .625rem; letter-spacing: .12em; text-transform: uppercase; }
+      .mermaid { display: flex; justify-content: center; }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 antialiased">
+    <main class="max-w-6xl mx-auto px-6 py-14 space-y-16">
+
+      <!-- ============ HEADER ============ -->
+      <header class="space-y-6">
+        <div class="flex items-baseline justify-between flex-wrap gap-4 border-b border-slate-300 pb-5">
+          <h1 class="font-serif text-4xl tracking-tight">Content&nbsp;Zavod — обзор архитектуры</h1>
+          <p class="font-mono text-xs text-slate-500">12 августа 2026 · master @ a191564</p>
+        </div>
+
+        <div class="grid md:grid-cols-[1fr_auto] gap-8 items-start">
+          <p class="text-[15px] leading-relaxed text-slate-600 max-w-2xl">
+            Шесть кандидатов на <strong class="text-slate-900">углубление</strong>. Точка отсчёта —
+            hot spots последних 60 коммитов: <span class="font-mono text-[13px]">telegram/gateway.py</span>,
+            <span class="font-mono text-[13px]">entrypoints/bot.py</span>,
+            <span class="font-mono text-[13px]">domain/plan.py</span>, конвейеры Статьи.
+            Каждый кандидат прошёл <em>тест на удаление</em>: сложность концентрируется, а не переезжает.
+          </p>
+
+          <div class="rounded-lg border border-slate-200 bg-white p-4 text-xs space-y-2.5 min-w-[230px]">
+            <p class="lbl text-slate-400 mb-1">Легенда</p>
+            <div class="flex items-center gap-2.5">
+              <span class="inline-block w-8 h-4 border border-slate-400 bg-white"></span>
+              <span class="text-slate-600">модуль</span>
+            </div>
+            <div class="flex items-center gap-2.5">
+              <svg width="32" height="16"><line class="seam" x1="0" y1="8" x2="32" y2="8" stroke="#64748b" stroke-width="2"/></svg>
+              <span class="text-slate-600">шов</span>
+            </div>
+            <div class="flex items-center gap-2.5">
+              <svg width="32" height="16"><line x1="0" y1="8" x2="26" y2="8" stroke="#dc2626" stroke-width="2"/><path d="M26 4 L32 8 L26 12 Z" fill="#dc2626"/></svg>
+              <span class="text-slate-600">протечка знания</span>
+            </div>
+            <div class="flex items-center gap-2.5">
+              <span class="inline-block w-8 h-4 deep rounded-sm"></span>
+              <span class="text-slate-600">глубокий модуль</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="rounded-lg border border-slate-200 bg-white px-5 py-4">
+          <p class="lbl text-slate-400 mb-2">Область обзора</p>
+          <p class="text-sm text-slate-600 leading-relaxed">
+            Это обзор <strong>формы модулей</strong>, а не корректности. Поведенческие дефекты
+            (stale lease, потерянный lifecycle Статьи, prompt injection) уже описаны в
+            <span class="font-mono text-[13px]">docs/reviews/2026-08-12-technical-audit.md</span> — здесь они не дублируются.
+            Кандидаты 4, 5 и 6 уже стоят в плане как <span class="font-mono text-[13px]">D3 / D2 / D5</span>;
+            они включены с доказательствами и текущими цифрами, но не выдаются за новые находки.
+          </p>
+        </div>
+      </header>
+
+      <!-- ============ CANDIDATES ============ -->
+      <section id="candidates" class="space-y-14">
+
+        <!-- ---------- 1 ---------- -->
+        <article id="c1" class="scroll-mt-8">
+          <div class="flex items-start justify-between gap-6 flex-wrap mb-5">
+            <h2 class="font-serif text-[26px] leading-tight max-w-2xl">
+              <span class="text-slate-400 font-sans text-xl mr-2">01</span>
+              Углубить Настройки Владельца из key-value в типизированный модуль
+            </h2>
+            <div class="flex gap-2 shrink-0 pt-1">
+              <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-medium">Strong</span>
+              <span class="rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-mono">local-substitutable</span>
+            </div>
+          </div>
+
+          <p class="font-mono text-[13px] text-slate-500 mb-6 leading-relaxed">
+            owner_settings/settings_store.py · telegram/{niche,voice,directions,settings}_command.py ·
+            pipelines/{plan,article}_pipeline.py · personas.py
+          </p>
+
+          <div class="grid md:grid-cols-2 gap-5 mb-6">
+            <!-- BEFORE -->
+            <div class="rounded-lg border border-slate-200 bg-white p-5">
+              <p class="lbl text-slate-400 mb-4">Сейчас — поверхностный</p>
+              <div class="relative" style="height:300px">
+                <!-- thin interface / thin implementation -->
+                <div class="absolute left-1/2 -translate-x-1/2 top-0 w-52">
+                  <div class="border-2 border-slate-800 bg-slate-100 text-center py-2 text-[11px] font-mono">get(key) · set(key,v)</div>
+                  <div class="border-2 border-t-0 border-slate-300 bg-white text-center py-2 text-[11px] text-slate-400">SELECT / UPSERT</div>
+                  <p class="lbl text-slate-400 text-center mt-1.5">OwnerSettingsStore</p>
+                </div>
+                <!-- scattered knowledge -->
+                <svg class="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 420 300" preserveAspectRatio="none">
+                  <line x1="70"  y1="200" x2="180" y2="80" stroke="#dc2626" stroke-width="1.5"/>
+                  <line x1="150" y1="230" x2="195" y2="85" stroke="#dc2626" stroke-width="1.5"/>
+                  <line x1="270" y1="230" x2="225" y2="85" stroke="#dc2626" stroke-width="1.5"/>
+                  <line x1="350" y1="200" x2="240" y2="80" stroke="#dc2626" stroke-width="1.5"/>
+                  <line x1="210" y1="255" x2="210" y2="90" stroke="#dc2626" stroke-width="1.5"/>
+                </svg>
+                <div class="absolute bottom-0 left-0 right-0 hatch rounded border border-red-200 p-3">
+                  <p class="lbl text-red-600 mb-2">знание живёт снаружи</p>
+                  <div class="grid grid-cols-2 gap-1.5 text-[10px] font-mono text-slate-600">
+                    <span>NICHE_KEY</span><span>DEFAULT_NICHE</span>
+                    <span>VOICE_KEY</span><span>DEFAULT_VOICE</span>
+                    <span>DIRECTIONS_KEY</span><span>DEFAULT_DIRECTIONS</span>
+                    <span>parse_directions()</span><span>PERSONA_VALUE_PREFIX</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <!-- AFTER -->
+            <div class="rounded-lg border border-slate-200 bg-white p-5">
+              <p class="lbl text-slate-400 mb-4">После — глубокий</p>
+              <div class="relative" style="height:300px">
+                <div class="absolute left-1/2 -translate-x-1/2 top-0 w-64">
+                  <div class="border-2 border-emerald-700 bg-emerald-50 text-center py-2 text-[11px] font-mono text-emerald-900">load() → Настройки</div>
+                  <div class="deep border-2 border-t-0 border-slate-800 px-4 py-7 space-y-1.5">
+                    <p class="text-[10px] font-mono text-slate-300">ключи · дефолты</p>
+                    <p class="text-[10px] font-mono text-slate-300">парсинг Направлений</p>
+                    <p class="text-[10px] font-mono text-slate-300">валидация · пресеты Голоса</p>
+                    <p class="text-[10px] font-mono text-slate-300">SELECT / UPSERT</p>
+                  </div>
+                  <p class="lbl text-slate-400 text-center mt-1.5">Настройки</p>
+                </div>
+                <div class="absolute bottom-0 left-0 right-0 border border-slate-200 rounded p-3 bg-slate-50">
+                  <p class="lbl text-slate-400 mb-2">вызывающие получают значение</p>
+                  <p class="text-[11px] font-mono text-slate-600">
+                    Настройки(ниша, голос, направления)
+                  </p>
+                  <p class="text-[10px] text-slate-400 mt-1.5">конвейеры и команды больше не знают про ключи</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Проблема</p>
+              <p class="text-slate-600 leading-relaxed">
+                Интерфейс — <span class="font-mono text-[13px]">get(key)/set(key,value)</span> над ~10 строками SQL,
+                а ключи, дефолты, парсинг и валидация Ниши / Голоса / Направлений разъехались по семи модулям.
+              </p>
+            </div>
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Решение</p>
+              <p class="text-slate-600 leading-relaxed">
+                Один модуль Настройки: читает всё разом и отдаёт замороженное значение с уже применёнными
+                дефолтами; типизированные сеттеры валидируют внутри. KV остаётся деталью реализации.
+              </p>
+            </div>
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Выигрыш</p>
+              <ul class="text-slate-600 space-y-1 leading-relaxed">
+                <li>· locality: дефолт правится в одном месте</li>
+                <li>· telegram перестаёт импортировать pipelines</li>
+                <li>· конвейеры тестируются на значении, без стора</li>
+                <li>· новая Персона добавляется как поле, не как ключ</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="mt-5 rounded border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            План <span class="font-mono text-[13px]">D1</span> уже закрыт — но построен generic KV-стор,
+            а не модуль Настройки, поэтому трение пережило рефакторинг. Персона (E0) прямо сейчас
+            добавляет восьмую константу к этой россыпи.
+          </div>
+        </article>
+
+        <!-- ---------- 2 ---------- -->
+        <article id="c2" class="scroll-mt-8 border-t border-slate-200 pt-14">
+          <div class="flex items-start justify-between gap-6 flex-wrap mb-5">
+            <h2 class="font-serif text-[26px] leading-tight max-w-2xl">
+              <span class="text-slate-400 font-sans text-xl mr-2">02</span>
+              Дать Задаче модуль: контракт job_type + payload + output
+            </h2>
+            <div class="flex gap-2 shrink-0 pt-1">
+              <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-medium">Strong</span>
+              <span class="rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-mono">in-process</span>
+            </div>
+          </div>
+
+          <p class="font-mono text-[13px] text-slate-500 mb-6 leading-relaxed">
+            domain/plan.py:215,272,373 · domain/article.py:283,317 · pipelines/{plan,article,cover}_pipeline.py ·
+            entrypoints/worker.py:80 · entrypoints/bot.py:512
+          </p>
+
+          <div class="grid md:grid-cols-2 gap-5 mb-6">
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <p class="lbl text-slate-400 mb-3">Сейчас — контракт нигде не записан</p>
+              <pre class="mermaid">
+flowchart TB
+  A["domain/plan.py<br/>enqueue('generate_plan',<br/>{week_label})"]
+  B["pipelines/plan_pipeline.py<br/>return {week_label, topics}"]
+  C["entrypoints/worker.py<br/>handlers['generate_plan']"]
+  D["entrypoints/bot.py<br/>if job_type == 'generate_plan'<br/>output['topics']"]
+  A -.строка.-> C
+  B -.dict без типа.-> D
+  C --> B
+  classDef leak fill:#fef2f2,stroke:#dc2626,stroke-width:2px;
+  classDef plain fill:#ffffff,stroke:#94a3b8;
+  class A,B,C,D plain
+  class D leak
+              </pre>
+              <p class="text-[11px] text-slate-500 mt-2 text-center">5 типов Задач × 4 места = 20 точек согласования</p>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <p class="lbl text-slate-400 mb-3">После — контракт в одном модуле</p>
+              <pre class="mermaid">
+flowchart TB
+  S["Задача<br/>GeneratePlan(week_label)<br/>→ PlanReady(week_label, topics)"]
+  A2["domain/plan.py"] --> S
+  P2["pipelines/"] --> S
+  W2["worker.py"] --> S
+  N2["bot.py<br/>рендер по типу"] --> S
+  classDef deep fill:#0f172a,stroke:#0f172a,color:#f8fafc;
+  classDef plain fill:#ffffff,stroke:#94a3b8;
+  class S deep
+  class A2,P2,W2,N2 plain
+              </pre>
+              <p class="text-[11px] text-slate-500 mt-2 text-center">один источник истины, проверяемый типами</p>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Проблема</p>
+              <p class="text-slate-600 leading-relaxed">
+                Задача пересекает границу процессов как нетипизированный <span class="font-mono text-[13px]">dict</span>.
+                Продюсер пишет <span class="font-mono text-[13px]">{"article_id", "content", "tokens", "cost"}</span>,
+                потребитель читает по строковому ключу через <span class="font-mono text-[13px]">if/elif</span> — ничто не связывает их.
+              </p>
+            </div>
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Решение</p>
+              <p class="text-slate-600 leading-relaxed">
+                Модуль, где каждый тип Задачи — типизированная пара «вход → результат».
+                Реестр воркера и рендер уведомлений выводятся из него, а не повторяют его.
+              </p>
+            </div>
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Выигрыш</p>
+              <ul class="text-slate-600 space-y-1 leading-relaxed">
+                <li>· новый тип Задачи — одна правка, не четыре</li>
+                <li>· опечатка в ключе ловится типами</li>
+                <li>· тест на контракт вместо мока dict</li>
+                <li>· leverage: один шов, 5 типов Задач</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="mt-5 rounded border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            Не спорит с <span class="font-mono text-[13px]">ADR-0004</span> — разделение
+            «воркер считает, notification handler применяет» сохраняется; меняется только то,
+            что именно едет через шов. Но поток A2–A4 сейчас правит ровно эти места: делать
+            <em>после</em> них, иначе конфликты.
+          </div>
+        </article>
+
+        <!-- ---------- 3 ---------- -->
+        <article id="c3" class="scroll-mt-8 border-t border-slate-200 pt-14">
+          <div class="flex items-start justify-between gap-6 flex-wrap mb-5">
+            <h2 class="font-serif text-[26px] leading-tight max-w-2xl">
+              <span class="text-slate-400 font-sans text-xl mr-2">03</span>
+              Схлопнуть 13 функций кодека callback-данных в один модуль
+            </h2>
+            <div class="flex gap-2 shrink-0 pt-1">
+              <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-medium">Strong</span>
+              <span class="rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-mono">in-process</span>
+            </div>
+          </div>
+
+          <p class="font-mono text-[13px] text-slate-500 mb-6 leading-relaxed">
+            telegram/gateway.py:83–151 · telegram/__init__.py (69 экспортов) · entrypoints/bot.py:381,430,473
+          </p>
+
+          <div class="grid md:grid-cols-2 gap-5 mb-6">
+            <div class="rounded-lg border border-slate-200 bg-white p-5">
+              <p class="lbl text-slate-400 mb-4">Сейчас — интерфейс шире реализации</p>
+              <div class="space-y-[3px]" style="min-height:300px">
+                <!-- mass diagram: 13 wide-but-thin bars -->
+                <div class="flex items-center gap-2"><span class="h-4 bg-slate-800 flex-1"></span><span class="text-[9px] font-mono text-slate-400 w-24">encode_callback</span></div>
+                <div class="flex items-center gap-2"><span class="h-4 bg-slate-800 flex-1"></span><span class="text-[9px] font-mono text-slate-400 w-24">decode_callback</span></div>
+                <div class="flex items-center gap-2"><span class="h-4 bg-slate-800 flex-1"></span><span class="text-[9px] font-mono text-slate-400 w-24">encode_page</span></div>
+                <div class="flex items-center gap-2"><span class="h-4 bg-slate-800 flex-1"></span><span class="text-[9px] font-mono text-slate-400 w-24">decode_page_id</span></div>
+                <div class="flex items-center gap-2"><span class="h-4 bg-slate-800 flex-1"></span><span class="text-[9px] font-mono text-slate-400 w-24">encode_hist_page</span></div>
+                <div class="flex items-center gap-2"><span class="h-4 bg-slate-800 flex-1"></span><span class="text-[9px] font-mono text-slate-400 w-24">encode_hist_week</span></div>
+                <div class="flex items-center gap-2"><span class="h-4 bg-slate-800 flex-1"></span><span class="text-[9px] font-mono text-slate-400 w-24">decode_hist_week</span></div>
+                <div class="flex items-center gap-2"><span class="h-4 bg-slate-800 flex-1"></span><span class="text-[9px] font-mono text-slate-400 w-24">encode_hist_vers</span></div>
+                <div class="flex items-center gap-2"><span class="h-4 bg-slate-800 flex-1"></span><span class="text-[9px] font-mono text-slate-400 w-24">decode_hist_vers</span></div>
+                <div class="flex items-center gap-2"><span class="h-4 bg-slate-800 flex-1"></span><span class="text-[9px] font-mono text-slate-400 w-24">encode_hist_ver</span></div>
+                <div class="flex items-center gap-2"><span class="h-4 bg-slate-800 flex-1"></span><span class="text-[9px] font-mono text-slate-400 w-24">decode_hist_ver</span></div>
+                <div class="flex items-center gap-2"><span class="h-4 bg-slate-800 flex-1"></span><span class="text-[9px] font-mono text-slate-400 w-24">encode_export</span></div>
+                <div class="flex items-center gap-2"><span class="h-4 bg-slate-800 flex-1"></span><span class="text-[9px] font-mono text-slate-400 w-24">decode_export_id</span></div>
+                <p class="lbl text-red-500 pt-3">13 публичных функций · ~3 строки каждая</p>
+                <p class="text-[11px] text-slate-500 leading-relaxed">
+                  Вызывающий обязан знать, какая пара encode/decode соответствует какому Action —
+                  и rpartition-схему упаковки id.
+                </p>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-5">
+              <p class="lbl text-slate-400 mb-4">После — узкий интерфейс, толстая реализация</p>
+              <div style="min-height:300px" class="flex flex-col">
+                <div class="flex items-center gap-2 mb-[3px]"><span class="h-4 bg-emerald-700 w-2/5"></span><span class="text-[9px] font-mono text-slate-400">encode(Action)</span></div>
+                <div class="flex items-center gap-2"><span class="h-4 bg-emerald-700 w-2/5"></span><span class="text-[9px] font-mono text-slate-400">decode(str)</span></div>
+                <div class="deep mt-2 flex-1 rounded-sm p-4 space-y-2 flex flex-col justify-center">
+                  <p class="text-[10px] font-mono text-slate-300">таблица кодов Action</p>
+                  <p class="text-[10px] font-mono text-slate-300">упаковка составных id</p>
+                  <p class="text-[10px] font-mono text-slate-300">лимит 64 байта</p>
+                  <p class="text-[10px] font-mono text-slate-300">разбор back_page-цепочки</p>
+                  <p class="text-[10px] font-mono text-slate-300">валидация формата Выгрузки</p>
+                </div>
+                <p class="lbl text-slate-400 pt-3">2 функции · знание внутри</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Проблема</p>
+              <p class="text-slate-600 leading-relaxed">
+                Каждый новый экран Истории добавляет 2–3 публичные функции в
+                <span class="font-mono text-[13px]">gateway.py</span> и 2–3 строки в
+                <span class="font-mono text-[13px]">__all__</span>, который вырос до 69 имён.
+              </p>
+            </div>
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Решение</p>
+              <p class="text-slate-600 leading-relaxed">
+                Одна пара encode/decode, типизированная по Action; структура id — деталь реализации,
+                а не часть интерфейса.
+              </p>
+            </div>
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Выигрыш</p>
+              <ul class="text-slate-600 space-y-1 leading-relaxed">
+                <li>· тест на 1 интерфейс вместо 13</li>
+                <li>· лимит 64 байта проверяется в одном месте</li>
+                <li>· интерфейс сужается, реализация впитывает обёртки</li>
+                <li>· шаг к <span class="font-mono text-[12px]">D4</span> (сузить публичный telegram)</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- ---------- 4 ---------- -->
+        <article id="c4" class="scroll-mt-8 border-t border-slate-200 pt-14">
+          <div class="flex items-start justify-between gap-6 flex-wrap mb-5">
+            <h2 class="font-serif text-[26px] leading-tight max-w-2xl">
+              <span class="text-slate-400 font-sans text-xl mr-2">04</span>
+              Вынести диспетчер callback'ов из-под aiogram-адаптера
+            </h2>
+            <div class="flex gap-2 shrink-0 pt-1">
+              <span class="rounded-full bg-amber-100 text-amber-800 px-3 py-1 text-xs font-medium">Worth exploring</span>
+              <span class="rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-mono">ports &amp; adapters</span>
+            </div>
+          </div>
+
+          <p class="font-mono text-[13px] text-slate-500 mb-6">entrypoints/bot.py:372–496 · tests/telegram/*</p>
+
+          <div class="grid md:grid-cols-2 gap-5 mb-6">
+            <div class="rounded-lg border border-slate-200 bg-white p-5">
+              <p class="lbl text-slate-400 mb-4">Сейчас — 17 ветвей внутри декоратора</p>
+              <div style="height:300px" class="flex flex-col">
+                <div class="border-2 border-slate-800 bg-slate-100 px-3 py-2 text-[11px] font-mono">@router.callback_query()</div>
+                <div class="border-2 border-t-0 border-slate-300 flex-1 p-3 overflow-hidden">
+                  <p class="text-[10px] font-mono text-slate-400 mb-1">decode → role → try:</p>
+                  <div class="space-y-[2px]">
+                    <div class="h-3 bg-slate-200 w-[92%] rounded-sm"></div>
+                    <div class="h-3 bg-slate-200 w-[88%] rounded-sm"></div>
+                    <div class="h-3 bg-slate-200 w-[95%] rounded-sm"></div>
+                    <div class="h-3 bg-slate-200 w-[85%] rounded-sm"></div>
+                    <div class="h-3 bg-slate-200 w-[90%] rounded-sm"></div>
+                    <div class="h-3 bg-slate-200 w-[93%] rounded-sm"></div>
+                    <div class="h-3 bg-slate-200 w-[87%] rounded-sm"></div>
+                    <div class="h-3 bg-slate-200 w-[91%] rounded-sm"></div>
+                    <div class="h-3 bg-slate-200 w-[84%] rounded-sm"></div>
+                    <div class="h-3 bg-slate-200 w-[94%] rounded-sm"></div>
+                    <div class="h-3 bg-slate-200 w-[89%] rounded-sm"></div>
+                    <div class="h-3 bg-slate-200 w-[92%] rounded-sm"></div>
+                  </div>
+                  <p class="lbl text-red-500 mt-3">10 коллабораторов в замыкании</p>
+                </div>
+                <p class="text-[11px] text-slate-500 mt-2">
+                  Проверить ветку можно только собрав aiogram <span class="font-mono">CallbackQuery</span>.
+                </p>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-5">
+              <p class="lbl text-slate-400 mb-4">После — шов под адаптером</p>
+              <div style="height:300px" class="flex flex-col">
+                <div class="border-2 border-slate-300 bg-white px-3 py-2 text-[11px] font-mono text-slate-500">@router.callback_query()</div>
+                <p class="text-[10px] text-slate-400 py-1 pl-3">только распаковка aiogram →</p>
+                <svg height="18" class="w-full"><line class="seam" x1="0" y1="9" x2="100%" y2="9" stroke="#64748b" stroke-width="2"/></svg>
+                <div class="deep flex-1 rounded-sm p-4 flex flex-col justify-center space-y-2">
+                  <p class="text-[11px] font-mono text-emerald-300">handle(CallbackInput) → Reply</p>
+                  <p class="text-[10px] font-mono text-slate-300">ролевая проверка</p>
+                  <p class="text-[10px] font-mono text-slate-300">маршрутизация по Action</p>
+                  <p class="text-[10px] font-mono text-slate-300">обработка DomainError</p>
+                </div>
+                <p class="text-[11px] text-slate-500 mt-2">Тест зовёт handle() напрямую значениями.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Проблема</p>
+              <p class="text-slate-600 leading-relaxed">
+                Маршрутизация Действий заперта в замыкании, зависящем от 10 коллабораторов и от типов aiogram;
+                интерфейс — это сам фреймворк, поэтому тестовая поверхность отсутствует.
+              </p>
+            </div>
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Решение</p>
+              <p class="text-slate-600 leading-relaxed">
+                Шов между aiogram и маршрутизацией: адаптер распаковывает событие в значение,
+                глубокий модуль решает, что делать. Два адаптера — aiogram в проде, значения в тестах.
+              </p>
+            </div>
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Выигрыш</p>
+              <ul class="text-slate-600 space-y-1 leading-relaxed">
+                <li>· интерфейс становится тестовой поверхностью</li>
+                <li>· bot.py сжимается до проводки</li>
+                <li>· ролевая проверка перестаёт дублироваться</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="mt-5 rounded border-l-4 border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            Уже стоит в плане как <span class="font-mono text-[13px]">D3</span>. Актуальные цифры:
+            17 веток <span class="font-mono text-[13px]">elif</span>, 124 строки, 10 коллабераторов.
+          </div>
+        </article>
+
+        <!-- ---------- 5 ---------- -->
+        <article id="c5" class="scroll-mt-8 border-t border-slate-200 pt-14">
+          <div class="flex items-start justify-between gap-6 flex-wrap mb-5">
+            <h2 class="font-serif text-[26px] leading-tight max-w-2xl">
+              <span class="text-slate-400 font-sans text-xl mr-2">05</span>
+              Один ролевой гейт вместо 14 копий
+            </h2>
+            <div class="flex gap-2 shrink-0 pt-1">
+              <span class="rounded-full bg-amber-100 text-amber-800 px-3 py-1 text-xs font-medium">Worth exploring</span>
+              <span class="rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-mono">in-process</span>
+            </div>
+          </div>
+
+          <p class="font-mono text-[13px] text-slate-500 mb-6">entrypoints/bot.py:191–370 · access/membership.py</p>
+
+          <div class="grid md:grid-cols-2 gap-5 mb-6">
+            <div class="rounded-lg border border-slate-200 bg-white p-5">
+              <p class="lbl text-slate-400 mb-4">Сейчас — гейт в каждом хендлере</p>
+              <div class="space-y-1.5" style="min-height:300px">
+                <!-- cross-section bands -->
+                <div class="border-l-4 border-red-400 bg-red-50 pl-3 py-1.5 text-[10px] font-mono text-slate-600">
+                  from_user is None → return
+                </div>
+                <div class="border-l-4 border-red-400 bg-red-50 pl-3 py-1.5 text-[10px] font-mono text-slate-600">
+                  role = await _role_for(...) → None → return
+                </div>
+                <div class="border-l-4 border-red-400 bg-red-50 pl-3 py-1.5 text-[10px] font-mono text-slate-600">
+                  role != "owner" → send_error(_OWNER_ONLY_TEXT)
+                </div>
+                <div class="border-l-4 border-emerald-500 bg-emerald-50 pl-3 py-1.5 text-[10px] font-mono text-slate-700">
+                  await handle_niche_command(...) &nbsp;← полезная работа
+                </div>
+                <p class="lbl text-red-500 pt-4">× 14 команд</p>
+                <p class="text-[11px] text-slate-500 leading-relaxed pt-1">
+                  Три строки на роль повторяются <strong>14</strong> раз;
+                  <span class="font-mono">_role_for</span> вызывается <strong>15</strong> раз.
+                  Забытая копия = дыра в доступе, которую не поймает ни один тест.
+                </p>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-5">
+              <p class="lbl text-slate-400 mb-4">После — гейт как один шов</p>
+              <div style="min-height:300px" class="flex flex-col">
+                <div class="deep rounded-sm p-4 space-y-1.5">
+                  <p class="text-[11px] font-mono text-emerald-300">gated("owner")</p>
+                  <p class="text-[10px] font-mono text-slate-300">резолв Роли · отказ · ответ</p>
+                </div>
+                <svg height="20" class="w-full"><line class="seam" x1="0" y1="10" x2="100%" y2="10" stroke="#64748b" stroke-width="2"/></svg>
+                <div class="space-y-1.5">
+                  <div class="border-l-4 border-emerald-500 bg-emerald-50 pl-3 py-1.5 text-[10px] font-mono text-slate-700">handle_niche_command(...)</div>
+                  <div class="border-l-4 border-emerald-500 bg-emerald-50 pl-3 py-1.5 text-[10px] font-mono text-slate-700">handle_voice_command(...)</div>
+                  <div class="border-l-4 border-emerald-500 bg-emerald-50 pl-3 py-1.5 text-[10px] font-mono text-slate-700">handle_schedule_command(...)</div>
+                  <div class="border-l-4 border-emerald-500 bg-emerald-50 pl-3 py-1.5 text-[10px] font-mono text-slate-700">handle_members_command(...)</div>
+                </div>
+                <p class="text-[11px] text-slate-500 mt-3">Роль требуется один раз — декларативно.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Проблема</p>
+              <p class="text-slate-600 leading-relaxed">
+                Правило «команда только для Владельца» — часть интерфейса каждой команды,
+                но живёт скопированным в точке входа, а не рядом с командой.
+              </p>
+            </div>
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Решение</p>
+              <p class="text-slate-600 leading-relaxed">
+                Требуемая Роль объявляется один раз на команду; резолв и отказ уходят под шов.
+              </p>
+            </div>
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Выигрыш</p>
+              <ul class="text-slate-600 space-y-1 leading-relaxed">
+                <li>· locality: правило доступа в одном месте</li>
+                <li>· пропущенный гейт становится невозможен</li>
+                <li>· −40 строк в bot.py</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="mt-5 rounded border-l-4 border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            Уже стоит в плане как <span class="font-mono text-[13px]">D2</span>; естественно делается вместе с 04.
+          </div>
+        </article>
+
+        <!-- ---------- 6 ---------- -->
+        <article id="c6" class="scroll-mt-8 border-t border-slate-200 pt-14">
+          <div class="flex items-start justify-between gap-6 flex-wrap mb-5">
+            <h2 class="font-serif text-[26px] leading-tight max-w-2xl">
+              <span class="text-slate-400 font-sans text-xl mr-2">06</span>
+              Один Postgres на прогон тестов вместо пяти
+            </h2>
+            <div class="flex gap-2 shrink-0 pt-1">
+              <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-medium">Strong</span>
+              <span class="rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-mono">local-substitutable</span>
+            </div>
+          </div>
+
+          <p class="font-mono text-[13px] text-slate-500 mb-6">
+            tests/{access,domain,job_queue,owner_settings,scheduling}/conftest.py
+          </p>
+
+          <div class="grid md:grid-cols-2 gap-5 mb-6">
+            <div class="rounded-lg border border-slate-200 bg-white p-5">
+              <p class="lbl text-slate-400 mb-4">Сейчас — 5 контейнеров</p>
+              <div class="grid grid-cols-5 gap-2" style="min-height:300px; align-content:start">
+                <div class="col-span-5 grid grid-cols-5 gap-2">
+                  <div class="border-2 border-red-300 bg-red-50 rounded p-2 text-center"><p class="text-[9px] font-mono text-slate-500 leading-tight">access</p></div>
+                  <div class="border-2 border-red-300 bg-red-50 rounded p-2 text-center"><p class="text-[9px] font-mono text-slate-500 leading-tight">domain</p></div>
+                  <div class="border-2 border-red-300 bg-red-50 rounded p-2 text-center"><p class="text-[9px] font-mono text-slate-500 leading-tight">job_queue</p></div>
+                  <div class="border-2 border-red-300 bg-red-50 rounded p-2 text-center"><p class="text-[9px] font-mono text-slate-500 leading-tight">owner_set</p></div>
+                  <div class="border-2 border-red-300 bg-red-50 rounded p-2 text-center"><p class="text-[9px] font-mono text-slate-500 leading-tight">scheduling</p></div>
+                </div>
+                <div class="col-span-5 space-y-1.5 pt-2">
+                  <div class="h-6 border border-red-300 bg-red-50 rounded text-[9px] font-mono text-slate-500 flex items-center px-2">postgres:16-alpine</div>
+                  <div class="h-6 border border-red-300 bg-red-50 rounded text-[9px] font-mono text-slate-500 flex items-center px-2">postgres:16-alpine</div>
+                  <div class="h-6 border border-red-300 bg-red-50 rounded text-[9px] font-mono text-slate-500 flex items-center px-2">postgres:16-alpine</div>
+                  <div class="h-6 border border-red-300 bg-red-50 rounded text-[9px] font-mono text-slate-500 flex items-center px-2">postgres:16-alpine</div>
+                  <div class="h-6 border border-red-300 bg-red-50 rounded text-[9px] font-mono text-slate-500 flex items-center px-2">postgres:16-alpine</div>
+                </div>
+                <p class="col-span-5 text-[11px] text-slate-500 leading-relaxed pt-3">
+                  Фикстуры <span class="font-mono">postgres_container</span> и <span class="font-mono">pool</span>
+                  скопированы дословно в 5 файлов. Каждый пакет тестов поднимает свой контейнер.
+                </p>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-5">
+              <p class="lbl text-slate-400 mb-4">После — один корневой</p>
+              <div style="min-height:300px" class="flex flex-col">
+                <div class="deep rounded-sm p-5 text-center">
+                  <p class="text-[11px] font-mono text-emerald-300">tests/conftest.py</p>
+                  <p class="text-[10px] font-mono text-slate-300 mt-1.5">postgres_container · pool</p>
+                </div>
+                <svg height="24" class="w-full"><line class="seam" x1="0" y1="12" x2="100%" y2="12" stroke="#64748b" stroke-width="2"/></svg>
+                <div class="grid grid-cols-5 gap-2">
+                  <div class="border border-slate-300 rounded p-2 text-center"><p class="text-[9px] font-mono text-slate-500">access</p></div>
+                  <div class="border border-slate-300 rounded p-2 text-center"><p class="text-[9px] font-mono text-slate-500">domain</p></div>
+                  <div class="border border-slate-300 rounded p-2 text-center"><p class="text-[9px] font-mono text-slate-500">job_q</p></div>
+                  <div class="border border-slate-300 rounded p-2 text-center"><p class="text-[9px] font-mono text-slate-500">owner</p></div>
+                  <div class="border border-slate-300 rounded p-2 text-center"><p class="text-[9px] font-mono text-slate-500">sched</p></div>
+                </div>
+                <p class="text-[11px] text-slate-500 mt-3">Пакеты объявляют только свои таблицы и очистку.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Проблема</p>
+              <p class="text-slate-600 leading-relaxed">
+                Пять session-scoped контейнеров на прогон: медленный CI и пять мест, где чинить
+                настройку Postgres.
+              </p>
+            </div>
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Решение</p>
+              <p class="text-slate-600 leading-relaxed">
+                Поднять <span class="font-mono text-[13px]">postgres_container</span> и
+                <span class="font-mono text-[13px]">pool</span> в корневой
+                <span class="font-mono text-[13px]">tests/conftest.py</span>.
+              </p>
+            </div>
+            <div>
+              <p class="lbl text-slate-400 mb-1.5">Выигрыш</p>
+              <ul class="text-slate-600 space-y-1 leading-relaxed">
+                <li>· −4 запуска контейнера на прогон</li>
+                <li>· locality: настройка Postgres в одном файле</li>
+                <li>· становится возможен тест через несколько модулей</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="mt-5 rounded border-l-4 border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            Уже стоит в плане как <span class="font-mono text-[13px]">D5</span>. Самый дешёвый пункт в списке.
+          </div>
+        </article>
+      </section>
+
+      <!-- ============ TOP RECOMMENDATION ============ -->
+      <section id="top-recommendation" class="border-t-2 border-slate-800 pt-10">
+        <p class="lbl text-slate-400 mb-4">Что делать первым</p>
+        <div class="rounded-lg deep p-8 text-slate-100">
+          <h2 class="font-serif text-3xl mb-4">
+            01 · <a href="#c1" class="underline decoration-emerald-400 decoration-2 underline-offset-4">Настройки Владельца</a>
+          </h2>
+          <p class="text-slate-300 leading-relaxed max-w-3xl mb-5">
+            Ниша, Голос и Направления — самая горячая точка последних коммитов, и Персона (E0)
+            прямо сейчас добавляет туда восьмую константу. Пока Настройки остаются key-value стором,
+            каждое новое поле снова расползается на три модуля. Углубление здесь дешёвое,
+            ни один ADR не задет, и оно разгружает конвейеры Статьи перед работами E1–E3.
+          </p>
+          <div class="grid sm:grid-cols-3 gap-4 text-sm">
+            <div class="border-l-2 border-emerald-400 pl-3">
+              <p class="lbl text-emerald-400 mb-1">затем</p>
+              <p class="text-slate-300">06 — одна фикстура Postgres, час работы</p>
+            </div>
+            <div class="border-l-2 border-slate-600 pl-3">
+              <p class="lbl text-slate-500 mb-1">потом</p>
+              <p class="text-slate-400">04 + 05 вместе — диспетчер и ролевой гейт</p>
+            </div>
+            <div class="border-l-2 border-slate-600 pl-3">
+              <p class="lbl text-slate-500 mb-1">после потока A</p>
+              <p class="text-slate-400">02 — контракт Задачи, когда A2–A4 приземлятся</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <footer class="pt-6 text-xs text-slate-400 font-mono">
+        Content Zavod · обзор формы модулей · термины: модуль, интерфейс, реализация, глубина, шов, адаптер, leverage, locality
+      </footer>
+    </main>
+  </body>
+</html>
