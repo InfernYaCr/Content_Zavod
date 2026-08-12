@@ -23,7 +23,9 @@ from typing import Any, Protocol, Sequence
 
 from ..domain import ArticleId, ArticleView
 from ..job_queue import JobHandler
+from ..personas import platform_profile, resolve_persona
 from ..yandex import Completion, Message, TextGenerator
+from .article_prompts import draft_messages, outline_messages, rewrite_messages
 from .url_reachability import UrlReachabilityChecker
 
 VOICE_KEY = "voice"
@@ -132,11 +134,37 @@ async def _run_pipeline(
         return completion.text
 
     voice = await _current_voice(owner_settings)
+    persona, custom_voice = resolve_persona(voice)
+    profile = platform_profile(platform)
     outline = await run_step(
-        _outline_messages(title, summary, keywords, platform, previous_content, comment, voice)
+        outline_messages(
+            title=title,
+            summary=summary,
+            keywords=keywords,
+            previous_content=previous_content,
+            comment=comment,
+            persona=persona,
+            custom_voice=custom_voice,
+            profile=profile,
+        )
     )
-    draft = await run_step(_draft_messages(title, platform, outline, voice))
-    rewrite = await run_step(_rewrite_messages(platform, draft))
+    draft = await run_step(
+        draft_messages(
+            title=title,
+            outline=outline,
+            persona=persona,
+            custom_voice=custom_voice,
+            profile=profile,
+        )
+    )
+    rewrite = await run_step(
+        rewrite_messages(
+            draft=draft,
+            persona=persona,
+            custom_voice=custom_voice,
+            profile=profile,
+        )
+    )
     sensitive = _is_money_or_legal(title, keywords)
     sources_text = await run_step(_sources_messages(rewrite, sensitive=sensitive))
 
@@ -154,7 +182,7 @@ async def _run_pipeline(
     }
 
 
-def _outline_messages(
+def _legacy_outline_messages(
     title: str,
     summary: str,
     keywords: Sequence[str],
@@ -180,7 +208,7 @@ def _outline_messages(
     return [Message(role="system", text=system), Message(role="user", text=user)]
 
 
-def _draft_messages(title: str, platform: str, outline: str, voice: str) -> list[Message]:
+def _legacy_draft_messages(title: str, platform: str, outline: str, voice: str) -> list[Message]:
     system = (
         f"Ты - {voice}. Напиши черновик статьи «{title}» для «{platform}» по аутлайну. "
         "Форматируй текст в Markdown: заголовки разделов — ##/###, перечисления — списком (-), "
@@ -189,7 +217,7 @@ def _draft_messages(title: str, platform: str, outline: str, voice: str) -> list
     return [Message(role="system", text=system), Message(role="user", text=outline)]
 
 
-def _rewrite_messages(platform: str, draft: str) -> list[Message]:
+def _legacy_rewrite_messages(platform: str, draft: str) -> list[Message]:
     system = (
         f"Отредактируй черновик под тон и формат площадки «{platform}», сохранив факты. "
         "Сохрани и, где уместно, доработай Markdown-разметку: заголовки (##/###), списки (-), "

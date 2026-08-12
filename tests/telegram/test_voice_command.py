@@ -82,7 +82,7 @@ async def test_voice_template_callback_saves_template_text_via_set_voice_path() 
 
     await handle_voice_command(settings_store, gateway, chat_id=1)
     _chat_id, text, _reply_markup = gateway.sent_notices[-1]
-    assert text == f"Текущий Голос: {template_text}"
+    assert text == f"Текущий Голос: {VOICE_TEMPLATES[template_index][0]}"
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from ..personas import PERSONAS, persona_setting_value, resolve_persona
 from ..pipelines.article_pipeline import DEFAULT_VOICE, VOICE_KEY
 from .gateway import TelegramGateway, build_voice_keyboard
 
@@ -24,10 +25,7 @@ from .gateway import TelegramGateway, build_voice_keyboard
 # not article_pipeline, since these are Telegram UI shortcuts for `/set_voice`,
 # not part of the Voice domain itself.
 VOICE_TEMPLATES: list[tuple[str, str]] = [
-    ("Маркетолог-практик", "маркетолог-практик"),
-    ("Технооптимист-фаундер", "технооптимист-фаундер"),
-    ("Дотошный аналитик", "дотошный аналитик"),
-    ("Ироничный эксперт", "ироничный эксперт"),
+    (persona.title, persona_setting_value(persona.key)) for persona in PERSONAS.values()
 ]
 
 
@@ -37,11 +35,18 @@ class OwnerSettingsOperations(Protocol):
     async def set(self, key: str, value: str) -> None: ...
 
 
+def _voice_title(value: str | None) -> str:
+    if not value:
+        return DEFAULT_VOICE
+    persona, custom_voice = resolve_persona(value)
+    return persona.title if persona is not None else (custom_voice or DEFAULT_VOICE)
+
+
 async def handle_voice_command(settings_store: OwnerSettingsOperations, gateway: TelegramGateway, chat_id: int) -> None:
     value = await settings_store.get(VOICE_KEY)
     await gateway.send_notice(
         chat_id,
-        f"Текущий Голос: {value or DEFAULT_VOICE}",
+        f"Текущий Голос: {_voice_title(value)}",
         reply_markup=build_voice_keyboard(VOICE_TEMPLATES),
     )
 
@@ -62,4 +67,4 @@ async def handle_set_voice_command(
         return
 
     await settings_store.set(VOICE_KEY, normalized)
-    await gateway.send_notice(chat_id, f"Голос изменён: {normalized}")
+    await gateway.send_notice(chat_id, f"Голос изменён: {_voice_title(normalized)}")
