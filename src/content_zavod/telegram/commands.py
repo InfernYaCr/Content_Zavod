@@ -22,7 +22,8 @@ SHARED_COMMANDS: list[BotCommand] = [
     BotCommand(command="help", description="Список команд"),
 ]
 
-OWNER_COMMANDS: list[BotCommand] = SHARED_COMMANDS + [
+OWNER_COMMANDS: list[BotCommand] = [
+    *SHARED_COMMANDS,
     BotCommand(command="members", description="Участники и доступ"),
     BotCommand(command="schedule", description="Текущее расписание Плана"),
     BotCommand(command="set_schedule", description="Изменить расписание Плана"),
@@ -41,7 +42,9 @@ def commands_for_role(role: Role) -> list[BotCommand]:
 
 
 async def sync_commands(bot: BotClient, telegram_id: int, role: Role) -> None:
-    await bot.set_my_commands(commands_for_role(role), scope=BotCommandScopeChat(chat_id=telegram_id))
+    await bot.set_my_commands(
+        commands_for_role(role), scope=BotCommandScopeChat(chat_id=telegram_id)
+    )
 
 
 def render_help_text(role: Role) -> str:

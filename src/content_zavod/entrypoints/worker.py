@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Callable, TypeVar
+from collections.abc import Callable
 
 import asyncpg
 
@@ -33,14 +33,12 @@ from ._process import register_shutdown
 
 logger = logging.getLogger(__name__)
 
-_T = TypeVar("_T")
 
-
-def _build_yandex_client(
+def _build_yandex_client[T](
     yandex: YandexCredentials,
-    with_service_account_key: Callable[..., _T],
-    with_oauth_token: Callable[..., _T],
-) -> _T:
+    with_service_account_key: Callable[..., T],
+    with_oauth_token: Callable[..., T],
+) -> T:
     """Every Yandex client (TextGenerator/ImageGenerator/KeywordStats) offers the same
     two constructors; build whichever credential Settings resolved to."""
     if yandex.api_key is not None:
@@ -70,7 +68,9 @@ async def main(settings: Settings | None = None) -> None:
             settings.yandex, TextGenerator.with_service_account_key, TextGenerator.with_oauth_token
         )
         image_generator = _build_yandex_client(
-            settings.yandex, ImageGenerator.with_service_account_key, ImageGenerator.with_oauth_token
+            settings.yandex,
+            ImageGenerator.with_service_account_key,
+            ImageGenerator.with_oauth_token,
         )
         keyword_stats = _build_yandex_client(
             settings.yandex, KeywordStats.with_service_account_key, KeywordStats.with_oauth_token
@@ -81,7 +81,9 @@ async def main(settings: Settings | None = None) -> None:
             "generate_plan": make_generate_plan_handler(
                 keyword_stats, text_generator, plan.recent_topic_titles, owner_settings
             ),
-            "generate_article": make_generate_article_handler(text_generator, url_checker, owner_settings),
+            "generate_article": make_generate_article_handler(
+                text_generator, url_checker, owner_settings
+            ),
             "regenerate_article": make_regenerate_article_handler(
                 article, text_generator, url_checker, owner_settings
             ),

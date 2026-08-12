@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from content_zavod.access import MemberNotFound, MemberView, Membership
+from content_zavod.access import MemberNotFound, Membership, MemberView
 
 
 async def test_role_for_unknown_telegram_id_is_none(membership: Membership) -> None:

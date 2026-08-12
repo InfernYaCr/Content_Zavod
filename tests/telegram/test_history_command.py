@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -158,8 +158,12 @@ async def test_history_week_edits_the_message_with_that_weeks_articles() -> None
     articles = FakeArticles(
         {
             "plan-1": [
-                ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="queued"),
-                ArticleSummary(id=ArticleId("a-2"), title="Topic A", platform="vc", status="generating"),
+                ArticleSummary(
+                    id=ArticleId("a-1"), title="Topic A", platform="zen", status="queued"
+                ),
+                ArticleSummary(
+                    id=ArticleId("a-2"), title="Topic A", platform="vc", status="generating"
+                ),
             ]
         }
     )
@@ -192,13 +196,19 @@ async def test_history_week_with_no_articles_yet() -> None:
 
 def _version(id_: int, model: str = "yandexgpt") -> ArticleVersionSummary:
     return ArticleVersionSummary(
-        id=id_, model=model, tokens=42, cost=0.01, created_at=datetime(2026, 8, 11, 14, 3, tzinfo=timezone.utc)
+        id=id_,
+        model=model,
+        tokens=42,
+        cost=0.01,
+        created_at=datetime(2026, 8, 11, 14, 3, tzinfo=UTC),
     )
 
 
 @pytest.mark.asyncio
 async def test_history_versions_edits_the_message_with_that_articles_versions() -> None:
-    article_summary = ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="ready")
+    article_summary = ArticleSummary(
+        id=ArticleId("a-1"), title="Topic A", platform="zen", status="ready"
+    )
     articles = FakeArticles(
         {"plan-1": [article_summary]},
         plan_id_by_article={"a-1": "plan-1"},
@@ -217,7 +227,9 @@ async def test_history_versions_edits_the_message_with_that_articles_versions() 
 
 @pytest.mark.asyncio
 async def test_history_versions_with_no_versions_yet() -> None:
-    article_summary = ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="queued")
+    article_summary = ArticleSummary(
+        id=ArticleId("a-1"), title="Topic A", platform="zen", status="queued"
+    )
     articles = FakeArticles({"plan-1": [article_summary]}, plan_id_by_article={"a-1": "plan-1"})
     gateway = TelegramGateway(FakeBot())
 
@@ -229,7 +241,9 @@ async def test_history_versions_with_no_versions_yet() -> None:
 
 @pytest.mark.asyncio
 async def test_history_version_edits_the_message_with_that_versions_content() -> None:
-    article_summary = ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="ready")
+    article_summary = ArticleSummary(
+        id=ArticleId("a-1"), title="Topic A", platform="zen", status="ready"
+    )
     articles = FakeArticles(
         {"plan-1": [article_summary]},
         plan_id_by_article={"a-1": "plan-1"},

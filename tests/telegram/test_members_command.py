@@ -29,7 +29,10 @@ class FakeGateway:
 
 @pytest.mark.asyncio
 async def test_lists_every_member_with_a_remove_button() -> None:
-    members = [MemberView(telegram_id=1, role="owner"), MemberView(telegram_id=2, role="content_manager")]
+    members = [
+        MemberView(telegram_id=1, role="owner"),
+        MemberView(telegram_id=2, role="content_manager"),
+    ]
     membership, gateway = FakeMembership(members), FakeGateway()
 
     await handle_members_command(membership, gateway, chat_id=99)

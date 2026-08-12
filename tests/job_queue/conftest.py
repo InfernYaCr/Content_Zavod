@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import timedelta
-from typing import AsyncIterator
 
 import asyncpg
 import pytest

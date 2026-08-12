@@ -70,7 +70,9 @@ async def test_schedule_command_reports_persisted_override() -> None:
 async def test_set_schedule_persists_and_reschedules() -> None:
     settings_store, scheduler, gateway = FakeSettingsStore(), FakeScheduler(), FakeGateway()
 
-    await handle_set_schedule_command(settings_store, scheduler, gateway, chat_id=1, args="tue 10:30", tz=MOSCOW)
+    await handle_set_schedule_command(
+        settings_store, scheduler, gateway, chat_id=1, args="tue 10:30", tz=MOSCOW
+    )
 
     assert settings_store.set_calls == [("tue", 10, 30)]
     assert len(scheduler.rescheduled) == 1
@@ -84,7 +86,9 @@ async def test_set_schedule_persists_and_reschedules() -> None:
 async def test_invalid_day_rejected_without_side_effects() -> None:
     settings_store, scheduler, gateway = FakeSettingsStore(), FakeScheduler(), FakeGateway()
 
-    await handle_set_schedule_command(settings_store, scheduler, gateway, chat_id=1, args="funday 10:30", tz=MOSCOW)
+    await handle_set_schedule_command(
+        settings_store, scheduler, gateway, chat_id=1, args="funday 10:30", tz=MOSCOW
+    )
 
     assert settings_store.set_calls == []
     assert scheduler.rescheduled == []
@@ -95,7 +99,9 @@ async def test_invalid_day_rejected_without_side_effects() -> None:
 async def test_invalid_time_rejected_without_side_effects() -> None:
     settings_store, scheduler, gateway = FakeSettingsStore(), FakeScheduler(), FakeGateway()
 
-    await handle_set_schedule_command(settings_store, scheduler, gateway, chat_id=1, args="tue 25:99", tz=MOSCOW)
+    await handle_set_schedule_command(
+        settings_store, scheduler, gateway, chat_id=1, args="tue 25:99", tz=MOSCOW
+    )
 
     assert settings_store.set_calls == []
     assert scheduler.rescheduled == []
@@ -106,7 +112,9 @@ async def test_invalid_time_rejected_without_side_effects() -> None:
 async def test_missing_args_rejected() -> None:
     settings_store, scheduler, gateway = FakeSettingsStore(), FakeScheduler(), FakeGateway()
 
-    await handle_set_schedule_command(settings_store, scheduler, gateway, chat_id=1, args="tue", tz=MOSCOW)
+    await handle_set_schedule_command(
+        settings_store, scheduler, gateway, chat_id=1, args="tue", tz=MOSCOW
+    )
 
     assert settings_store.set_calls == []
     assert len(gateway.sent_errors) == 1

@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.triggers.cron import CronTrigger
 
-from ..scheduling import JOB_ID, DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE, ScheduleConfig
+from ..scheduling import DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE, JOB_ID, ScheduleConfig
 from .gateway import TelegramGateway
 
 _VALID_DAYS = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
@@ -53,12 +53,16 @@ async def handle_set_schedule_command(
 ) -> None:
     parts = args.split()
     if len(parts) != 2:
-        await gateway.send_error(chat_id, "Использование: /set_schedule <день> <ЧЧ:ММ>, например: mon 09:00")
+        await gateway.send_error(
+            chat_id, "Использование: /set_schedule <день> <ЧЧ:ММ>, например: mon 09:00"
+        )
         return
     day, time_text = parts
     day = day.lower()
     if day not in _VALID_DAYS:
-        await gateway.send_error(chat_id, f"Неизвестный день {day!r}. Допустимые: {', '.join(sorted(_VALID_DAYS))}")
+        await gateway.send_error(
+            chat_id, f"Неизвестный день {day!r}. Допустимые: {', '.join(sorted(_VALID_DAYS))}"
+        )
         return
     match = _TIME_RE.match(time_text)
     if not match:
@@ -67,5 +71,7 @@ async def handle_set_schedule_command(
     hour, minute = int(match.group(1)), int(match.group(2))
 
     await settings_store.set(day, hour, minute)
-    scheduler.reschedule_job(JOB_ID, trigger=CronTrigger(day_of_week=day, hour=hour, minute=minute, timezone=tz))
+    scheduler.reschedule_job(
+        JOB_ID, trigger=CronTrigger(day_of_week=day, hour=hour, minute=minute, timezone=tz)
+    )
     await gateway.send_notice(chat_id, f"Расписание изменено: {day} {hour:02d}:{minute:02d}")

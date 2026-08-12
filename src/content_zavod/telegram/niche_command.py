@@ -22,7 +22,9 @@ class OwnerSettingsOperations(Protocol):
     async def set(self, key: str, value: str) -> None: ...
 
 
-async def handle_niche_command(settings_store: OwnerSettingsOperations, gateway: TelegramGateway, chat_id: int) -> None:
+async def handle_niche_command(
+    settings_store: OwnerSettingsOperations, gateway: TelegramGateway, chat_id: int
+) -> None:
     value = await settings_store.get(NICHE_KEY)
     await gateway.send_notice(chat_id, f"Текущая Ниша: {value or DEFAULT_NICHE}")
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -13,7 +13,7 @@ from content_zavod.telegram.generate_plan_command import (
 )
 
 MOSCOW = ZoneInfo("Europe/Moscow")
-FIXED_NOW = datetime(2026, 8, 3, 6, 0, tzinfo=timezone.utc)  # 2026-W32 Monday
+FIXED_NOW = datetime(2026, 8, 3, 6, 0, tzinfo=UTC)  # 2026-W32 Monday
 
 
 class FakePlan:
@@ -85,7 +85,7 @@ async def test_active_plan_prompts_confirmation_instead_of_regenerating() -> Non
 
     assert plan.requested == []
     assert len(gateway.sent_messages) == 1
-    chat_id, text, keyboard = gateway.sent_messages[0]
+    _chat_id, text, keyboard = gateway.sent_messages[0]
     assert "уже существует" in text
     assert keyboard is not None
 
@@ -95,14 +95,18 @@ async def test_confirm_archives_old_plan_and_requests_a_new_one() -> None:
     active = PlanView(id=PlanId("plan-1"), week_label="2026-W32", items=[])
     plan, gateway = FakePlan(active=active), FakeGateway()
 
-    await handle_confirm_regenerate_plan(plan, gateway, chat_id=1, message_id=5, plan_id=PlanId("plan-1"))
+    await handle_confirm_regenerate_plan(
+        plan, gateway, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
+    )
 
     assert plan.replacements == [PlanId("plan-1")]
     assert gateway.edited == [(1, 5, "Генерирую новый План...")]
 
 
 @pytest.mark.asyncio
-async def test_confirm_does_not_report_success_or_archive_through_the_old_api_when_enqueue_fails() -> None:
+async def test_confirm_does_not_report_success_or_archive_through_the_old_api_when_enqueue_fails() -> (
+    None
+):
     active = PlanView(id=PlanId("plan-1"), week_label="2026-W32", items=[])
     plan, gateway = FailingReplacementPlan(active=active), FakeGateway()
 

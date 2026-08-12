@@ -25,7 +25,9 @@ async def test_claim_notification_returns_the_result_of_a_done_job(queue: JobQue
     )
 
 
-async def test_two_concurrent_notification_claims_never_return_the_same_job(queue: JobQueue) -> None:
+async def test_two_concurrent_notification_claims_never_return_the_same_job(
+    queue: JobQueue,
+) -> None:
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
     job = await queue.claim_next()
     assert job is not None

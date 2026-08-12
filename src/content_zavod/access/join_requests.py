@@ -63,7 +63,9 @@ class JoinRequests:
             raise JoinRequestNotFound(join_request_id)
         return _to_view(row)
 
-    async def record_broadcast(self, join_request_id: int, owner_telegram_id: int, chat_id: int, message_id: int) -> None:
+    async def record_broadcast(
+        self, join_request_id: int, owner_telegram_id: int, chat_id: int, message_id: int
+    ) -> None:
         await self._pool.execute(
             """
             INSERT INTO join_request_broadcasts (join_request_id, owner_telegram_id, chat_id, message_id)
@@ -92,7 +94,9 @@ class JoinRequests:
             for row in rows
         ]
 
-    async def resolve(self, join_request_id: int, *, approved: bool, resolved_by: int) -> JoinRequestView:
+    async def resolve(
+        self, join_request_id: int, *, approved: bool, resolved_by: int
+    ) -> JoinRequestView:
         status: JoinRequestStatus = "approved" if approved else "declined"
         updated = await self._pool.fetchrow(
             """

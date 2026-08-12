@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 
@@ -58,7 +58,7 @@ async def test_fail_requeues_with_backoff_until_attempts_are_exhausted(pool: asy
     row = await pool.fetchrow("SELECT run_at FROM jobs WHERE id = $1", job_id)
 
     assert status_after_first_failure == "queued"
-    assert row["run_at"] > datetime.now(timezone.utc)
+    assert row["run_at"] > datetime.now(UTC)
 
     await pool.execute("UPDATE jobs SET run_at = now() WHERE id = $1", job_id)
     second = await queue.claim_next()
@@ -111,12 +111,16 @@ async def test_heartbeat_prevents_recovery_until_lease_becomes_stale(pool: async
     claimed = await queue.claim_next()
     assert claimed is not None
 
-    await pool.execute("UPDATE jobs SET locked_at = now() - interval '9 seconds' WHERE id = $1", job_id)
+    await pool.execute(
+        "UPDATE jobs SET locked_at = now() - interval '9 seconds' WHERE id = $1", job_id
+    )
     assert await queue.heartbeat(job_id, claimed.lease_token)
     assert await queue.recover_stuck() == 0
     assert await queue.get_status(job_id) == "running"
 
-    await pool.execute("UPDATE jobs SET locked_at = now() - interval '11 seconds' WHERE id = $1", job_id)
+    await pool.execute(
+        "UPDATE jobs SET locked_at = now() - interval '11 seconds' WHERE id = $1", job_id
+    )
     assert await queue.recover_stuck() == 1
     assert await queue.get_status(job_id) == "queued"
 
@@ -244,7 +248,9 @@ async def test_run_worker_retries_a_failing_handler_and_eventually_marks_it_fail
     stop = asyncio.Event()
 
     async def watcher() -> None:
-        while await queue.get_status(job_id) != "failed":
+        # The worker exposes state through PostgreSQL, not an in-process Event;
+        # bounded polling is the contract this integration test must observe.
+        while await queue.get_status(job_id) != "failed":  # noqa: ASYNC110
             await asyncio.sleep(0.01)
         stop.set()
 

@@ -48,7 +48,7 @@ async def test_settings_reports_persisted_overrides() -> None:
 
     await handle_settings_command(settings_store, gateway, chat_id=1)
 
-    chat_id, text = gateway.sent_notices[0]
+    _chat_id, text = gateway.sent_notices[0]
     assert "Ниша: b2b saas (подбор/регенерация Темы)" in text
     assert "Голос: экспертный, без воды (аутлайн/черновик Статьи)" in text
     assert "Направления: seo, контент-маркетинг (Wordstat-подбор растущих запросов)" in text
@@ -61,7 +61,7 @@ async def test_settings_mixes_defaults_and_overrides() -> None:
 
     await handle_settings_command(settings_store, gateway, chat_id=1)
 
-    chat_id, text = gateway.sent_notices[0]
+    _chat_id, text = gateway.sent_notices[0]
     assert "Ниша: b2b saas (подбор/регенерация Темы)" in text
     assert "Голос:" in text and "(аутлайн/черновик Статьи)" in text
     assert "Направления:" in text and "(Wordstat-подбор растущих запросов)" in text

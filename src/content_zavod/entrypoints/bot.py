@@ -119,7 +119,9 @@ class _AiogramBotClient:
         reply_markup: InlineKeyboardMarkup | None = None,
     ) -> None:
         try:
-            await self._bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=reply_markup)
+            await self._bot.edit_message_text(
+                text, chat_id=chat_id, message_id=message_id, reply_markup=reply_markup
+            )
         except TelegramBadRequest as exc:
             if "message is not modified" not in str(exc):
                 raise
@@ -135,18 +137,24 @@ class _AiogramBotClient:
             if "message is not modified" not in str(exc):
                 raise
 
-    async def set_my_commands(self, commands: list[BotCommand], *, scope: BotCommandScopeChat) -> None:
+    async def set_my_commands(
+        self, commands: list[BotCommand], *, scope: BotCommandScopeChat
+    ) -> None:
         await self._bot.set_my_commands(commands, scope=scope)
 
 
-async def _role_for(membership: Membership, gateway: TelegramGateway, chat_id: int, telegram_id: int) -> Role | None:
+async def _role_for(
+    membership: Membership, gateway: TelegramGateway, chat_id: int, telegram_id: int
+) -> Role | None:
     role = await membership.role_for(telegram_id)
     if role is None:
         await gateway.send_error(chat_id, _ACCESS_DENIED_TEXT)
     return role
 
 
-async def _generate_articles_for_approved_plan(plan: Plan, article: Article, plan_id: PlanId) -> None:
+async def _generate_articles_for_approved_plan(
+    plan: Plan, article: Article, plan_id: PlanId
+) -> None:
     """Fan out each approved Тема into one Статья per Площадка and enqueue its `generate_article`
     Job (#14), plus one `generate_cover` Job per Тема (#15 - the whole week's content, including
     covers, is generated together, so no separate manual trigger is needed for the common case).
@@ -158,7 +166,9 @@ async def _generate_articles_for_approved_plan(plan: Plan, article: Article, pla
     for item in await plan.approved_items(plan_id):
         await plan.request_cover(item.id)
         for platform in PLATFORMS:
-            await article.request_generation(plan_id, item.id, item.title, item.summary, item.keywords, platform)
+            await article.request_generation(
+                plan_id, item.id, item.title, item.summary, item.keywords, platform
+            )
 
 
 def _build_router(
@@ -265,7 +275,12 @@ def _build_router(
             await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
             return
         await handle_set_schedule_command(
-            schedule_settings, scheduler, gateway, message.chat.id, command.args or "", tz=settings.timezone
+            schedule_settings,
+            scheduler,
+            gateway,
+            message.chat.id,
+            command.args or "",
+            tz=settings.timezone,
         )
 
     @router.message(Command("niche"))
@@ -314,7 +329,9 @@ def _build_router(
         if role != "owner":
             await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
             return
-        await handle_set_directions_command(owner_settings, gateway, message.chat.id, command.args or "")
+        await handle_set_directions_command(
+            owner_settings, gateway, message.chat.id, command.args or ""
+        )
 
     @router.message(Command("voice"))
     async def on_voice(message: Message) -> None:
@@ -369,7 +386,9 @@ def _build_router(
         if action == "request_access":
             await callback.answer()
             await join_request_flow.request_access(user_id, callback.from_user.username)
-            await gateway.edit_notice(chat_id, message_id, "Заявка отправлена. Ожидайте одобрения владельца.")
+            await gateway.edit_notice(
+                chat_id, message_id, "Заявка отправлена. Ожидайте одобрения владельца."
+            )
             return
 
         role = await membership.role_for(user_id)
@@ -385,9 +404,13 @@ def _build_router(
                 await callback.answer()
                 resolver_name = callback.from_user.full_name
                 if action == "approve_join":
-                    resolved = await join_request_flow.handle_approve(user_id, resolver_name, int(id_))
+                    resolved = await join_request_flow.handle_approve(
+                        user_id, resolver_name, int(id_)
+                    )
                 else:
-                    resolved = await join_request_flow.handle_decline(user_id, resolver_name, int(id_))
+                    resolved = await join_request_flow.handle_decline(
+                        user_id, resolver_name, int(id_)
+                    )
                 if resolved is not None and resolved.status == "approved":
                     await sync_commands(bot_client, resolved.telegram_id, "content_manager")
             elif action == "remove_member":
@@ -421,7 +444,9 @@ def _build_router(
                 await handle_history_version(article, gateway, chat_id, message_id, id_)
             elif action == "confirm_regenerate_plan":
                 await callback.answer()
-                await handle_confirm_regenerate_plan(plan, gateway, chat_id, message_id, PlanId(id_))
+                await handle_confirm_regenerate_plan(
+                    plan, gateway, chat_id, message_id, PlanId(id_)
+                )
             elif action == "cancel_regenerate_plan":
                 await callback.answer()
                 await handle_cancel_regenerate_plan(gateway, chat_id, message_id)
@@ -429,7 +454,9 @@ def _build_router(
                 await callback.answer()
                 await queue.retry(JobId(int(id_)))
             elif action == "regenerate_article":
-                will_enqueue = article_regeneration.has_matching_pending(chat_id, user_id, ArticleId(id_))
+                will_enqueue = article_regeneration.has_matching_pending(
+                    chat_id, user_id, ArticleId(id_)
+                )
                 await callback.answer("Принято, генерирую..." if will_enqueue else None)
                 if will_enqueue:
                     await gateway.edit_notice(chat_id, message_id, "⏳ Генерирую...")
@@ -447,7 +474,9 @@ def _build_router(
                 view = await article.get(ArticleId(export_article_id))
                 await gateway.send_article_document(chat_id, view, export_format)
             elif action == "regenerate":
-                will_enqueue = plan_review.will_enqueue_regeneration(chat_id, user_id, PlanItemId(id_))
+                will_enqueue = plan_review.will_enqueue_regeneration(
+                    chat_id, user_id, PlanItemId(id_)
+                )
                 await callback.answer("Принято, генерирую..." if will_enqueue else None)
                 if will_enqueue:
                     await gateway.edit_notice(chat_id, message_id, "⏳ Генерирую...")
@@ -500,7 +529,9 @@ def _make_notification_handler(
         output = result.output or {}
         if result.job_type == "generate_plan":
             topics = [
-                TopicDraft(title=t["title"], summary=t.get("summary", ""), keywords=t.get("keywords", []))
+                TopicDraft(
+                    title=t["title"], summary=t.get("summary", ""), keywords=t.get("keywords", [])
+                )
                 for t in output["topics"]
             ]
             plan_id = await plan.add_topics(output["week_label"], topics)
@@ -510,7 +541,9 @@ def _make_notification_handler(
             plan_item_id = PlanItemId(output["plan_item_id"])
             await plan.apply_regeneration(
                 plan_item_id,
-                TopicDraft(title=output["title"], summary=output["summary"], keywords=output["keywords"]),
+                TopicDraft(
+                    title=output["title"], summary=output["summary"], keywords=output["keywords"]
+                ),
             )
             await gateway.send_notice(notify_chat_id, f"Тема обновлена: {output['title']}")
         elif result.job_type in ("generate_article", "regenerate_article"):
@@ -614,9 +647,13 @@ async def main(settings: Settings | None = None) -> None:
         stop = asyncio.Event()
         register_shutdown(stop)
 
-        notify_handler = _make_notification_handler(plan, article, gateway, settings.telegram_notify_chat_id)
+        notify_handler = _make_notification_handler(
+            plan, article, gateway, settings.telegram_notify_chat_id
+        )
         polling_task = asyncio.create_task(dispatcher.start_polling(bot, handle_signals=False))
-        notifications_task = asyncio.create_task(run_notifications(queue, notify_handler, stop=stop))
+        notifications_task = asyncio.create_task(
+            run_notifications(queue, notify_handler, stop=stop)
+        )
 
         logger.info("bot started")
         try:

@@ -12,7 +12,7 @@ IAM_URL = "https://iam.api.cloud.yandex.net/iam/v1/tokens"
 
 
 def _iso_at(epoch: float) -> str:
-    return dt.datetime.fromtimestamp(epoch, tz=dt.timezone.utc).isoformat()
+    return dt.datetime.fromtimestamp(epoch, tz=dt.UTC).isoformat()
 
 
 def _queue_token(transport: FakeHttpTransport, *, value: str, expires_at: float) -> None:

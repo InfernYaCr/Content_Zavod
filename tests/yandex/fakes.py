@@ -20,7 +20,9 @@ class FakeHttpTransport:
     def queue_get(self, url: str, response: HttpResponse) -> None:
         self._get_responses.setdefault(url, []).append(response)
 
-    async def post(self, url: str, *, headers: dict[str, str], json: dict[str, Any]) -> HttpResponse:
+    async def post(
+        self, url: str, *, headers: dict[str, str], json: dict[str, Any]
+    ) -> HttpResponse:
         self.post_calls.append((url, headers, json))
         queue = self._post_responses.get(url)
         if not queue:

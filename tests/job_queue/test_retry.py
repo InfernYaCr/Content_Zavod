@@ -1,5 +1,5 @@
-import pytest
 import asyncpg
+import pytest
 
 from content_zavod.job_queue import JobNotFound, JobQueue
 

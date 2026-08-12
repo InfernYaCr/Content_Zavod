@@ -12,7 +12,9 @@ class MembersOperations(Protocol):
     async def list_all(self) -> list[MemberView]: ...
 
 
-async def handle_members_command(membership: MembersOperations, gateway: TelegramGateway, chat_id: int) -> None:
+async def handle_members_command(
+    membership: MembersOperations, gateway: TelegramGateway, chat_id: int
+) -> None:
     members = await membership.list_all()
     if not members:
         await gateway.send_notice(chat_id, "Участников пока нет.")

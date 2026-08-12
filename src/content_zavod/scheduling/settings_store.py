@@ -37,7 +37,9 @@ class ScheduleSettings:
         )
         if row is None:
             return None
-        return ScheduleConfig(day_of_week=row["day_of_week"], hour=row["hour"], minute=row["minute"])
+        return ScheduleConfig(
+            day_of_week=row["day_of_week"], hour=row["hour"], minute=row["minute"]
+        )
 
     async def set(self, day_of_week: str, hour: int, minute: int) -> None:
         await self._pool.execute(

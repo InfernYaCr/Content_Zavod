@@ -15,7 +15,9 @@ from content_zavod.domain import (
 )
 from content_zavod.job_queue import JobQueue
 
-_VERSION = GeneratedVersion(content="Hello, world.", prompt="write it", model="yandexgpt", tokens=42, cost=0.01)
+_VERSION = GeneratedVersion(
+    content="Hello, world.", prompt="write it", model="yandexgpt", tokens=42, cost=0.01
+)
 
 
 async def _create_plan_item(plan: Plan) -> tuple[PlanId, PlanItemId]:
@@ -39,7 +41,9 @@ async def test_get_raises_for_unknown_article(article: Article) -> None:
         await article.get("missing")
 
 
-async def test_record_version_makes_the_article_available_via_get(article: Article, plan: Plan) -> None:
+async def test_record_version_makes_the_article_available_via_get(
+    article: Article, plan: Plan
+) -> None:
     plan_id, item_id = await _create_plan_item(plan)
     article_id = await article.create(plan_id, item_id, "Topic A", "zen")
 
@@ -61,7 +65,9 @@ async def test_record_version_appends_rather_than_overwrites(article: Article, p
     article_id = await article.create(plan_id, item_id, "Topic A", "zen")
 
     await article.record_version(article_id, _VERSION)
-    second = GeneratedVersion(content="Second draft.", prompt="rewrite", model="yandexgpt", tokens=10, cost=0.02)
+    second = GeneratedVersion(
+        content="Second draft.", prompt="rewrite", model="yandexgpt", tokens=10, cost=0.02
+    )
     await article.record_version(article_id, second)
 
     view = await article.get(article_id)
@@ -76,7 +82,11 @@ async def test_record_version_is_idempotent_for_the_same_source_job(
     claimed = await queue.claim_next()
     assert claimed is not None
     version = GeneratedVersion(
-        content="First draft.", prompt="write", model="yandexgpt", tokens=10, cost=0.01,
+        content="First draft.",
+        prompt="write",
+        model="yandexgpt",
+        tokens=10,
+        cost=0.01,
         source_job_id=claimed.id,
     )
 
@@ -127,7 +137,9 @@ async def test_final_generation_failure_marks_only_its_current_article_as_error(
     assert await article.mark_generation_failed(claimed.id + 1000) is None
 
 
-async def test_list_for_plan_only_returns_articles_with_a_version(article: Article, plan: Plan) -> None:
+async def test_list_for_plan_only_returns_articles_with_a_version(
+    article: Article, plan: Plan
+) -> None:
     plan_id, item_id = await _create_plan_item(plan)
     ready_id = await article.create(plan_id, item_id, "Topic A", "zen")
     await article.create(plan_id, item_id, "Topic A", "vc")  # still queued, no version
@@ -162,7 +174,9 @@ async def test_list_summary_for_plan_reflects_current_status(article: Article, p
     await article.mark_exported(article_id)
 
     summaries = await article.list_summary_for_plan(plan_id)
-    assert summaries == [ArticleSummary(id=article_id, title="Topic A", platform="zen", status="exported")]
+    assert summaries == [
+        ArticleSummary(id=article_id, title="Topic A", platform="zen", status="exported")
+    ]
 
 
 async def test_request_regeneration_moves_ready_article_to_regenerating_and_enqueues_a_job(
@@ -188,7 +202,9 @@ async def test_request_regeneration_is_idempotent_while_already_regenerating(
     await article.record_version(article_id, _VERSION)
 
     await article.request_regeneration(article_id, comment="first")
-    await article.request_regeneration(article_id, comment="second")  # no-op, must not raise/enqueue again
+    await article.request_regeneration(
+        article_id, comment="second"
+    )  # no-op, must not raise/enqueue again
 
     first_claim = await queue.claim_next()
     assert first_claim is not None
@@ -230,13 +246,17 @@ async def test_create_is_idempotent_on_plan_item_and_platform(article: Article, 
     assert first_id == second_id
 
 
-async def test_get_summary_returns_header_regardless_of_version_state(article: Article, plan: Plan) -> None:
+async def test_get_summary_returns_header_regardless_of_version_state(
+    article: Article, plan: Plan
+) -> None:
     plan_id, item_id = await _create_plan_item(plan)
     article_id = await article.create(plan_id, item_id, "Topic A", "zen")
 
     summary = await article.get_summary(article_id)
 
-    assert summary == ArticleSummary(id=article_id, title="Topic A", platform="zen", status="queued")
+    assert summary == ArticleSummary(
+        id=article_id, title="Topic A", platform="zen", status="queued"
+    )
 
 
 async def test_get_summary_raises_for_unknown_article(article: Article) -> None:
@@ -256,7 +276,9 @@ async def test_get_plan_id_raises_for_unknown_article(article: Article) -> None:
         await article.get_plan_id("missing")
 
 
-async def test_list_versions_is_empty_for_an_article_with_no_version_yet(article: Article, plan: Plan) -> None:
+async def test_list_versions_is_empty_for_an_article_with_no_version_yet(
+    article: Article, plan: Plan
+) -> None:
     plan_id, item_id = await _create_plan_item(plan)
     article_id = await article.create(plan_id, item_id, "Topic A", "zen")
 
@@ -274,7 +296,9 @@ async def test_list_versions_lists_every_version_newest_first_without_content(
     plan_id, item_id = await _create_plan_item(plan)
     article_id = await article.create(plan_id, item_id, "Topic A", "zen")
     await article.record_version(article_id, _VERSION)
-    second = GeneratedVersion(content="Second draft.", prompt="rewrite", model="yandexgpt-2", tokens=10, cost=0.02)
+    second = GeneratedVersion(
+        content="Second draft.", prompt="rewrite", model="yandexgpt-2", tokens=10, cost=0.02
+    )
     await article.record_version(article_id, second)
 
     versions = await article.list_versions(article_id)
@@ -284,7 +308,9 @@ async def test_list_versions_lists_every_version_newest_first_without_content(
     assert not hasattr(versions[0], "content")
 
 
-async def test_get_version_returns_the_requested_versions_full_content(article: Article, plan: Plan) -> None:
+async def test_get_version_returns_the_requested_versions_full_content(
+    article: Article, plan: Plan
+) -> None:
     plan_id, item_id = await _create_plan_item(plan)
     article_id = await article.create(plan_id, item_id, "Topic A", "zen")
     await article.record_version(article_id, _VERSION)

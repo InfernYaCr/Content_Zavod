@@ -1,6 +1,7 @@
 import pytest
 
 from content_zavod.yandex.credentials import StaticApiKeyProvider
+from content_zavod.yandex.errors import YandexError
 from content_zavod.yandex.http import HttpResponse
 from content_zavod.yandex.keyword_stats import (
     DYNAMICS_URL,
@@ -18,7 +19,9 @@ def _make_client(transport: FakeHttpTransport, **kwargs: object) -> KeywordStats
 
 
 def _top_requests_response(count: int) -> HttpResponse:
-    return HttpResponse(status=200, body={"results": [{"count": count}], "associations": [], "totalCount": count})
+    return HttpResponse(
+        status=200, body={"results": [{"count": count}], "associations": [], "totalCount": count}
+    )
 
 
 @pytest.mark.asyncio
@@ -29,8 +32,10 @@ async def test_returns_stats_for_available_keywords() -> None:
 
     result = await client.keyword_stats(["crm для малого бизнеса"])
 
-    assert result == {"crm для малого бизнеса": KeywordStat(keyword="crm для малого бизнеса", frequency=1200)}
-    url, headers, body = transport.post_calls[0]
+    assert result == {
+        "crm для малого бизнеса": KeywordStat(keyword="crm для малого бизнеса", frequency=1200)
+    }
+    url, _headers, body = transport.post_calls[0]
     assert url == TOP_REQUESTS_URL
     assert body == {"phrase": "crm для малого бизнеса", "numPhrases": 20, "folderId": "folder-1"}
 
@@ -146,7 +151,7 @@ async def test_keyword_dynamics_returns_points() -> None:
         KeywordDynamicsPoint(date="2026-02-01T00:00:00Z", count=1000, share=0.1),
         KeywordDynamicsPoint(date="2026-03-01T00:00:00Z", count=1200, share=0.12),
     ]
-    url, headers, body = transport.post_calls[0]
+    url, _headers, body = transport.post_calls[0]
     assert url == DYNAMICS_URL
     assert body == {
         "phrase": "кофемашина",
@@ -160,10 +165,12 @@ async def test_keyword_dynamics_returns_points() -> None:
 @pytest.mark.asyncio
 async def test_keyword_dynamics_raises_on_error_status() -> None:
     transport = FakeHttpTransport()
-    transport.queue_post(DYNAMICS_URL, HttpResponse(status=400, body={"message": "InvalidArgument"}))
+    transport.queue_post(
+        DYNAMICS_URL, HttpResponse(status=400, body={"message": "InvalidArgument"})
+    )
     client = _make_client(transport)
 
-    with pytest.raises(Exception):
+    with pytest.raises(YandexError):
         await client.keyword_dynamics(
             "кофемашина",
             period="PERIOD_MONTHLY",

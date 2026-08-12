@@ -9,7 +9,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import time
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from ._resilience import with_backoff_retry
 from .credentials import CredentialProvider, IamTokenProvider, StaticApiKeyProvider
@@ -49,15 +50,22 @@ class ImageGenerator:
         self._operation_url_template = operation_url_template
 
     @classmethod
-    def with_service_account_key(cls, api_key: str, *, folder_id: str, **kwargs: Any) -> "ImageGenerator":
+    def with_service_account_key(
+        cls, api_key: str, *, folder_id: str, **kwargs: Any
+    ) -> ImageGenerator:
         """Build against a Yandex Cloud service-account API key (no expiry to manage)."""
         return cls(HttpxTransport(), StaticApiKeyProvider(api_key), folder_id=folder_id, **kwargs)
 
     @classmethod
-    def with_oauth_token(cls, oauth_token: str, *, folder_id: str, **kwargs: Any) -> "ImageGenerator":
+    def with_oauth_token(cls, oauth_token: str, *, folder_id: str, **kwargs: Any) -> ImageGenerator:
         """Build against a long-lived OAuth token; IAM tokens are refreshed internally."""
         transport = HttpxTransport()
-        return cls(transport, IamTokenProvider(transport, oauth_token=oauth_token), folder_id=folder_id, **kwargs)
+        return cls(
+            transport,
+            IamTokenProvider(transport, oauth_token=oauth_token),
+            folder_id=folder_id,
+            **kwargs,
+        )
 
     async def generate_cover(self, prompt: str) -> bytes:
         operation_id = await self._submit(prompt)
@@ -91,7 +99,9 @@ class ImageGenerator:
                 headers = await self._credentials.auth_header()
                 return await self._transport.get(url, headers=headers)
 
-            response = await with_backoff_retry(call, max_retries=self._max_retries, sleep=self._sleep)
+            response = await with_backoff_retry(
+                call, max_retries=self._max_retries, sleep=self._sleep
+            )
             if response.body.get("done"):
                 if "error" in response.body:
                     raise YandexError(f"YandexART operation failed: {response.body['error']}")

@@ -15,8 +15,10 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "pre-commit>=4.0,<5",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "ruff==0.16.0",
     "testcontainers>=4.0",
 ]
 
@@ -32,3 +34,16 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+force-exclude = true
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "ASYNC", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"] # Russian prose intentionally uses Cyrillic lookalikes.
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

@@ -78,7 +78,9 @@ class JobQueue:
             idempotency_key,
         )
         if row is None:
-            raise JobQueueError(f"enqueue failed to return an id for idempotency_key={idempotency_key!r}")
+            raise JobQueueError(
+                f"enqueue failed to return an id for idempotency_key={idempotency_key!r}"
+            )
         return JobId(row["id"])
 
     async def get_status(self, job_id: JobId) -> JobStatus:
@@ -196,7 +198,9 @@ class JobQueue:
         )
         if result == "UPDATE 1":
             return True
-        exists = await self._pool.fetchval("SELECT EXISTS(SELECT 1 FROM jobs WHERE id = $1)", job_id)
+        exists = await self._pool.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE id = $1)", job_id
+        )
         if not exists:
             raise JobNotFound(job_id)
         return False
@@ -247,7 +251,9 @@ class JobQueue:
             output=json.loads(row["output"]) if row["output"] is not None else None,
             error=row["error"],
         )
-        return ClaimedNotification(result=result, notification_attempts=row["notification_attempts"])
+        return ClaimedNotification(
+            result=result, notification_attempts=row["notification_attempts"]
+        )
 
     async def mark_notified(self, job_id: JobId) -> None:
         await self._pool.execute(

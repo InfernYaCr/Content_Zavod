@@ -10,8 +10,9 @@ idempotent on their target state so a retried Telegram callback is a no-op.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Callable, Literal, Sequence
+from typing import Literal
 from uuid import uuid4
 
 import asyncpg
@@ -52,7 +53,9 @@ class Article:
     async def ensure_schema(self) -> None:
         await self._pool.execute(_SCHEMA_SQL)
 
-    async def create(self, plan_id: PlanId, plan_item_id: PlanItemId, title: str, platform: str) -> ArticleId:
+    async def create(
+        self, plan_id: PlanId, plan_item_id: PlanItemId, title: str, platform: str
+    ) -> ArticleId:
         """Idempotent on (plan_item_id, platform): a second call for the same pair reuses the
         existing Статья's id instead of inserting a duplicate row (#14)."""
         row = await self._pool.fetchrow(
@@ -71,7 +74,9 @@ class Article:
         if row is not None:
             return ArticleId(row["id"])
         existing = await self._pool.fetchrow(
-            "SELECT id FROM articles WHERE plan_item_id = $1 AND platform = $2", plan_item_id, platform
+            "SELECT id FROM articles WHERE plan_item_id = $1 AND platform = $2",
+            plan_item_id,
+            platform,
         )
         if existing is None:
             raise RuntimeError(
@@ -109,7 +114,13 @@ class Article:
             if content is None:
                 continue
             views.append(
-                _to_view(article_id, PlanItemId(row["plan_item_id"]), row["title"], row["platform"], content)
+                _to_view(
+                    article_id,
+                    PlanItemId(row["plan_item_id"]),
+                    row["title"],
+                    row["platform"],
+                    content,
+                )
             )
         return views
 
@@ -122,7 +133,12 @@ class Article:
             plan_id,
         )
         return [
-            ArticleSummary(id=ArticleId(row["id"]), title=row["title"], platform=row["platform"], status=row["status"])
+            ArticleSummary(
+                id=ArticleId(row["id"]),
+                title=row["title"],
+                platform=row["platform"],
+                status=row["status"],
+            )
             for row in rows
         ]
 
@@ -132,7 +148,12 @@ class Article:
         )
         if row is None:
             raise ArticleNotFound(article_id)
-        return ArticleSummary(id=ArticleId(row["id"]), title=row["title"], platform=row["platform"], status=row["status"])
+        return ArticleSummary(
+            id=ArticleId(row["id"]),
+            title=row["title"],
+            platform=row["platform"],
+            status=row["status"],
+        )
 
     async def get_plan_id(self, article_id: ArticleId) -> PlanId:
         row = await self._pool.fetchrow("SELECT plan_id FROM articles WHERE id = $1", article_id)
@@ -194,7 +215,8 @@ class Article:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 article_row = await conn.fetchrow(
-                    "SELECT active_generation_job_id FROM articles WHERE id = $1 FOR UPDATE", article_id
+                    "SELECT active_generation_job_id FROM articles WHERE id = $1 FOR UPDATE",
+                    article_id,
                 )
                 if article_row is None:
                     raise ArticleNotFound(article_id)
@@ -204,7 +226,9 @@ class Article:
                         version.source_job_id,
                     )
                     if existing is not None:
-                        return "already_applied" if existing["article_id"] == article_id else "stale"
+                        return (
+                            "already_applied" if existing["article_id"] == article_id else "stale"
+                        )
                     if article_row["active_generation_job_id"] != version.source_job_id:
                         return "stale"
                 await conn.execute(
@@ -331,7 +355,9 @@ class Article:
         return row["content"] if row is not None else None
 
 
-def _to_view(article_id: ArticleId, plan_item_id: PlanItemId, title: str, platform: str, content: str) -> ArticleView:
+def _to_view(
+    article_id: ArticleId, plan_item_id: PlanItemId, title: str, platform: str, content: str
+) -> ArticleView:
     return ArticleView(
         id=article_id,
         plan_item_id=plan_item_id,

@@ -9,8 +9,9 @@ mis-tap can't silently discard a Plan someone was mid-review on.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Callable, Protocol
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from ..domain import PlanId
@@ -26,9 +27,7 @@ class PlanGeneration(Protocol):
 
     async def archive(self, plan_id: PlanId) -> None: ...
 
-    async def request_new(
-        self, week_label: str, *, generation_id: str | None = None
-    ) -> object: ...
+    async def request_new(self, week_label: str, *, generation_id: str | None = None) -> object: ...
 
     async def request_replacement(self, plan_id: PlanId) -> object: ...
 
@@ -39,7 +38,7 @@ async def handle_generate_plan_command(
     chat_id: int,
     *,
     tz: ZoneInfo,
-    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> None:
     week_label = week_label_for(now(), tz)
     active = await plan.find_active(week_label)
@@ -61,5 +60,7 @@ async def handle_confirm_regenerate_plan(
     await gateway.edit_notice(chat_id, message_id, "Генерирую новый План...")
 
 
-async def handle_cancel_regenerate_plan(gateway: TelegramGateway, chat_id: int, message_id: int) -> None:
+async def handle_cancel_regenerate_plan(
+    gateway: TelegramGateway, chat_id: int, message_id: int
+) -> None:
     await gateway.edit_notice(chat_id, message_id, "Отменено.")

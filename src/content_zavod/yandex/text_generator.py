@@ -8,8 +8,9 @@ ContentPolicyError.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Literal
 
 from ._resilience import with_backoff_retry
 from .credentials import CredentialProvider, IamTokenProvider, StaticApiKeyProvider
@@ -55,21 +56,30 @@ class TextGenerator:
         self._url = url
 
     @classmethod
-    def with_service_account_key(cls, api_key: str, *, folder_id: str, **kwargs: Any) -> "TextGenerator":
+    def with_service_account_key(
+        cls, api_key: str, *, folder_id: str, **kwargs: Any
+    ) -> TextGenerator:
         """Build against a Yandex Cloud service-account API key (no expiry to manage)."""
         return cls(HttpxTransport(), StaticApiKeyProvider(api_key), folder_id=folder_id, **kwargs)
 
     @classmethod
-    def with_oauth_token(cls, oauth_token: str, *, folder_id: str, **kwargs: Any) -> "TextGenerator":
+    def with_oauth_token(cls, oauth_token: str, *, folder_id: str, **kwargs: Any) -> TextGenerator:
         """Build against a long-lived OAuth token; IAM tokens are refreshed internally."""
         transport = HttpxTransport()
-        return cls(transport, IamTokenProvider(transport, oauth_token=oauth_token), folder_id=folder_id, **kwargs)
+        return cls(
+            transport,
+            IamTokenProvider(transport, oauth_token=oauth_token),
+            folder_id=folder_id,
+            **kwargs,
+        )
 
     async def complete(self, messages: list[Message], *, temperature: float = 0.7) -> str:
         completion = await self.complete_with_usage(messages, temperature=temperature)
         return completion.text
 
-    async def complete_with_usage(self, messages: list[Message], *, temperature: float = 0.7) -> Completion:
+    async def complete_with_usage(
+        self, messages: list[Message], *, temperature: float = 0.7
+    ) -> Completion:
         async def call() -> HttpResponse:
             headers = await self._credentials.auth_header()
             return await self._transport.post(

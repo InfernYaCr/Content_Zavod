@@ -17,8 +17,9 @@ since this is an interactive command rather than a batch job.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Callable, Protocol
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from ..domain import PlanId, TopicDraft
@@ -46,7 +47,7 @@ async def handle_topic_command(
     text: str,
     *,
     tz: ZoneInfo,
-    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> None:
     title = text.strip()
     if not title:

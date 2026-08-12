@@ -13,8 +13,9 @@ history is delegated to the caller-supplied `recent_topic_titles`.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Protocol, Sequence
+from collections.abc import Awaitable, Callable, Sequence
+from datetime import UTC, datetime, timedelta
+from typing import Any, Protocol
 
 from ..domain import PlanItemDetail, PlanItemId, TopicDraft
 from ..job_queue import JobHandler
@@ -78,14 +79,18 @@ def make_generate_plan_handler(
     *,
     seed_keywords: Sequence[str] | None = None,
     topics_per_plan: int = TOPICS_PER_PLAN,
-    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> JobHandler:
     async def handle(payload: dict[str, Any]) -> dict[str, Any]:
         week_label = payload["week_label"]
         current_time = now()
         from_date, to_date = _dynamics_window(current_time)
         niche = await _current_niche(owner_settings)
-        directions = seed_keywords if seed_keywords is not None else await _current_directions(owner_settings)
+        directions = (
+            seed_keywords
+            if seed_keywords is not None
+            else await _current_directions(owner_settings)
+        )
 
         growing: list[tuple[float, str]] = []
         for keyword in directions:
@@ -93,7 +98,7 @@ def make_generate_plan_handler(
                 points = await keyword_stats.keyword_dynamics(
                     keyword, period="PERIOD_MONTHLY", from_date=from_date, to_date=to_date
                 )
-            except Exception:  # noqa: BLE001 - one bad keyword must not sink the whole Plan
+            except Exception:
                 continue
             growth = _growth_ratio(points)
             if growth is not None and growth > 1.0:

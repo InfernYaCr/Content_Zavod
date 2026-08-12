@@ -17,8 +17,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from ._resilience import with_connection_retry
 from .credentials import CredentialProvider, IamTokenProvider, StaticApiKeyProvider
@@ -72,15 +73,27 @@ class KeywordStats:
         self._cache: dict[str, tuple[float, KeywordStat]] = {}
 
     @classmethod
-    def with_service_account_key(cls, api_key: str, *, folder_id: str, **kwargs: Any) -> "KeywordStats":
+    def with_service_account_key(
+        cls, api_key: str, *, folder_id: str, **kwargs: Any
+    ) -> KeywordStats:
         """Build against a Yandex Cloud service-account API key (no expiry to manage)."""
-        return cls(HttpxTransport(timeout=DEFAULT_TIMEOUT), StaticApiKeyProvider(api_key), folder_id=folder_id, **kwargs)
+        return cls(
+            HttpxTransport(timeout=DEFAULT_TIMEOUT),
+            StaticApiKeyProvider(api_key),
+            folder_id=folder_id,
+            **kwargs,
+        )
 
     @classmethod
-    def with_oauth_token(cls, oauth_token: str, *, folder_id: str, **kwargs: Any) -> "KeywordStats":
+    def with_oauth_token(cls, oauth_token: str, *, folder_id: str, **kwargs: Any) -> KeywordStats:
         """Build against a long-lived OAuth token; IAM tokens are refreshed internally."""
         transport = HttpxTransport(timeout=DEFAULT_TIMEOUT)
-        return cls(transport, IamTokenProvider(transport, oauth_token=oauth_token), folder_id=folder_id, **kwargs)
+        return cls(
+            transport,
+            IamTokenProvider(transport, oauth_token=oauth_token),
+            folder_id=folder_id,
+            **kwargs,
+        )
 
     async def keyword_stats(self, keywords: list[str]) -> dict[str, KeywordStat]:
         result: dict[str, KeywordStat] = {}
@@ -91,7 +104,7 @@ class KeywordStats:
                 continue
             try:
                 stat = await self._fetch(keyword)
-            except Exception:  # noqa: BLE001 - Wordstat unavailability must never propagate
+            except Exception:
                 logger.warning("Wordstat lookup failed for keyword %r", keyword, exc_info=True)
                 continue
             self._cache[keyword] = (self._clock(), stat)
@@ -121,9 +134,13 @@ class KeywordStats:
                 },
             )
 
-        response = await with_connection_retry(call, max_retries=self._max_retries, sleep=self._sleep)
+        response = await with_connection_retry(
+            call, max_retries=self._max_retries, sleep=self._sleep
+        )
         if response.status != 200:
-            raise YandexError(f"Wordstat dynamics request failed (status={response.status}): {response.body}")
+            raise YandexError(
+                f"Wordstat dynamics request failed (status={response.status}): {response.body}"
+            )
         try:
             return [
                 KeywordDynamicsPoint(
@@ -155,7 +172,9 @@ class KeywordStats:
                 json={"phrase": keyword, "numPhrases": 20, "folderId": self._folder_id},
             )
 
-        response = await with_connection_retry(call, max_retries=self._max_retries, sleep=self._sleep)
+        response = await with_connection_retry(
+            call, max_retries=self._max_retries, sleep=self._sleep
+        )
         if response.status != 200:
             raise YandexError(f"Wordstat request failed (status={response.status})")
         try:

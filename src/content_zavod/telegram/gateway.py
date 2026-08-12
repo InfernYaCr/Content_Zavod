@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
-from typing import Literal, Protocol, Sequence
+from typing import Literal, Protocol
 
 from aiogram.types import (
     BotCommand,
@@ -263,7 +264,9 @@ def build_plan_keyboard(plan: PlanView, *, page: int = 0) -> InlineKeyboardMarku
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def render_history_weeks_text(plans_page: Sequence[PlanSummary], *, page: int, page_count: int) -> str:
+def render_history_weeks_text(
+    plans_page: Sequence[PlanSummary], *, page: int, page_count: int
+) -> str:
     lines = ["🗂 История"]
     if page_count > 1:
         lines.append(f"Страница {page + 1}/{page_count}")
@@ -292,11 +295,15 @@ def build_history_weeks_keyboard(
         nav_row: list[InlineKeyboardButton] = []
         if page > 0:
             nav_row.append(
-                InlineKeyboardButton(text="◀ Назад", callback_data=encode_history_page_callback(page - 1))
+                InlineKeyboardButton(
+                    text="◀ Назад", callback_data=encode_history_page_callback(page - 1)
+                )
             )
         if page < page_count - 1:
             nav_row.append(
-                InlineKeyboardButton(text="Вперёд ▶", callback_data=encode_history_page_callback(page + 1))
+                InlineKeyboardButton(
+                    text="Вперёд ▶", callback_data=encode_history_page_callback(page + 1)
+                )
             )
         if nav_row:
             rows.append(nav_row)
@@ -314,16 +321,22 @@ _DOWNLOADABLE_ARTICLE_STATUSES = frozenset({"ready", "regenerating", "exported"}
 _VERSION_BROWSABLE_ARTICLE_STATUSES = frozenset({"ready", "regenerating", "exported", "error"})
 
 
-def _export_button_row(article_id: str, *, docx_label: str, md_label: str) -> list[InlineKeyboardButton]:
+def _export_button_row(
+    article_id: str, *, docx_label: str, md_label: str
+) -> list[InlineKeyboardButton]:
     """The .docx/.md export button pair, shared by the generation-time keyboard and the
     /history download row (#28/#30) - only the labels differ between the two call sites."""
     return [
-        InlineKeyboardButton(text=docx_label, callback_data=encode_export_callback(article_id, "docx")),
+        InlineKeyboardButton(
+            text=docx_label, callback_data=encode_export_callback(article_id, "docx")
+        ),
         InlineKeyboardButton(text=md_label, callback_data=encode_export_callback(article_id, "md")),
     ]
 
 
-def render_history_articles_text(plan_summary: PlanSummary, articles: Sequence[ArticleSummary]) -> str:
+def render_history_articles_text(
+    plan_summary: PlanSummary, articles: Sequence[ArticleSummary]
+) -> str:
     lines = [f"📄 Статьи: {format_week_range(plan_summary.week_label)} ({plan_summary.status})", ""]
     if not articles:
         lines.append("Статей пока нет.")
@@ -347,7 +360,11 @@ def build_history_articles_keyboard(
             continue
         row: list[InlineKeyboardButton] = []
         if item.status in _DOWNLOADABLE_ARTICLE_STATUSES:
-            row.extend(_export_button_row(item.id, docx_label=f"⬇️ {index}. .docx", md_label=f"⬇️ {index}. .md"))
+            row.extend(
+                _export_button_row(
+                    item.id, docx_label=f"⬇️ {index}. .docx", md_label=f"⬇️ {index}. .md"
+                )
+            )
         row.append(
             InlineKeyboardButton(
                 text=f"🕓 {index}. Версии",
@@ -355,11 +372,19 @@ def build_history_articles_keyboard(
             )
         )
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="◀ Назад", callback_data=encode_history_page_callback(back_page))])
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="◀ Назад", callback_data=encode_history_page_callback(back_page)
+            )
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def render_history_versions_text(article: ArticleSummary, versions: Sequence[ArticleVersionSummary]) -> str:
+def render_history_versions_text(
+    article: ArticleSummary, versions: Sequence[ArticleVersionSummary]
+) -> str:
     lines = [f"🕓 Версии: {article.title} ({article.platform})", ""]
     if not versions:
         lines.append("Версий пока нет.")
@@ -389,7 +414,11 @@ def build_history_versions_keyboard(
         for index, version in enumerate(versions, start=1)
     ]
     rows.append(
-        [InlineKeyboardButton(text="◀ Назад", callback_data=encode_history_week_callback(plan_id, back_page))]
+        [
+            InlineKeyboardButton(
+                text="◀ Назад", callback_data=encode_history_week_callback(plan_id, back_page)
+            )
+        ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -605,10 +634,14 @@ class TelegramGateway:
 
     async def send_plan(self, chat_id: int, plan: PlanView, *, page: int = 0) -> None:
         await self._bot.send_message(
-            chat_id, render_plan_text(plan, page=page), reply_markup=build_plan_keyboard(plan, page=page)
+            chat_id,
+            render_plan_text(plan, page=page),
+            reply_markup=build_plan_keyboard(plan, page=page),
         )
 
-    async def edit_plan(self, chat_id: int, message_id: int, plan: PlanView, *, page: int = 0) -> None:
+    async def edit_plan(
+        self, chat_id: int, message_id: int, plan: PlanView, *, page: int = 0
+    ) -> None:
         await self._bot.edit_message_text(
             chat_id,
             message_id,
@@ -671,7 +704,9 @@ class TelegramGateway:
             chat_id,
             message_id,
             render_history_versions_text(article, versions),
-            reply_markup=build_history_versions_keyboard(article.id, plan_id, versions, back_page=back_page),
+            reply_markup=build_history_versions_keyboard(
+                article.id, plan_id, versions, back_page=back_page
+            ),
         )
 
     async def edit_history_version(
@@ -734,7 +769,9 @@ class TelegramGateway:
         chunks = chunk_text(text)
         last_index = len(chunks) - 1
         for index, chunk in enumerate(chunks):
-            await self._bot.send_message(chat_id, chunk, reply_markup=reply_markup if index == last_index else None)
+            await self._bot.send_message(
+                chat_id, chunk, reply_markup=reply_markup if index == last_index else None
+            )
 
 
 class TelegramCommentPrompt:

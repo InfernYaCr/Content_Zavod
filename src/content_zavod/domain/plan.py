@@ -28,17 +28,25 @@ original, already-completed Job.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Sequence
 from uuid import uuid4
 
 import asyncpg
 
 from ..job_queue import JobId, JobQueue
 from .errors import PlanItemNotEditable, PlanItemNotFound, PlanNotFound
-from .types import PlanId, PlanItemId, PlanItemStatus, PlanItemView, PlanSummary, PlanView, TopicDraft
+from .types import (
+    PlanId,
+    PlanItemId,
+    PlanItemStatus,
+    PlanItemView,
+    PlanSummary,
+    PlanView,
+    TopicDraft,
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +57,7 @@ class PlanItemDetail:
     title: str
     summary: str
     keywords: list[str]
+
 
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
@@ -79,7 +88,9 @@ class Plan:
         return await self.get(PlanId(plan_row["id"]))
 
     async def get(self, plan_id: PlanId) -> PlanView:
-        plan_row = await self._pool.fetchrow("SELECT id, week_label FROM plans WHERE id = $1", plan_id)
+        plan_row = await self._pool.fetchrow(
+            "SELECT id, week_label FROM plans WHERE id = $1", plan_id
+        )
         if plan_row is None:
             raise PlanNotFound(plan_id)
         item_rows = await self._pool.fetch(
@@ -95,7 +106,9 @@ class Plan:
     async def get_summary(self, plan_id: PlanId) -> PlanSummary:
         """A Plan's header only (no items join) - what /history's week-select screen resolves
         a chosen week's `plan_id` to before listing its Статьи."""
-        row = await self._pool.fetchrow("SELECT id, week_label, status FROM plans WHERE id = $1", plan_id)
+        row = await self._pool.fetchrow(
+            "SELECT id, week_label, status FROM plans WHERE id = $1", plan_id
+        )
         if row is None:
             raise PlanNotFound(plan_id)
         return PlanSummary(id=PlanId(row["id"]), week_label=row["week_label"], status=row["status"])
@@ -273,7 +286,8 @@ class Plan:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "UPDATE plans SET status = 'approved', updated_at = now() WHERE id = $1", plan_id
+                    "UPDATE plans SET status = 'approved', updated_at = now() WHERE id = $1",
+                    plan_id,
                 )
                 await conn.execute(
                     """
@@ -317,7 +331,8 @@ class Plan:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "UPDATE plans SET status = 'archived', updated_at = now() WHERE id = $1", plan_id
+                    "UPDATE plans SET status = 'archived', updated_at = now() WHERE id = $1",
+                    plan_id,
                 )
                 await conn.execute(
                     """
@@ -344,9 +359,7 @@ class Plan:
         # A completed Job may arrive after approval/archive.  Reporting that
         # stale result as a domain error lets notification retry/dead-letter
         # policy observe it instead of falsely announcing an update.
-        row = await self._pool.fetchrow(
-            "SELECT status FROM plan_items WHERE id = $1", plan_item_id
-        )
+        row = await self._pool.fetchrow("SELECT status FROM plan_items WHERE id = $1", plan_item_id)
         if row is None:
             raise PlanItemNotFound(plan_item_id)
         raise PlanItemNotEditable(plan_item_id, row["status"])
