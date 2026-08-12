@@ -5,9 +5,7 @@ Per ADR-0006's 2026-08-07 amendment, "growing" is determined from
 Направления (Wordstat seed keywords), not a static high-frequency-now
 snapshot. Ниша and Направления live in the `settings` module (#49), which
 this pipeline reads fresh from a `SettingsReader` at the start of every Job
-run so a change takes effect without a restart - the constants and
-`parse_directions` below are aliases into that module, kept here so `/settings`
-and the other existing importers don't need to change. `seed_keywords`
+run so a change takes effect without a restart. `seed_keywords`
 remains an explicit override for callers (mainly tests) that want to bypass
 Настройки entirely; dedup against topic history is delegated to the
 caller-supplied `recent_topic_titles`.
@@ -21,24 +19,12 @@ from typing import Any, Protocol
 
 from ..domain import PlanItemDetail, PlanItemId, TopicDraft
 from ..job_queue import JobHandler
-from ..settings import (
-    DEFAULT_DIRECTIONS,
-    DEFAULT_NICHE,
-    DIRECTIONS_KEY,
-    NICHE_KEY,
-    SettingsReader,
-    parse_directions,
-)
+from ..settings import SettingsReader
 from ..yandex import KeywordDynamicsPoint, KeywordStats, Message, TextGenerator
 
 __all__ = [
-    "DEFAULT_DIRECTIONS",
-    "DEFAULT_NICHE",
-    "DIRECTIONS_KEY",
-    "NICHE_KEY",
     "make_generate_plan_handler",
     "make_regenerate_topic_handler",
-    "parse_directions",
 ]
 
 TOPICS_PER_PLAN = 3
