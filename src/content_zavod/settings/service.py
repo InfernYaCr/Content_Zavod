@@ -9,10 +9,10 @@ never touch raw store keys or repeat fallback/resolution logic themselves.
 Typed setters normalize (strip / split-on-comma) internally and raise
 `InvalidSettingValue` on input that normalizes to nothing, instead of
 writing anything - the command layer decides how to phrase the rejection,
-this module only decides whether a write happens. `set_persona` writes
-whatever normalized string it's given, whether that's a Preset marker (from
-a template button) or the Owner's own text - `resolve_persona` decides at
-read time which one it is, so both paths save identically.
+this module only decides whether a write happens. `set_persona` writes a
+Preset marker as-is (from a template button); any other input is parsed as
+`Роль: …`-marked Custom Персона lines (#51, ADR-0010) and stored as JSON -
+missing Роль raises `InvalidSettingValue` without writing anything.
 
 `plan_pipeline` re-exports the constants and `parse_directions` below as
 aliases so existing importers (`/settings`, `/set_niche`, `/set_directions`)
@@ -24,7 +24,13 @@ from __future__ import annotations
 from typing import Protocol
 
 from ..domain.errors import InvalidSettingValue
-from .persona import PERSONA_KEY, resolve_persona
+from .persona import (
+    PERSONA_KEY,
+    PERSONA_VALUE_PREFIX,
+    parse_custom_persona,
+    resolve_persona,
+    serialize_custom_persona,
+)
 from .values import OwnerSettings
 
 NICHE_KEY = "niche"
@@ -93,5 +99,13 @@ class SettingsService:
         normalized = value.strip()
         if not normalized:
             raise InvalidSettingValue("persona")
-        await self._store.set(PERSONA_KEY, normalized)
-        return normalized
+        if normalized.startswith(PERSONA_VALUE_PREFIX):
+            await self._store.set(PERSONA_KEY, normalized)
+            return normalized
+        try:
+            custom_persona = parse_custom_persona(normalized)
+        except ValueError as exc:
+            raise InvalidSettingValue("persona") from exc
+        serialized = serialize_custom_persona(custom_persona)
+        await self._store.set(PERSONA_KEY, serialized)
+        return serialized

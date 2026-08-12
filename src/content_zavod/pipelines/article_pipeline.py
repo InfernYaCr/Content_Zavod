@@ -124,7 +124,7 @@ async def _run_pipeline(
         return completion.text
 
     owner_settings = await settings.read()
-    persona, custom_voice = owner_settings.persona, owner_settings.custom_persona
+    persona, custom_persona = owner_settings.persona, owner_settings.custom_persona
     profile = platform_profile(platform)
     outline = await run_step(
         outline_messages(
@@ -134,7 +134,7 @@ async def _run_pipeline(
             previous_content=previous_content,
             comment=comment,
             persona=persona,
-            custom_voice=custom_voice,
+            custom_persona=custom_persona,
             profile=profile,
         )
     )
@@ -143,7 +143,7 @@ async def _run_pipeline(
             title=title,
             outline=outline,
             persona=persona,
-            custom_voice=custom_voice,
+            custom_persona=custom_persona,
             profile=profile,
         )
     )
@@ -151,7 +151,7 @@ async def _run_pipeline(
         rewrite_messages(
             draft=draft,
             persona=persona,
-            custom_voice=custom_voice,
+            custom_persona=custom_persona,
             profile=profile,
         )
     )

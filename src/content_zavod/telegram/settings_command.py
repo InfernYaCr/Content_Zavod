@@ -18,7 +18,7 @@ from ..pipelines.plan_pipeline import (
     NICHE_KEY,
     parse_directions,
 )
-from ..settings import PERSONA_KEY, resolve_persona
+from ..settings import PERSONA_KEY, persona_display_title, resolve_persona
 from .gateway import TelegramGateway
 
 
@@ -35,7 +35,7 @@ async def handle_settings_command(
     directions = parse_directions(directions_raw) if directions_raw else list(DEFAULT_DIRECTIONS)
 
     persona, custom_persona = resolve_persona(persona_raw)
-    persona_title = persona.title if persona is not None else (custom_persona or "")
+    persona_title = persona_display_title(persona, custom_persona)
 
     lines = [
         f"Ниша: {niche or DEFAULT_NICHE} (подбор/регенерация Темы)",
