@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from content_zavod.domain.errors import InvalidSettingValue
-from content_zavod.settings import SettingsService
+from content_zavod.settings import PERSONAS, CustomPersona, SettingsService, persona_setting_value
 
 
 class InMemoryStore:
@@ -90,3 +90,67 @@ async def test_missing_row_means_no_override_not_a_migration_needed() -> None:
 
     assert same_store_reader.niche == "edtech"
     assert fresh_store_reader.niche == "маркетинг"
+
+
+async def test_set_persona_via_preset_marker_stores_it_as_is() -> None:
+    settings = SettingsService(InMemoryStore())
+
+    value = persona_setting_value("evidence_analyst")
+    await settings.set_persona(value)
+    current = await settings.read()
+
+    assert current.persona == PERSONAS["evidence_analyst"]
+    assert current.custom_persona is None
+
+
+async def test_set_persona_with_marked_lines_saves_five_fields() -> None:
+    settings = SettingsService(InMemoryStore())
+    text = (
+        "Название: Технооптимист\n"
+        "Роль: фаундер, объясняющий технологические решения просто\n"
+        "Аудитория: технические руководители\n"
+        "Тон: энергичный и прямой\n"
+        "Запрещено: хайп, буллшит-бинго"
+    )
+
+    await settings.set_persona(text)
+    current = await settings.read()
+
+    assert current.persona is None
+    assert current.custom_persona == CustomPersona(
+        title="Технооптимист",
+        role="фаундер, объясняющий технологические решения просто",
+        audience="технические руководители",
+        tone="энергичный и прямой",
+        forbidden="хайп, буллшит-бинго",
+    )
+
+
+async def test_set_persona_omits_unfilled_fields_rather_than_defaulting_them() -> None:
+    settings = SettingsService(InMemoryStore())
+
+    await settings.set_persona("Роль: фаундер")
+    current = await settings.read()
+
+    assert current.custom_persona == CustomPersona(
+        title=None, role="фаундер", audience=None, tone=None, forbidden=None
+    )
+
+
+async def test_set_persona_without_role_rejects_input_without_writing() -> None:
+    store = InMemoryStore()
+    settings = SettingsService(store)
+
+    with pytest.raises(InvalidSettingValue):
+        await settings.set_persona("Название: Технооптимист\nТон: энергичный")
+
+    current = await settings.read()
+    assert current.persona is not None
+    assert current.persona.key == "practical_marketer"
+
+
+async def test_set_persona_rejects_empty_input_without_writing() -> None:
+    settings = SettingsService(InMemoryStore())
+
+    with pytest.raises(InvalidSettingValue):
+        await settings.set_persona("   ")

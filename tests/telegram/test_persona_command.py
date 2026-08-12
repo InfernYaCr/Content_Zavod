@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from content_zavod.settings import SettingsService
@@ -49,14 +51,28 @@ async def test_persona_command_reports_default_when_unset() -> None:
 
 
 @pytest.mark.asyncio
-async def test_persona_command_reports_persisted_custom_override() -> None:
+async def test_persona_command_reports_persisted_legacy_custom_value_as_role() -> None:
     store = FakeOwnerSettingsStore("технооптимист-фаундер")
     gateway = FakeGateway()
 
     await handle_persona_command(SettingsService(store), gateway, chat_id=1)
 
     chat_id, text, _reply_markup = gateway.sent_notices[0]
-    assert (chat_id, text) == (1, "Текущая Персона: технооптимист-фаундер")
+    assert (chat_id, text) == (1, "Текущая Персона:\nРоль: технооптимист-фаундер")
+
+
+@pytest.mark.asyncio
+async def test_persona_command_reports_stored_custom_persona_in_input_format() -> None:
+    stored = json.dumps(
+        {"title": "Технооптимист", "role": "фаундер", "tone": "энергичный"}, ensure_ascii=False
+    )
+    store = FakeOwnerSettingsStore(stored)
+    gateway = FakeGateway()
+
+    await handle_persona_command(SettingsService(store), gateway, chat_id=1)
+
+    _chat_id, text, _reply_markup = gateway.sent_notices[0]
+    assert text == ("Текущая Персона:\nНазвание: Технооптимист\nРоль: фаундер\nТон: энергичный")
 
 
 @pytest.mark.asyncio
@@ -88,26 +104,42 @@ async def test_persona_template_callback_saves_the_same_value_as_the_set_persona
 
 
 @pytest.mark.asyncio
-async def test_set_persona_persists_and_echoes_normalized_custom_text() -> None:
+async def test_set_persona_with_role_only_saves_and_echoes_it() -> None:
     store, gateway = FakeOwnerSettingsStore(), FakeGateway()
 
     await handle_set_persona_command(
-        SettingsService(store), gateway, chat_id=1, args="  технооптимист-фаундер  "
+        SettingsService(store), gateway, chat_id=1, args="Роль: технооптимист-фаундер"
     )
 
-    assert store.set_calls == [("voice", "технооптимист-фаундер")]
+    assert store.set_calls == [
+        ("voice", json.dumps({"role": "технооптимист-фаундер"}, ensure_ascii=False))
+    ]
     assert gateway.sent_notices == [(1, "Персона изменена: технооптимист-фаундер", None)]
 
 
 @pytest.mark.asyncio
-async def test_set_persona_accepts_multiline_text_as_is() -> None:
+async def test_set_persona_accepts_all_five_marked_fields() -> None:
     store, gateway = FakeOwnerSettingsStore(), FakeGateway()
-    multiline = "технооптимист-фаундер\nпишет прямо и по делу"
+    text = (
+        "Название: Технооптимист\n"
+        "Роль: фаундер, объясняющий технологические решения просто\n"
+        "Аудитория: технические руководители\n"
+        "Тон: энергичный и прямой\n"
+        "Запрещено: хайп, буллшит-бинго"
+    )
 
-    await handle_set_persona_command(SettingsService(store), gateway, chat_id=1, args=multiline)
+    await handle_set_persona_command(SettingsService(store), gateway, chat_id=1, args=text)
 
-    assert store.set_calls == [("voice", multiline)]
-    assert gateway.sent_notices == [(1, f"Персона изменена: {multiline}", None)]
+    stored_key, stored_value = store.set_calls[0]
+    assert stored_key == "voice"
+    assert json.loads(stored_value) == {
+        "title": "Технооптимист",
+        "role": "фаундер, объясняющий технологические решения просто",
+        "audience": "технические руководители",
+        "tone": "энергичный и прямой",
+        "forbidden": "хайп, буллшит-бинго",
+    }
+    assert gateway.sent_notices == [(1, "Персона изменена: Технооптимист", None)]
 
 
 @pytest.mark.asyncio
@@ -125,6 +157,18 @@ async def test_set_persona_rejects_whitespace_only_args_without_side_effects() -
     store, gateway = FakeOwnerSettingsStore(), FakeGateway()
 
     await handle_set_persona_command(SettingsService(store), gateway, chat_id=1, args="   \n  ")
+
+    assert store.set_calls == []
+    assert len(gateway.sent_errors) == 1
+
+
+@pytest.mark.asyncio
+async def test_set_persona_without_a_role_line_is_rejected_without_side_effects() -> None:
+    store, gateway = FakeOwnerSettingsStore(), FakeGateway()
+
+    await handle_set_persona_command(
+        SettingsService(store), gateway, chat_id=1, args="Название: Технооптимист\nТон: энергичный"
+    )
 
     assert store.set_calls == []
     assert len(gateway.sent_errors) == 1

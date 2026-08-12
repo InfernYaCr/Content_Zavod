@@ -7,13 +7,15 @@ The stored key stays `"voice"` (ADR-0009): it is an internal string of this
 module, invisible to the Owner and to code outside this module's boundary.
 
 `resolve_persona` reads one stored string into either a known Preset or a
-free-text custom Персона - a legacy value that is neither a Preset marker
-nor the pre-rename default title is trusted as the Owner's own description
-(ADR-0010 will structure it; it stays a free string for this ticket).
+custom `CustomPersona` (ADR-0010). Three stored forms are tolerated: a Preset
+marker resolves to a catalog `Persona`; a JSON object resolves to a
+structured `CustomPersona`; any other non-empty string is the pre-#51 legacy
+value, read as the Role field of a `CustomPersona` with no other field set.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -95,11 +97,140 @@ def persona_setting_value(key: str) -> str:
     return f"{PERSONA_VALUE_PREFIX}{key}"
 
 
-def resolve_persona(value: str | None) -> tuple[Persona | None, str | None]:
+@dataclass(frozen=True)
+class CustomPersona:
+    """The Owner's own Персона (#51, ADR-0010): five fields of `Persona`,
+    only Роль required. Absent fields are `None`, never backfilled from the
+    default Preset - `/persona` and the prompt block must show exactly what
+    the Owner set, nothing more."""
+
+    title: str | None
+    role: str
+    audience: str | None
+    tone: str | None
+    forbidden: str | None
+
+
+# (field, label) in the fixed order used both for parsing `/set_persona` input
+# and for printing it back via `format_custom_persona` - the two must stay in
+# lockstep so `/persona`'s output is valid `/set_persona` input.
+_CUSTOM_PERSONA_FIELDS: tuple[tuple[str, str], ...] = (
+    ("title", "Название"),
+    ("role", "Роль"),
+    ("audience", "Аудитория"),
+    ("tone", "Тон"),
+    ("forbidden", "Запрещено"),
+)
+_LABEL_TO_FIELD: Mapping[str, str] = {
+    label.lower(): field for field, label in _CUSTOM_PERSONA_FIELDS
+}
+
+
+def parse_custom_persona(text: str) -> CustomPersona:
+    """Parse `Роль: …`-style marked lines. Raises `ValueError` when no Роль
+    line is present - the caller (`SettingsService.set_persona`) turns that
+    into the domain `InvalidSettingValue` without writing anything."""
+
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        label, sep, value = line.partition(":")
+        if not sep:
+            continue
+        field = _LABEL_TO_FIELD.get(label.strip().lower())
+        value = value.strip()
+        if field and value:
+            fields[field] = value
+
+    role = fields.get("role")
+    if not role:
+        raise ValueError("Персона: поле 'Роль' обязательно")
+    return CustomPersona(
+        title=fields.get("title"),
+        role=role,
+        audience=fields.get("audience"),
+        tone=fields.get("tone"),
+        forbidden=fields.get("forbidden"),
+    )
+
+
+def format_custom_persona(persona: CustomPersona) -> str:
+    """Marked lines matching `parse_custom_persona`'s input format, with
+    absent fields omitted - the round-trip `/persona` copy-paste-edit shape."""
+
+    values = {
+        "title": persona.title,
+        "role": persona.role,
+        "audience": persona.audience,
+        "tone": persona.tone,
+        "forbidden": persona.forbidden,
+    }
+    return "\n".join(
+        f"{label}: {values[field]}" for field, label in _CUSTOM_PERSONA_FIELDS if values[field]
+    )
+
+
+def custom_persona_label(persona: CustomPersona) -> str:
+    return persona.title or persona.role
+
+
+def persona_display_title(persona: Persona | None, custom_persona: CustomPersona | None) -> str:
+    """The one-line title callers show for whichever Персона is active - a
+    Preset's `title`, or a Custom Персона's `custom_persona_label`. Shared by
+    `/set_persona`'s confirmation and `/settings`'s summary line so the two
+    don't each re-derive the same persona/custom_persona switch."""
+
+    if persona is not None:
+        return persona.title
+    return custom_persona_label(custom_persona) if custom_persona is not None else ""
+
+
+def serialize_custom_persona(persona: CustomPersona) -> str:
+    payload = {
+        field: value
+        for field, value in (
+            ("title", persona.title),
+            ("role", persona.role),
+            ("audience", persona.audience),
+            ("tone", persona.tone),
+            ("forbidden", persona.forbidden),
+        )
+        if value
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _parse_stored_custom_persona(value: str) -> CustomPersona | None:
+    try:
+        data = json.loads(value)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    role = data.get("role")
+    if not isinstance(role, str) or not role.strip():
+        return None
+
+    def _text(key: str) -> str | None:
+        item = data.get(key)
+        return item if isinstance(item, str) and item.strip() else None
+
+    return CustomPersona(
+        title=_text("title"),
+        role=role,
+        audience=_text("audience"),
+        tone=_text("tone"),
+        forbidden=_text("forbidden"),
+    )
+
+
+def resolve_persona(value: str | None) -> tuple[Persona | None, CustomPersona | None]:
     if not value or value == DEFAULT_PERSONA_TITLE:
         return PERSONAS[DEFAULT_PERSONA_KEY], None
     if value.startswith(PERSONA_VALUE_PREFIX):
         persona = PERSONAS.get(value.removeprefix(PERSONA_VALUE_PREFIX))
         if persona is not None:
             return persona, None
-    return None, value
+    custom = _parse_stored_custom_persona(value)
+    if custom is not None:
+        return None, custom
+    return None, CustomPersona(title=None, role=value, audience=None, tone=None, forbidden=None)
