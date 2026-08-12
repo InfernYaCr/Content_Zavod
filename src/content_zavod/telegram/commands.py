@@ -31,9 +31,9 @@ OWNER_COMMANDS: list[BotCommand] = [
     BotCommand(command="set_niche", description="Изменить Нишу"),
     BotCommand(command="directions", description="Текущие Направления"),
     BotCommand(command="set_directions", description="Изменить Направления"),
-    BotCommand(command="voice", description="Текущий Голос"),
-    BotCommand(command="set_voice", description="Изменить Голос"),
-    BotCommand(command="settings", description="Ниша, Голос и Направления разом"),
+    BotCommand(command="persona", description="Текущая Персона"),
+    BotCommand(command="set_persona", description="Изменить Персону"),
+    BotCommand(command="settings", description="Ниша, Персона и Направления разом"),
 ]
 
 

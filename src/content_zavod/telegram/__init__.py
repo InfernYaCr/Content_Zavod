@@ -10,11 +10,11 @@ from .gateway import (
     build_confirm_keyboard,
     build_join_request_keyboard,
     build_members_keyboard,
+    build_persona_keyboard,
     build_plan_keyboard,
     build_request_access_keyboard,
     build_retry_keyboard,
     build_skip_keyboard,
-    build_voice_keyboard,
     decode_callback_data,
     decode_export_id,
     decode_history_version_id,
@@ -47,6 +47,12 @@ from .history_command import (
 from .join_request_flow import JoinRequestFlow
 from .members_command import handle_members_command
 from .niche_command import handle_niche_command, handle_set_niche_command
+from .persona_command import (
+    PERSONA_TEMPLATES,
+    handle_persona_command,
+    handle_persona_template_callback,
+    handle_set_persona_command,
+)
 from .plan_review import PlanOperations, PlanReview
 from .schedule_command import handle_schedule_command, handle_set_schedule_command
 from .settings_command import handle_settings_command
@@ -64,15 +70,9 @@ from .types import (
     PlanSummary,
     PlanView,
 )
-from .voice_command import (
-    VOICE_TEMPLATES,
-    handle_set_voice_command,
-    handle_voice_command,
-    handle_voice_template_callback,
-)
 
 __all__ = [
-    "VOICE_TEMPLATES",
+    "PERSONA_TEMPLATES",
     "Action",
     "ArticleFormat",
     "ArticleId",
@@ -100,11 +100,11 @@ __all__ = [
     "build_confirm_keyboard",
     "build_join_request_keyboard",
     "build_members_keyboard",
+    "build_persona_keyboard",
     "build_plan_keyboard",
     "build_request_access_keyboard",
     "build_retry_keyboard",
     "build_skip_keyboard",
-    "build_voice_keyboard",
     "decode_callback_data",
     "decode_export_id",
     "decode_history_version_id",
@@ -129,15 +129,15 @@ __all__ = [
     "handle_history_week",
     "handle_members_command",
     "handle_niche_command",
+    "handle_persona_command",
+    "handle_persona_template_callback",
     "handle_schedule_command",
     "handle_set_directions_command",
     "handle_set_niche_command",
+    "handle_set_persona_command",
     "handle_set_schedule_command",
-    "handle_set_voice_command",
     "handle_settings_command",
     "handle_topic_command",
-    "handle_voice_command",
-    "handle_voice_template_callback",
     "render_help_text",
     "render_plan_text",
     "sync_commands",

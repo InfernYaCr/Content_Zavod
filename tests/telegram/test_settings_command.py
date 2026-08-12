@@ -31,7 +31,7 @@ async def test_settings_reports_all_defaults_when_unset() -> None:
     chat_id, text = gateway.sent_notices[0]
     assert chat_id == 1
     assert "Ниша: маркетинг (подбор/регенерация Темы)" in text
-    assert "Голос:" in text and "(аутлайн/черновик Статьи)" in text
+    assert "Персона:" in text and "(аутлайн/черновик Статьи)" in text
     assert "Направления:" in text and "(Wordstat-подбор растущих запросов)" in text
 
 
@@ -50,7 +50,7 @@ async def test_settings_reports_persisted_overrides() -> None:
 
     _chat_id, text = gateway.sent_notices[0]
     assert "Ниша: b2b saas (подбор/регенерация Темы)" in text
-    assert "Голос: экспертный, без воды (аутлайн/черновик Статьи)" in text
+    assert "Персона: экспертный, без воды (аутлайн/черновик Статьи)" in text
     assert "Направления: seo, контент-маркетинг (Wordstat-подбор растущих запросов)" in text
 
 
@@ -63,5 +63,5 @@ async def test_settings_mixes_defaults_and_overrides() -> None:
 
     _chat_id, text = gateway.sent_notices[0]
     assert "Ниша: b2b saas (подбор/регенерация Темы)" in text
-    assert "Голос:" in text and "(аутлайн/черновик Статьи)" in text
+    assert "Персона:" in text and "(аутлайн/черновик Статьи)" in text
     assert "Направления:" in text and "(Wordstat-подбор растущих запросов)" in text
