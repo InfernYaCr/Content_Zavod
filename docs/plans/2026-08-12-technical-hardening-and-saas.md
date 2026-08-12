@@ -366,15 +366,119 @@ flowchart LR
 
 **Acceptance:** один контейнер на полный прогон, нет пяти копий setup-кода. Это дешёвая задача и хороший первый PR перед конкурентными тестами A2/A5.
 
+## Поток E — адаптация практик ALwrity для контентного ядра
+
+Источник исследования: `ALwrity/ALwrity`, изученный HEAD `9558a1e` от 10 августа 2026 года. Используем проект как архитектурный референс. Прямое копирование исходного кода не допускается до подтверждения лицензии на конкретном коммите: README заявляет MIT, но файл `LICENSE` в исследованном HEAD отсутствовал.
+
+### E0. Persona v1 — типизированный Голос бренда
+
+**Приоритет:** первый продуктовый этап после минимального hardening A6. Это замена свободной строки `voice`, а не новый автономный генератор.
+
+Полезные референсы ALwrity:
+
+- `backend/services/persona/core_persona/core_persona_service.py` — Core Persona и platform adaptations;
+- `backend/services/persona/core_persona/prompt_builder.py` — structured schema, completeness и platform schema;
+- `backend/services/persona/enhanced_linguistic_analyzer.py` — измеряемые стилевые признаки;
+- `backend/models/persona_models.py` — модели Persona и результаты validation;
+- `backend/services/persona_data_service.py` и `backend/api/persona_routes.py` — хранение и API.
+
+Ввести доменную Persona следующего минимального состава:
+
+```text
+Persona
+├── identity: role, core_belief, audience
+├── voice: tone, formality, expertise, humor
+├── style: sentence_length, paragraph_length, grammatical_person
+├── vocabulary: preferred_terms, forbidden_terms
+├── cta_style
+├── evidence: sample_ids, verbatim_phrases, missing_inputs, confidence
+├── version, status
+└── platform_profiles: zen, vc_ru
+```
+
+Порядок работы:
+
+1. Owner задаёт поля вручную и при желании прикладывает 2–5 эталонных текстов.
+2. Детерминированный анализатор считает длину предложений/абзацев, лицо, частотные фразы и другие проверяемые признаки.
+3. LLM возвращает только schema-valid JSON и не имеет права превращать содержимое примеров в системные инструкции.
+4. Telegram показывает preview; Owner подтверждает новую immutable-версию Persona.
+5. Job получает `persona_version_id`, а Версия Статьи хранит snapshot/hash Persona, использованной при генерации.
+
+На первом PR не делать автоматический scraping сайта, web-кабинет и генерацию десятков персон. Сохранить совместимость: текущая строка `voice` мигрирует в начальную Persona, а старый pipeline временно может читать её через adapter.
+
+**Acceptance:** Persona валидируется без LLM; запрещённые значения и чрезмерно длинные поля отклоняются; prompt injection из эталонного текста не меняет системные правила; повторное чтение версии даёт неизменный snapshot; старая статья остаётся объяснима после изменения активной Persona.
+
+### E1. Platform Profile v1 для Дзена и VC.ru
+
+Профиль площадки — управляемый приложением overlay поверх Persona. Пользовательский Голос не может отменить требования безопасности, источников и формата площадки.
+
+- **Дзен:** доступное объяснение, повествовательное вступление, короткие абзацы, расшифровка терминов, мягкий CTA.
+- **VC.ru:** деловой тезис в начале, механика кейса, цифры с evidence, ограничения/риски, практический вывод, отсутствие пустого кликбейта.
+
+Задать типизированные поля: audience, opening, structure, length band, evidence policy, terminology, CTA, forbidden patterns. Компилятор prompt собирает `immutable rules + Persona snapshot + Platform Profile + task data`, причём каждый слой передаётся отдельно.
+
+**Acceptance:** неизвестная площадка возвращает typed error; обязательные признаки профиля проверяются offline rubric; paired outputs Дзен/VC различаются по структуре, но сохраняют факты и Голос; platform profile имеет собственную версию/hash.
+
+### E2. Research contract до написания статьи
+
+Не переносить ALwrity research pipeline целиком. Ввести наш небольшой контракт:
+
+1. сформировать research questions и атомарные claims;
+2. найти кандидатов источников через заменяемый provider;
+3. проверить URL policy/SSRF, дату, автора/издателя и фрагмент evidence;
+4. Owner либо policy engine подтверждает разрешённые источники;
+5. outline и draft получают только утверждённый research bundle.
+
+Research bundle хранит query, URL, title, publisher, published_at, retrieved_at, excerpt/hash и claim IDs. Сбой поиска переводит результат в `degraded/needs_review`, а не создаёт уверенный текст с придуманными ссылками.
+
+**Acceptance:** модель не может добавить URL вне research bundle; homepage, redirect на нерелевантный документ, private-network URL и устаревший источник отклоняются согласно policy; pipeline явно сообщает, если для claim нет evidence.
+
+### E3. Claim-to-citation validation
+
+ALwrity citation manager и fact-check использовать только как идеи: исследование показало, что подсчёт ссылок не доказывает claims, а проверка ограниченного количества утверждений с доверием к LLM недостаточна.
+
+- Извлекать атомарные проверяемые claims из draft.
+- Связывать каждый claim с одним или несколькими `source_id` и конкретным evidence excerpt.
+- Проверять coverage, domain policy, даты и текстовое соответствие; для денег, права и медицины применять более строгий gate.
+- Не подтверждённые цифры блокируют `ready` либо помечаются для обязательного Owner review.
+- В редакторском rewrite запрещать удаление citation markers и изменение подтверждённых чисел без повторной проверки.
+
+**Acceptance:** irrelevant source acceptance — `0%` на fixtures; citation coverage для обязательных claims — `100%`; выдуманный URL не проходит; rewrite, изменивший подтверждённое число, запускает повторную validation.
+
+### E4. Offline Persona и platform eval
+
+- Golden-набор из эталонных текстов нескольких брендов.
+- Injection corpus в sample text, Persona fields и комментарии.
+- Проверки schema-valid rate, confidence calibration, forbidden-term rate, stylistic distance и platform rubric.
+- Human scorecard Owner/редактора: узнаваемость Голоса, полезность, соответствие площадке и объём правок.
+- Сравнение baseline `voice: str` с Persona v1 на одних и тех же Темах.
+
+**Gate:** schema-valid rate `100%`, injection ASR `0%`, сохранение immutable rules `100%`; Persona v1 принимается только если снижает средний объём ручной правки и не ухудшает factual gates.
+
+### Последовательность реализации потока E
+
+```mermaid
+flowchart LR
+    H["A6: безопасный structured input"] --> P["E0: Persona v1"]
+    P --> O["E1: Дзен/VC overlays"]
+    O --> R["E2: Research bundle"]
+    R --> C["E3: Claim-to-citation"]
+    P --> V["E4: Offline eval"]
+    O --> V
+    C --> V
+```
+
+Рекомендуемая нарезка PR: `Persona domain/schema` → `Telegram create/preview/approve` → `pipeline adapter + snapshot provenance` → `Zen/vc.ru profiles` → `research bundle` → `citation gates`. Каждый PR сохраняет работающий текущий сценарий и имеет отдельный rollback.
+
 ## Предлагаемые этапы выпуска
 
 ### Этап 1 — Technical hardening
 
-A1–A7, B1–B3, миграции и базовый runbook. Результат: текущий single-tenant продукт безопаснее запускать для пилотных пользователей.
+A1–A7, B1–B3, E0–E1, миграции и базовый runbook. Результат: текущий single-tenant продукт безопаснее запускать для пилотных пользователей и генерирует материалы через версионированную Persona и явные профили Дзена/VC.
 
 ### Этап 2 — Private beta SaaS
 
-C0–C3, C5–C6: Workspace isolation, onboarding, usage ledger, тарифные лимиты, billing sandbox, observability. 3–5 пилотных клиентов.
+C0–C3, C5–C6, E2–E4: Workspace isolation, onboarding, usage ledger, тарифные лимиты, billing sandbox, observability, research bundle и проверяемые citations. 3–5 пилотных клиентов.
 
 ### Этап 3 — Paid beta
 
