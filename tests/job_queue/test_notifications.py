@@ -13,8 +13,9 @@ async def test_claim_notification_returns_none_when_nothing_is_pending(queue: Jo
 
 async def test_claim_notification_returns_the_result_of_a_done_job(queue: JobQueue) -> None:
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
-    await queue.claim_next()
-    await queue.complete(job_id, {"plan": "ok"})
+    job = await queue.claim_next()
+    assert job is not None
+    await queue.complete(job_id, {"plan": "ok"}, job.lease_token)
 
     claimed = await queue.claim_notification()
 
@@ -26,8 +27,9 @@ async def test_claim_notification_returns_the_result_of_a_done_job(queue: JobQue
 
 async def test_two_concurrent_notification_claims_never_return_the_same_job(queue: JobQueue) -> None:
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
-    await queue.claim_next()
-    await queue.complete(job_id, {"plan": "ok"})
+    job = await queue.claim_next()
+    assert job is not None
+    await queue.complete(job_id, {"plan": "ok"}, job.lease_token)
 
     first, second = await asyncio.gather(queue.claim_notification(), queue.claim_notification())
 
@@ -39,8 +41,9 @@ async def test_run_notifications_calls_handle_exactly_once_for_a_successful_deli
     queue: JobQueue,
 ) -> None:
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
-    await queue.claim_next()
-    await queue.complete(job_id, {"plan": "ok"})
+    job = await queue.claim_next()
+    assert job is not None
+    await queue.complete(job_id, {"plan": "ok"}, job.lease_token)
 
     received: list[JobResult] = []
     stop = asyncio.Event()
@@ -67,8 +70,9 @@ async def test_run_notifications_retries_a_failing_handler_until_it_succeeds(
     await queue.ensure_schema()
     await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
-    await queue.claim_next()
-    await queue.complete(job_id, {"plan": "ok"})
+    job = await queue.claim_next()
+    assert job is not None
+    await queue.complete(job_id, {"plan": "ok"}, job.lease_token)
 
     call_count = 0
     stop = asyncio.Event()
@@ -96,8 +100,9 @@ async def test_run_notifications_gives_up_after_max_attempts_and_marks_delivered
     await queue.ensure_schema()
     await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
-    await queue.claim_next()
-    await queue.complete(job_id, {"plan": "ok"})
+    job = await queue.claim_next()
+    assert job is not None
+    await queue.complete(job_id, {"plan": "ok"}, job.lease_token)
 
     call_count = 0
 

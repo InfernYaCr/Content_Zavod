@@ -40,9 +40,16 @@ class FakePlan:
 class FakeArticle:
     def __init__(self) -> None:
         self.recorded_versions: list[tuple[str, GeneratedVersion]] = []
+        self.failed_jobs: list[int] = []
+        self.application = "applied"
 
-    async def record_version(self, article_id: str, version: GeneratedVersion) -> None:
+    async def record_version(self, article_id: str, version: GeneratedVersion) -> str:
         self.recorded_versions.append((article_id, version))
+        return self.application
+
+    async def mark_generation_failed(self, source_job_id: int) -> str | None:
+        self.failed_jobs.append(source_job_id)
+        return "article-1"
 
     async def get(self, article_id: str) -> ArticleView:
         return ArticleView(id=article_id, plan_item_id="item-1", title="T", platform="P", content=b"c")
@@ -85,6 +92,30 @@ async def test_failed_job_sends_error_with_retry_button() -> None:
     assert gateway.sent_errors_with_retry == [
         (42, "Задача generate_plan завершилась ошибкой: boom", 1)
     ]
+
+
+async def test_failed_article_job_marks_article_error_before_notifying() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(JobResult(job_id=7, job_type="regenerate_article", status="failed", error="boom"))
+
+    assert article.failed_jobs == [7]
+    assert gateway.sent_errors_with_retry[0][2] == 7
+
+
+async def test_stale_failed_article_job_is_ignored() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+
+    async def stale_failure(_source_job_id: int) -> None:
+        return None
+
+    article.mark_generation_failed = stale_failure  # type: ignore[method-assign]
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(JobResult(job_id=7, job_type="generate_article", status="failed", error="old"))
+
+    assert gateway.sent_errors_with_retry == []
 
 
 async def test_generate_plan_appends_topics_and_sends_the_plan() -> None:
@@ -143,9 +174,53 @@ async def test_generate_article_records_version_and_sends_article() -> None:
     )
 
     assert article.recorded_versions == [
-        ("article-1", GeneratedVersion(content="body", prompt="p", model="m", tokens=10, cost=0.0))
+        (
+            "article-1",
+            GeneratedVersion(content="body", prompt="p", model="m", tokens=10, cost=0.0, source_job_id=1),
+        )
     ]
     assert len(gateway.sent_articles) == 1
+
+
+async def test_replayed_article_result_reuses_version_then_retries_telegram_send() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    article.application = "already_applied"
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(
+        JobResult(
+            job_id=1,
+            job_type="generate_article",
+            status="done",
+            output={
+                "article_id": "article-1", "content": "body", "prompt": "p",
+                "model": "m", "tokens": 10, "cost": 0.0,
+            },
+        )
+    )
+
+    assert len(article.recorded_versions) == 1
+    assert len(gateway.sent_articles) == 1
+
+
+async def test_stale_article_result_is_not_sent() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    article.application = "stale"
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(
+        JobResult(
+            job_id=1,
+            job_type="regenerate_article",
+            status="done",
+            output={
+                "article_id": "article-1", "content": "old", "prompt": "p",
+                "model": "m", "tokens": 10, "cost": 0.0,
+            },
+        )
+    )
+
+    assert gateway.sent_articles == []
 
 
 async def test_generate_cover_applies_cover_and_notifies() -> None:

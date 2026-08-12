@@ -29,6 +29,7 @@ class JoinRequestView:
     username: str | None
     status: JoinRequestStatus
     resolved_by: int | None
+    resolved_now: bool = False
 
 
 @dataclass(frozen=True)
@@ -92,34 +93,35 @@ class JoinRequests:
         ]
 
     async def resolve(self, join_request_id: int, *, approved: bool, resolved_by: int) -> JoinRequestView:
-        row = await self._pool.fetchrow(
-            "SELECT id, telegram_id, username, status, resolved_by FROM join_requests WHERE id = $1",
-            join_request_id,
-        )
-        if row is None:
-            raise JoinRequestNotFound(join_request_id)
-        if row["status"] != "pending":
-            return _to_view(row)
         status: JoinRequestStatus = "approved" if approved else "declined"
         updated = await self._pool.fetchrow(
             """
             UPDATE join_requests
             SET status = $2, resolved_by = $3, updated_at = now()
-            WHERE id = $1
+            WHERE id = $1 AND status = 'pending'
             RETURNING id, telegram_id, username, status, resolved_by
             """,
             join_request_id,
             status,
             resolved_by,
         )
-        return _to_view(updated)
+        if updated is not None:
+            return _to_view(updated, resolved_now=True)
+        row = await self._pool.fetchrow(
+            "SELECT id, telegram_id, username, status, resolved_by FROM join_requests WHERE id = $1",
+            join_request_id,
+        )
+        if row is None:
+            raise JoinRequestNotFound(join_request_id)
+        return _to_view(row)
 
 
-def _to_view(row: asyncpg.Record) -> JoinRequestView:
+def _to_view(row: asyncpg.Record, *, resolved_now: bool = False) -> JoinRequestView:
     return JoinRequestView(
         id=row["id"],
         telegram_id=row["telegram_id"],
         username=row["username"],
         status=row["status"],
         resolved_by=row["resolved_by"],
+        resolved_now=resolved_now,
     )

@@ -11,7 +11,7 @@ idempotent on their target state so a retried Telegram callback is a no-op.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Literal, Sequence
 from uuid import uuid4
 
 import asyncpg
@@ -33,6 +33,8 @@ from .types import (
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 _REGENERABLE_STATUSES: frozenset[ArticleStatus] = frozenset({"ready", "error"})
+
+GenerationResultApplication = Literal["applied", "already_applied", "stale"]
 
 
 class Article:
@@ -178,16 +180,38 @@ class Article:
             created_at=row["created_at"],
         )
 
-    async def record_version(self, article_id: ArticleId, version: GeneratedVersion) -> None:
-        article_row = await self._pool.fetchrow("SELECT id FROM articles WHERE id = $1", article_id)
-        if article_row is None:
-            raise ArticleNotFound(article_id)
+    async def record_version(
+        self, article_id: ArticleId, version: GeneratedVersion
+    ) -> GenerationResultApplication:
+        """Apply one finished generation job exactly once.
+
+        A source job is the application receipt. Replaying its notification returns
+        ``already_applied`` without appending another Version. A result from a job
+        superseded by a newer generation returns ``stale`` and cannot overwrite it.
+        Versions created by older callers without ``source_job_id`` retain the legacy
+        append behavior.
+        """
         async with self._pool.acquire() as conn:
             async with conn.transaction():
+                article_row = await conn.fetchrow(
+                    "SELECT active_generation_job_id FROM articles WHERE id = $1 FOR UPDATE", article_id
+                )
+                if article_row is None:
+                    raise ArticleNotFound(article_id)
+                if version.source_job_id is not None:
+                    existing = await conn.fetchrow(
+                        "SELECT article_id FROM article_versions WHERE source_job_id = $1",
+                        version.source_job_id,
+                    )
+                    if existing is not None:
+                        return "already_applied" if existing["article_id"] == article_id else "stale"
+                    if article_row["active_generation_job_id"] != version.source_job_id:
+                        return "stale"
                 await conn.execute(
                     """
-                    INSERT INTO article_versions (article_id, content, prompt, model, tokens, cost)
-                    VALUES ($1, $2, $3, $4, $5, $6)
+                    INSERT INTO article_versions
+                        (article_id, content, prompt, model, tokens, cost, source_job_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
                     """,
                     article_id,
                     version.content,
@@ -195,10 +219,27 @@ class Article:
                     version.model,
                     version.tokens,
                     version.cost,
+                    version.source_job_id,
                 )
                 await conn.execute(
-                    "UPDATE articles SET status = 'ready', updated_at = now() WHERE id = $1", article_id
+                    "UPDATE articles SET status = 'ready', active_generation_job_id = NULL, "
+                    "updated_at = now() WHERE id = $1",
+                    article_id,
                 )
+        return "applied"
+
+    async def mark_generation_failed(self, source_job_id: int) -> ArticleId | None:
+        """Move only the Article still owned by this final failed job to ``error``."""
+        row = await self._pool.fetchrow(
+            """
+            UPDATE articles
+            SET status = 'error', updated_at = now()
+            WHERE active_generation_job_id = $1
+            RETURNING id
+            """,
+            source_job_id,
+        )
+        return ArticleId(row["id"]) if row is not None else None
 
     async def request_generation(
         self,
@@ -215,7 +256,7 @@ class Article:
         an already-processed pair (a retried `approve_all` callback, or a crash between approving
         the Plan and enqueueing) creates neither a duplicate Статья nor a duplicate Job (#14)."""
         article_id = await self.create(plan_id, plan_item_id, title, platform)
-        await self._queue.enqueue(
+        job_id = await self._queue.enqueue(
             "generate_article",
             {
                 "article_id": article_id,
@@ -225,6 +266,15 @@ class Article:
                 "keywords": list(keywords),
             },
             idempotency_key=f"generate_article:{article_id}",
+        )
+        await self._pool.execute(
+            """
+            UPDATE articles
+            SET active_generation_job_id = $2, updated_at = now()
+            WHERE id = $1 AND status = 'queued'
+            """,
+            article_id,
+            job_id,
         )
         return article_id
 
@@ -240,16 +290,21 @@ class Article:
             raise ArticleNotRegenerable(article_id, row["status"])
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute(
-                    "UPDATE articles SET status = 'regenerating', updated_at = now() WHERE id = $1",
-                    article_id,
-                )
-                await self._queue.enqueue(
+                job_id = await self._queue.enqueue(
                     "regenerate_article",
                     {"article_id": article_id, "comment": comment},
                     # Keyed on the pre-update updated_at so two racing calls collapse
                     # into the same job instead of enqueuing a duplicate.
                     idempotency_key=f"regenerate_article:{article_id}:{row['updated_at'].isoformat()}",
+                )
+                await conn.execute(
+                    """
+                    UPDATE articles
+                    SET status = 'regenerating', active_generation_job_id = $2, updated_at = now()
+                    WHERE id = $1
+                    """,
+                    article_id,
+                    job_id,
                 )
 
     async def mark_exported(self, article_id: ArticleId) -> None:

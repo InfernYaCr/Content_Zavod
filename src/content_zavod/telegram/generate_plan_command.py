@@ -26,7 +26,11 @@ class PlanGeneration(Protocol):
 
     async def archive(self, plan_id: PlanId) -> None: ...
 
-    async def request_new(self, week_label: str) -> object: ...
+    async def request_new(
+        self, week_label: str, *, generation_id: str | None = None
+    ) -> object: ...
+
+    async def request_replacement(self, plan_id: PlanId) -> object: ...
 
 
 async def handle_generate_plan_command(
@@ -53,9 +57,7 @@ async def handle_generate_plan_command(
 async def handle_confirm_regenerate_plan(
     plan: PlanGeneration, gateway: TelegramGateway, chat_id: int, message_id: int, plan_id: PlanId
 ) -> None:
-    view = await plan.get(plan_id)
-    await plan.archive(plan_id)
-    await plan.request_new(view.week_label)
+    await plan.request_replacement(plan_id)
     await gateway.edit_notice(chat_id, message_id, "Генерирую новый План...")
 
 

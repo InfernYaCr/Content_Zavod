@@ -69,11 +69,9 @@ class JoinRequestFlow:
     async def _resolve(
         self, resolver_id: int, resolver_name: str, join_request_id: int, *, approved: bool
     ) -> JoinRequestView | None:
-        before = await self._requests.get(join_request_id)
-        if before.status != "pending":
-            return None  # already resolved by another Owner - safe no-op
-
         view = await self._requests.resolve(join_request_id, approved=approved, resolved_by=resolver_id)
+        if not view.resolved_now:
+            return None  # another Owner won the atomic pending -> resolved transition
         if view.status == "approved":
             await self._membership.add_member(view.telegram_id, "content_manager")
             await self._gateway.send_message(

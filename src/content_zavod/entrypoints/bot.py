@@ -485,6 +485,11 @@ def _make_notification_handler(
 ):
     async def handle(result: JobResult) -> None:
         if result.status == "failed":
+            if result.job_type in ("generate_article", "regenerate_article"):
+                article_id = await article.mark_generation_failed(result.job_id)
+                if article_id is None:
+                    logger.info("Ignoring stale Article failure for job_id=%s", result.job_id)
+                    return
             await gateway.send_error_with_retry(
                 notify_chat_id,
                 f"Задача {result.job_type} завершилась ошибкой: {result.error}",
@@ -510,7 +515,7 @@ def _make_notification_handler(
             await gateway.send_notice(notify_chat_id, f"Тема обновлена: {output['title']}")
         elif result.job_type in ("generate_article", "regenerate_article"):
             article_id = ArticleId(output["article_id"])
-            await article.record_version(
+            application = await article.record_version(
                 article_id,
                 GeneratedVersion(
                     content=output["content"],
@@ -518,8 +523,12 @@ def _make_notification_handler(
                     model=output["model"],
                     tokens=output["tokens"],
                     cost=output["cost"],
+                    source_job_id=result.job_id,
                 ),
             )
+            if application == "stale":
+                logger.info("Ignoring stale Article result for job_id=%s", result.job_id)
+                return
             view = await article.get(article_id)
             await gateway.send_article_ready(notify_chat_id, view)
         elif result.job_type == "generate_cover":

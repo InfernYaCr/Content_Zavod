@@ -11,6 +11,7 @@ its result.
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -34,6 +35,7 @@ class ClaimedJob:
     job_type: str
     payload: dict[str, Any]
     attempts: int
+    lease_token: str
 
 
 @dataclass(frozen=True)
@@ -86,10 +88,12 @@ class JobQueue:
         return row["status"]
 
     async def claim_next(self) -> ClaimedJob | None:
+        lease_token = uuid.uuid4().hex
         row = await self._pool.fetchrow(
             """
             UPDATE jobs
-            SET status = 'running', attempts = attempts + 1, locked_at = now(), updated_at = now()
+            SET status = 'running', attempts = attempts + 1, locked_at = now(),
+                lease_token = $1, updated_at = now()
             WHERE id = (
                 SELECT id FROM jobs
                 WHERE status = 'queued' AND run_at <= now()
@@ -97,8 +101,9 @@ class JobQueue:
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
             )
-            RETURNING id, job_type, payload, attempts
-            """
+            RETURNING id, job_type, payload, attempts, lease_token
+            """,
+            lease_token,
         )
         if row is None:
             return None
@@ -107,49 +112,73 @@ class JobQueue:
             job_type=row["job_type"],
             payload=json.loads(row["payload"]),
             attempts=row["attempts"],
+            lease_token=row["lease_token"],
         )
 
-    async def complete(self, job_id: JobId, output: dict[str, Any]) -> None:
-        await self._pool.execute(
+    async def heartbeat(self, job_id: JobId, lease_token: str) -> bool:
+        """Renew a running job's lease if this worker still owns it."""
+        result = await self._pool.execute(
+            """
+            UPDATE jobs SET locked_at = now(), updated_at = now()
+            WHERE id = $1 AND status = 'running' AND lease_token = $2
+            """,
+            job_id,
+            lease_token,
+        )
+        return result == "UPDATE 1"
+
+    async def complete(self, job_id: JobId, output: dict[str, Any], lease_token: str) -> bool:
+        result = await self._pool.execute(
             """
             UPDATE jobs
-            SET status = 'done', output = $2::jsonb, error = NULL, locked_at = NULL, updated_at = now()
-            WHERE id = $1
+            SET status = 'done', output = $2::jsonb, error = NULL, locked_at = NULL,
+                lease_token = NULL, updated_at = now()
+            WHERE id = $1 AND status = 'running' AND lease_token = $3
             """,
             job_id,
             json.dumps(output),
+            lease_token,
         )
+        return result == "UPDATE 1"
 
-    async def fail(self, job_id: JobId, error: str) -> None:
-        row = await self._pool.fetchrow("SELECT attempts FROM jobs WHERE id = $1", job_id)
+    async def fail(self, job_id: JobId, error: str, lease_token: str) -> bool:
+        row = await self._pool.fetchrow(
+            "SELECT attempts FROM jobs WHERE id = $1 AND status = 'running' AND lease_token = $2",
+            job_id,
+            lease_token,
+        )
         if row is None:
-            raise JobNotFound(job_id)
+            return False
         attempts = row["attempts"]
         if attempts < self._max_attempts:
             delay = _exponential_delay(self._base_delay, attempts)
-            await self._pool.execute(
+            result = await self._pool.execute(
                 """
                 UPDATE jobs
-                SET status = 'queued', error = $2, locked_at = NULL,
+                SET status = 'queued', error = $2, locked_at = NULL, lease_token = NULL,
                     run_at = now() + $3 * interval '1 second', updated_at = now()
-                WHERE id = $1
+                WHERE id = $1 AND status = 'running' AND lease_token = $4
                 """,
                 job_id,
                 error,
                 delay,
+                lease_token,
             )
         else:
-            await self._pool.execute(
+            result = await self._pool.execute(
                 """
                 UPDATE jobs
-                SET status = 'failed', error = $2, locked_at = NULL, updated_at = now()
-                WHERE id = $1
+                SET status = 'failed', error = $2, locked_at = NULL, lease_token = NULL,
+                    updated_at = now()
+                WHERE id = $1 AND status = 'running' AND lease_token = $3
                 """,
                 job_id,
                 error,
+                lease_token,
             )
+        return result == "UPDATE 1"
 
-    async def retry(self, job_id: JobId) -> None:
+    async def retry(self, job_id: JobId) -> bool:
         """Reset a failed job back to queued, for a user-triggered "Повторить" retry.
 
         Also clears `notified_at` so the eventual re-completion (done or
@@ -160,20 +189,24 @@ class JobQueue:
             """
             UPDATE jobs
             SET status = 'queued', attempts = 0, error = NULL, run_at = now(),
-                locked_at = NULL, notified_at = NULL, updated_at = now()
-            WHERE id = $1
+                locked_at = NULL, lease_token = NULL, notified_at = NULL, updated_at = now()
+            WHERE id = $1 AND status = 'failed'
             """,
             job_id,
         )
-        if result == "UPDATE 0":
+        if result == "UPDATE 1":
+            return True
+        exists = await self._pool.fetchval("SELECT EXISTS(SELECT 1 FROM jobs WHERE id = $1)", job_id)
+        if not exists:
             raise JobNotFound(job_id)
+        return False
 
     async def recover_stuck(self) -> int:
         timeout_seconds = self._stuck_timeout.total_seconds()
         rows = await self._pool.fetch(
             """
             UPDATE jobs
-            SET status = 'queued', locked_at = NULL, updated_at = now()
+            SET status = 'queued', locked_at = NULL, lease_token = NULL, updated_at = now()
             WHERE status = 'running' AND locked_at < now() - $1 * interval '1 second'
             RETURNING id
             """,
@@ -235,3 +268,8 @@ class JobQueue:
 
     def notification_attempts_exhausted(self, notification_attempts: int) -> bool:
         return notification_attempts >= self._notification_max_attempts
+
+    @property
+    def heartbeat_interval(self) -> float:
+        """A safe renewal cadence derived from the configured stuck timeout."""
+        return max(0.1, self._stuck_timeout.total_seconds() / 3)

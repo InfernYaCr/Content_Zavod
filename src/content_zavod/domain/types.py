@@ -84,6 +84,7 @@ class GeneratedVersion:
     model: str
     tokens: int
     cost: float
+    source_job_id: int | None = None
 
 
 @dataclass(frozen=True)

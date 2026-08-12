@@ -20,6 +20,7 @@ class FakePlan:
     def __init__(self, active: PlanView | None = None) -> None:
         self._active = active
         self.requested: list[str] = []
+        self.replacements: list[PlanId] = []
         self.archived: list[PlanId] = []
 
     async def find_active(self, week_label: str) -> PlanView | None:
@@ -32,8 +33,13 @@ class FakePlan:
     async def archive(self, plan_id: PlanId) -> None:
         self.archived.append(plan_id)
 
-    async def request_new(self, week_label: str) -> int:
+    async def request_new(self, week_label: str, *, generation_id: str | None = None) -> int:
+        assert generation_id is None
         self.requested.append(week_label)
+        return 1
+
+    async def request_replacement(self, plan_id: PlanId) -> int:
+        self.replacements.append(plan_id)
         return 1
 
 
@@ -52,6 +58,11 @@ class FakeGateway:
 
     async def edit_notice(self, chat_id, message_id, text) -> None:
         self.edited.append((chat_id, message_id, text))
+
+
+class FailingReplacementPlan(FakePlan):
+    async def request_replacement(self, plan_id: PlanId) -> int:
+        raise RuntimeError("queue unavailable")
 
 
 @pytest.mark.asyncio
@@ -86,9 +97,22 @@ async def test_confirm_archives_old_plan_and_requests_a_new_one() -> None:
 
     await handle_confirm_regenerate_plan(plan, gateway, chat_id=1, message_id=5, plan_id=PlanId("plan-1"))
 
-    assert plan.archived == [PlanId("plan-1")]
-    assert plan.requested == ["2026-W32"]
+    assert plan.replacements == [PlanId("plan-1")]
     assert gateway.edited == [(1, 5, "Генерирую новый План...")]
+
+
+@pytest.mark.asyncio
+async def test_confirm_does_not_report_success_or_archive_through_the_old_api_when_enqueue_fails() -> None:
+    active = PlanView(id=PlanId("plan-1"), week_label="2026-W32", items=[])
+    plan, gateway = FailingReplacementPlan(active=active), FakeGateway()
+
+    with pytest.raises(RuntimeError, match="queue unavailable"):
+        await handle_confirm_regenerate_plan(
+            plan, gateway, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
+        )
+
+    assert plan.archived == []
+    assert gateway.edited == []
 
 
 @pytest.mark.asyncio

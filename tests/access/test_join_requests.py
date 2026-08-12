@@ -27,6 +27,7 @@ async def test_resolve_approves_and_records_who_resolved_it(join_requests: JoinR
 
     assert view.status == "approved"
     assert view.resolved_by == 1
+    assert view.resolved_now is True
 
 
 async def test_resolve_declines(join_requests: JoinRequests) -> None:
@@ -45,9 +46,13 @@ async def test_resolve_is_idempotent_a_second_owner_gets_the_first_resolution_ba
     first = await join_requests.resolve(request_id, approved=True, resolved_by=1)
     second = await join_requests.resolve(request_id, approved=False, resolved_by=2)
 
-    assert second == first
+    assert second.id == first.id
+    assert second.telegram_id == first.telegram_id
+    assert second.status == first.status
+    assert second.resolved_by == first.resolved_by
     assert second.status == "approved"
     assert second.resolved_by == 1
+    assert second.resolved_now is False
 
 
 async def test_resolve_raises_for_unknown_request(join_requests: JoinRequests) -> None:

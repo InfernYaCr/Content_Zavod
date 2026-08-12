@@ -239,12 +239,13 @@ async def test_apply_regeneration_updates_the_pending_item(plan: Plan) -> None:
     assert updated.items[0].status == "pending_review"
 
 
-async def test_apply_regeneration_ignores_a_stale_result_after_approval(plan: Plan) -> None:
+async def test_apply_regeneration_rejects_a_stale_result_after_approval(plan: Plan) -> None:
     _, view = await _create_plan(plan)
     item_id = view.items[0].id
     await plan.approve_all(view.id)
 
-    await plan.apply_regeneration(item_id, TopicDraft(title="Too Late"))
+    with pytest.raises(PlanItemNotEditable):
+        await plan.apply_regeneration(item_id, TopicDraft(title="Too Late"))
 
     updated = await plan.get(view.id)
     assert updated.items[0].title == "Topic A"
@@ -328,6 +329,54 @@ async def test_request_new_retried_for_the_same_week_does_not_duplicate_the_job(
     assert first_claim is not None
     second_claim = await queue.claim_next()
     assert second_claim is None
+
+
+async def test_request_replacement_enqueues_a_distinct_job_and_archives_source(
+    plan: Plan, queue: JobQueue
+) -> None:
+    plan_id, _ = await _create_plan(plan)
+    await plan.request_new("Week 1")
+    original = await queue.claim_next()
+    assert original is not None
+
+    replacement_id = await plan.request_replacement(plan_id)
+
+    replacement = await queue.claim_next()
+    assert replacement is not None
+    assert replacement.id == replacement_id
+    assert replacement.id != original.id
+    assert replacement.payload == {"week_label": "Week 1", "generation_id": f"replace:{plan_id}"}
+    assert await plan.find_active("Week 1") is None
+
+
+async def test_request_replacement_callback_retry_reuses_the_same_job(
+    plan: Plan, queue: JobQueue
+) -> None:
+    plan_id, _ = await _create_plan(plan)
+
+    first_id = await plan.request_replacement(plan_id)
+    second_id = await plan.request_replacement(plan_id)
+
+    assert second_id == first_id
+    first = await queue.claim_next()
+    assert first is not None
+    assert await queue.claim_next() is None
+
+
+async def test_concurrent_add_topics_share_one_pending_plan(plan: Plan, pool: asyncpg.Pool) -> None:
+    import asyncio
+
+    first_id, second_id = await asyncio.gather(
+        plan.add_topics("Week 1", [TopicDraft(title="Topic A")]),
+        plan.add_topics("Week 1", [TopicDraft(title="Topic B")]),
+    )
+
+    assert first_id == second_id
+    assert await pool.fetchval(
+        "SELECT count(*) FROM plans WHERE week_label = $1 AND status = 'pending_review'", "Week 1"
+    ) == 1
+    view = await plan.get(first_id)
+    assert {item.title for item in view.items} == {"Topic A", "Topic B"}
 
 
 async def test_request_cover_enqueues_a_job_with_the_items_title_and_summary(

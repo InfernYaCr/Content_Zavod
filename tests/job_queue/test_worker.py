@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 
 import asyncpg
@@ -36,9 +37,10 @@ async def test_two_concurrent_claims_never_return_the_same_job(queue: JobQueue) 
 
 async def test_complete_writes_result_and_status_together(queue: JobQueue) -> None:
     job_id = await queue.enqueue("generate_plan", {"week": 1}, idempotency_key="plan-1")
-    await queue.claim_next()
+    claimed = await queue.claim_next()
+    assert claimed is not None
 
-    await queue.complete(job_id, {"plan": "done"})
+    assert await queue.complete(job_id, {"plan": "done"}, claimed.lease_token)
 
     assert await queue.get_status(job_id) == "done"
 
@@ -49,8 +51,9 @@ async def test_fail_requeues_with_backoff_until_attempts_are_exhausted(pool: asy
     await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
 
-    await queue.claim_next()
-    await queue.fail(job_id, "boom")
+    first = await queue.claim_next()
+    assert first is not None
+    assert await queue.fail(job_id, "boom", first.lease_token)
     status_after_first_failure = await queue.get_status(job_id)
     row = await pool.fetchrow("SELECT run_at FROM jobs WHERE id = $1", job_id)
 
@@ -58,8 +61,9 @@ async def test_fail_requeues_with_backoff_until_attempts_are_exhausted(pool: asy
     assert row["run_at"] > datetime.now(timezone.utc)
 
     await pool.execute("UPDATE jobs SET run_at = now() WHERE id = $1", job_id)
-    await queue.claim_next()
-    await queue.fail(job_id, "boom again")
+    second = await queue.claim_next()
+    assert second is not None
+    assert await queue.fail(job_id, "boom again", second.lease_token)
 
     assert await queue.get_status(job_id) == "failed"
 
@@ -75,6 +79,80 @@ async def test_recover_stuck_requeues_abandoned_running_jobs(pool: asyncpg.Pool)
 
     assert recovered == 1
     assert await queue.get_status(job_id) == "queued"
+
+
+async def test_stale_worker_cannot_complete_or_fail_a_reclaimed_job(pool: asyncpg.Pool) -> None:
+    queue = JobQueue(pool, stuck_timeout=timedelta(seconds=0))
+    await queue.ensure_schema()
+    await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
+    job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
+    stale = await queue.claim_next()
+    assert stale is not None
+
+    assert await queue.recover_stuck() == 1
+    current = await queue.claim_next()
+    assert current is not None
+    assert current.lease_token != stale.lease_token
+
+    assert not await queue.complete(job_id, {"stale": True}, stale.lease_token)
+    assert not await queue.fail(job_id, "stale", stale.lease_token)
+    assert await queue.complete(job_id, {"current": True}, current.lease_token)
+
+    row = await pool.fetchrow("SELECT status, output FROM jobs WHERE id = $1", job_id)
+    assert row["status"] == "done"
+    assert json.loads(row["output"]) == {"current": True}
+
+
+async def test_heartbeat_prevents_recovery_until_lease_becomes_stale(pool: asyncpg.Pool) -> None:
+    queue = JobQueue(pool, stuck_timeout=timedelta(seconds=10))
+    await queue.ensure_schema()
+    await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
+    job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
+    claimed = await queue.claim_next()
+    assert claimed is not None
+
+    await pool.execute("UPDATE jobs SET locked_at = now() - interval '9 seconds' WHERE id = $1", job_id)
+    assert await queue.heartbeat(job_id, claimed.lease_token)
+    assert await queue.recover_stuck() == 0
+    assert await queue.get_status(job_id) == "running"
+
+    await pool.execute("UPDATE jobs SET locked_at = now() - interval '11 seconds' WHERE id = $1", job_id)
+    assert await queue.recover_stuck() == 1
+    assert await queue.get_status(job_id) == "queued"
+
+
+async def test_worker_heartbeats_while_handler_is_running(queue: JobQueue) -> None:
+    await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
+    heartbeat_seen = asyncio.Event()
+    finish_handler = asyncio.Event()
+    stop = asyncio.Event()
+    original_heartbeat = queue.heartbeat
+
+    async def recording_heartbeat(job_id: int, lease_token: str) -> bool:
+        renewed = await original_heartbeat(job_id, lease_token)
+        heartbeat_seen.set()
+        finish_handler.set()
+        return renewed
+
+    queue.heartbeat = recording_heartbeat  # type: ignore[method-assign]
+
+    async def handler(payload: dict) -> dict:
+        await finish_handler.wait()
+        stop.set()
+        return {}
+
+    await asyncio.wait_for(
+        run_worker(
+            queue,
+            {"generate_plan": handler},
+            heartbeat_interval=0.001,
+            poll_interval=0.001,
+            stop=stop,
+        ),
+        timeout=5,
+    )
+
+    assert heartbeat_seen.is_set()
 
 
 async def test_run_worker_recovers_stuck_jobs_periodically_even_when_continuously_busy(

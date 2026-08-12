@@ -19,12 +19,10 @@ already appended) and as the entry point for the manual `/topic` command
 (see #10) - both are just callers of the same idempotent-per-append
 operation.
 
-`request_new` enqueues `generate_plan` itself, keyed on `week_label` alone
-(see #7). Because `JobQueue.enqueue` is idempotent, calling it more than
-once for the same week - a missed scheduled run followed by a catch-up
-run, or a manual trigger racing the schedule - collapses into the same
-Job instead of a duplicate Plan; no separate "was this week already
-generated" check is needed.
+`request_new` enqueues `generate_plan` itself. Normal triggers are keyed on
+the week, while an explicit full replacement supplies a generation identity:
+retries of that request collapse, but it cannot collide with the week's
+original, already-completed Job.
 """
 
 from __future__ import annotations
@@ -153,24 +151,29 @@ class Plan:
         """
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                existing = await conn.fetchrow(
-                    "SELECT id FROM plans WHERE week_label = $1 AND status = 'pending_review'",
+                # The partial unique index arbitrates concurrent creators.  The
+                # no-op UPDATE gives both contenders the canonical id without
+                # relying on a check-then-insert race.
+                candidate_id = self._new_id()
+                plan_id = await conn.fetchval(
+                    """
+                    INSERT INTO plans (id, week_label)
+                    VALUES ($1, $2)
+                    ON CONFLICT (week_label) WHERE status = 'pending_review'
+                    DO UPDATE SET week_label = EXCLUDED.week_label
+                    RETURNING id
+                    """,
+                    candidate_id,
                     week_label,
                 )
-                if existing is not None:
-                    plan_id = existing["id"]
-                    item_rows = await conn.fetch(
-                        "SELECT position, title FROM plan_items WHERE plan_id = $1", plan_id
-                    )
-                    next_position = max((row["position"] for row in item_rows), default=-1) + 1
-                    seen_titles = {row["title"].lower() for row in item_rows}
-                else:
-                    plan_id = self._new_id()
-                    next_position = 0
-                    seen_titles = set()
-                    await conn.execute(
-                        "INSERT INTO plans (id, week_label) VALUES ($1, $2)", plan_id, week_label
-                    )
+                # Serialize appends to keep positions stable as well as Plan
+                # creation race-safe.
+                await conn.fetchrow("SELECT id FROM plans WHERE id = $1 FOR UPDATE", plan_id)
+                item_rows = await conn.fetch(
+                    "SELECT position, title FROM plan_items WHERE plan_id = $1", plan_id
+                )
+                next_position = max((row["position"] for row in item_rows), default=-1) + 1
+                seen_titles = {row["title"].lower() for row in item_rows}
                 for topic in topics:
                     if topic.title.lower() in seen_titles:
                         continue
@@ -190,14 +193,49 @@ class Plan:
                     next_position += 1
         return PlanId(plan_id)
 
-    async def request_new(self, week_label: str) -> JobId:
+    async def request_new(self, week_label: str, *, generation_id: str | None = None) -> JobId:
+        payload = {"week_label": week_label}
+        idempotency_key = f"generate_plan:{week_label}"
+        if generation_id is not None:
+            payload["generation_id"] = generation_id
+            idempotency_key = f"{idempotency_key}:{generation_id}"
         return await self._queue.enqueue(
             "generate_plan",
-            {"week_label": week_label},
-            # Keyed on week_label alone: repeated triggers for the same week (missed-run
-            # catch-up, manual override) collapse into the same Job.
-            idempotency_key=f"generate_plan:{week_label}",
+            payload,
+            idempotency_key=idempotency_key,
         )
+
+    async def request_replacement(self, plan_id: PlanId) -> JobId:
+        """Enqueue a distinct replacement before retiring its source Plan.
+
+        Holding the source row lock until it is archived also makes a very fast
+        replacement notification wait in ``add_topics`` rather than append its
+        result to the Plan being retired. If enqueue raises, the transaction
+        exits without changing the source Plan.
+        """
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT week_label, status FROM plans WHERE id = $1 FOR UPDATE", plan_id
+                )
+                if row is None:
+                    raise PlanNotFound(plan_id)
+                job_id = await self.request_new(
+                    row["week_label"], generation_id=f"replace:{plan_id}"
+                )
+                if row["status"] != "archived":
+                    await conn.execute(
+                        "UPDATE plans SET status = 'archived', updated_at = now() WHERE id = $1",
+                        plan_id,
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE plan_items SET status = 'archived', updated_at = now()
+                        WHERE plan_id = $1 AND status IN ('pending_review', 'approved')
+                        """,
+                        plan_id,
+                    )
+                return job_id
 
     async def delete_item(self, plan_item_id: PlanItemId) -> None:
         status = await self._item_status(plan_item_id)
@@ -290,7 +328,7 @@ class Plan:
                 )
 
     async def apply_regeneration(self, plan_item_id: PlanItemId, topic: TopicDraft) -> None:
-        await self._pool.execute(
+        result = await self._pool.execute(
             """
             UPDATE plan_items
             SET title = $2, summary = $3, keywords = $4::jsonb, updated_at = now()
@@ -301,6 +339,17 @@ class Plan:
             topic.summary,
             _keywords_json(topic.keywords),
         )
+        if result == "UPDATE 1":
+            return
+        # A completed Job may arrive after approval/archive.  Reporting that
+        # stale result as a domain error lets notification retry/dead-letter
+        # policy observe it instead of falsely announcing an update.
+        row = await self._pool.fetchrow(
+            "SELECT status FROM plan_items WHERE id = $1", plan_item_id
+        )
+        if row is None:
+            raise PlanItemNotFound(plan_item_id)
+        raise PlanItemNotEditable(plan_item_id, row["status"])
 
     async def request_cover(self, plan_item_id: PlanItemId) -> None:
         row = await self._pool.fetchrow(

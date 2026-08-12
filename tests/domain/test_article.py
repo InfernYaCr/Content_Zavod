@@ -68,6 +68,65 @@ async def test_record_version_appends_rather_than_overwrites(article: Article, p
     assert view.content == b"Second draft."
 
 
+async def test_record_version_is_idempotent_for_the_same_source_job(
+    article: Article, plan: Plan, queue: JobQueue
+) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.request_generation(plan_id, item_id, "Topic A", "s", [], "zen")
+    claimed = await queue.claim_next()
+    assert claimed is not None
+    version = GeneratedVersion(
+        content="First draft.", prompt="write", model="yandexgpt", tokens=10, cost=0.01,
+        source_job_id=claimed.id,
+    )
+
+    first = await article.record_version(article_id, version)
+    replay = await article.record_version(article_id, version)
+
+    assert first == "applied"
+    assert replay == "already_applied"
+    assert len(await article.list_versions(article_id)) == 1
+
+
+async def test_stale_generation_result_cannot_replace_a_newer_version(
+    article: Article, plan: Plan, queue: JobQueue
+) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.request_generation(plan_id, item_id, "Topic A", "s", [], "zen")
+    old_job = await queue.claim_next()
+    assert old_job is not None
+    await article.mark_generation_failed(old_job.id)
+    await article.request_regeneration(article_id, comment="retry")
+    new_job = await queue.claim_next()
+    assert new_job is not None
+    await article.record_version(
+        article_id,
+        GeneratedVersion("New", "p2", "m", 2, 0.0, source_job_id=new_job.id),
+    )
+
+    application = await article.record_version(
+        article_id,
+        GeneratedVersion("Old", "p1", "m", 1, 0.0, source_job_id=old_job.id),
+    )
+
+    assert application == "stale"
+    assert (await article.get(article_id)).content == b"New"
+
+
+async def test_final_generation_failure_marks_only_its_current_article_as_error(
+    article: Article, plan: Plan, queue: JobQueue
+) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.request_generation(plan_id, item_id, "Topic A", "s", [], "zen")
+    claimed = await queue.claim_next()
+    assert claimed is not None
+
+    assert await article.mark_generation_failed(claimed.id) == article_id
+    assert (await article.get_summary(article_id)).status == "error"
+    assert await article.mark_generation_failed(claimed.id) == article_id
+    assert await article.mark_generation_failed(claimed.id + 1000) is None
+
+
 async def test_list_for_plan_only_returns_articles_with_a_version(article: Article, plan: Plan) -> None:
     plan_id, item_id = await _create_plan_item(plan)
     ready_id = await article.create(plan_id, item_id, "Topic A", "zen")

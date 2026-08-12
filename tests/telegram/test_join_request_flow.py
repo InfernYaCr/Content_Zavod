@@ -37,13 +37,21 @@ class FakeRequests:
     async def resolve(self, join_request_id: int, *, approved: bool, resolved_by: int) -> JoinRequestView:
         current = self._requests[join_request_id]
         if current.status != "pending":
-            return current
+            return JoinRequestView(
+                id=current.id,
+                telegram_id=current.telegram_id,
+                username=current.username,
+                status=current.status,
+                resolved_by=current.resolved_by,
+                resolved_now=False,
+            )
         updated = JoinRequestView(
             id=current.id,
             telegram_id=current.telegram_id,
             username=current.username,
             status="approved" if approved else "declined",
             resolved_by=resolved_by,
+            resolved_now=True,
         )
         self._requests[join_request_id] = updated
         return updated
