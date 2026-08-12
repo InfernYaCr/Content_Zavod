@@ -16,7 +16,14 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ..domain import ArticleId, ArticleSummary, ArticleVersionSummary, ArticleVersionView, PlanId, PlanSummary
+from ..domain import (
+    ArticleId,
+    ArticleSummary,
+    ArticleVersionSummary,
+    ArticleVersionView,
+    PlanId,
+    PlanSummary,
+)
 from .gateway import (
     ITEMS_PER_PAGE,
     TelegramGateway,
@@ -45,7 +52,9 @@ class HistoryArticles(Protocol):
     async def get_version(self, article_id: ArticleId, version_id: int) -> ArticleVersionView: ...
 
 
-async def handle_history_command(plans: HistoryPlans, gateway: TelegramGateway, chat_id: int) -> None:
+async def handle_history_command(
+    plans: HistoryPlans, gateway: TelegramGateway, chat_id: int
+) -> None:
     plans_page, total = await plans.list_page(page=0, page_size=ITEMS_PER_PAGE)
     await gateway.send_history_weeks(chat_id, plans_page, page=0, page_count=total_pages(total))
 
@@ -54,7 +63,9 @@ async def handle_history_page(
     plans: HistoryPlans, gateway: TelegramGateway, chat_id: int, message_id: int, page: int
 ) -> None:
     plans_page, total = await plans.list_page(page=page, page_size=ITEMS_PER_PAGE)
-    await gateway.edit_history_weeks(chat_id, message_id, plans_page, page=page, page_count=total_pages(total))
+    await gateway.edit_history_weeks(
+        chat_id, message_id, plans_page, page=page, page_count=total_pages(total)
+    )
 
 
 async def handle_history_week(
@@ -69,7 +80,9 @@ async def handle_history_week(
     plan_id = PlanId(plan_id_text)
     summary = await plans.get_summary(plan_id)
     article_summaries = await articles.list_summary_for_plan(plan_id)
-    await gateway.edit_history_articles(chat_id, message_id, summary, article_summaries, back_page=back_page)
+    await gateway.edit_history_articles(
+        chat_id, message_id, summary, article_summaries, back_page=back_page
+    )
 
 
 async def handle_history_versions(
@@ -92,4 +105,6 @@ async def handle_history_version(
     article_id = ArticleId(article_id_text)
     article_summary = await articles.get_summary(article_id)
     version = await articles.get_version(article_id, version_id)
-    await gateway.edit_history_version(chat_id, message_id, article_summary, version, back_page=back_page)
+    await gateway.edit_history_version(
+        chat_id, message_id, article_summary, version, back_page=back_page
+    )

@@ -1,5 +1,5 @@
-from .comment_gated_regeneration import CommentGatedRegeneration, CommentPrompt
 from .commands import render_help_text, sync_commands
+from .comment_gated_regeneration import CommentGatedRegeneration, CommentPrompt
 from .directions_command import handle_directions_command, handle_set_directions_command
 from .gateway import (
     Action,
@@ -72,6 +72,7 @@ from .voice_command import (
 )
 
 __all__ = [
+    "VOICE_TEMPLATES",
     "Action",
     "ArticleFormat",
     "ArticleId",
@@ -95,7 +96,6 @@ __all__ = [
     "PlanView",
     "TelegramCommentPrompt",
     "TelegramGateway",
-    "VOICE_TEMPLATES",
     "build_article_keyboard",
     "build_confirm_keyboard",
     "build_join_request_keyboard",

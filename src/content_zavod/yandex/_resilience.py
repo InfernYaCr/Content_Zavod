@@ -5,7 +5,8 @@ interface."""
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from .errors import AuthError, ContentPolicyError, RateLimited, YandexError
 from .http import HttpResponse
@@ -41,7 +42,9 @@ async def with_backoff_retry(
             return response
         error = map_error(response)
         if isinstance(error, RateLimited) and attempt < max_retries:
-            delay = error.retry_after if error.retry_after is not None else base_delay * (2**attempt)
+            delay = (
+                error.retry_after if error.retry_after is not None else base_delay * (2**attempt)
+            )
             await sleep(delay)
             attempt += 1
             continue
@@ -62,7 +65,7 @@ async def with_connection_retry(
     while True:
         try:
             return await call()
-        except Exception:  # noqa: BLE001 - retry any transport-level failure (SSL/connect errors)
+        except Exception:
             if attempt >= max_retries:
                 raise
             await sleep(base_delay * (2**attempt))

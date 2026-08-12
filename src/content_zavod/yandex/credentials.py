@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Protocol
+from typing import Protocol
 
 from .errors import AuthError
 from .http import HttpTransport
@@ -68,8 +69,7 @@ class IamTokenProvider:
 
     def _needs_refresh(self) -> bool:
         return (
-            self._cached is None
-            or self._clock() >= self._cached.expires_at - self._refresh_margin
+            self._cached is None or self._clock() >= self._cached.expires_at - self._refresh_margin
         )
 
     async def _issue_token(self) -> _CachedToken:

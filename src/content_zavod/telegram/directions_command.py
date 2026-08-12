@@ -23,7 +23,9 @@ class OwnerSettingsOperations(Protocol):
     async def set(self, key: str, value: str) -> None: ...
 
 
-async def handle_directions_command(settings_store: OwnerSettingsOperations, gateway: TelegramGateway, chat_id: int) -> None:
+async def handle_directions_command(
+    settings_store: OwnerSettingsOperations, gateway: TelegramGateway, chat_id: int
+) -> None:
     value = await settings_store.get(DIRECTIONS_KEY)
     directions = parse_directions(value) if value else list(DEFAULT_DIRECTIONS)
     await gateway.send_notice(chat_id, f"Текущие Направления: {', '.join(directions)}")

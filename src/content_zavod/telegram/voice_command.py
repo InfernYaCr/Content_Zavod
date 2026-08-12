@@ -42,7 +42,9 @@ def _voice_title(value: str | None) -> str:
     return persona.title if persona is not None else (custom_voice or DEFAULT_VOICE)
 
 
-async def handle_voice_command(settings_store: OwnerSettingsOperations, gateway: TelegramGateway, chat_id: int) -> None:
+async def handle_voice_command(
+    settings_store: OwnerSettingsOperations, gateway: TelegramGateway, chat_id: int
+) -> None:
     value = await settings_store.get(VOICE_KEY)
     await gateway.send_notice(
         chat_id,
@@ -52,7 +54,10 @@ async def handle_voice_command(settings_store: OwnerSettingsOperations, gateway:
 
 
 async def handle_voice_template_callback(
-    settings_store: OwnerSettingsOperations, gateway: TelegramGateway, chat_id: int, template_index: int
+    settings_store: OwnerSettingsOperations,
+    gateway: TelegramGateway,
+    chat_id: int,
+    template_index: int,
 ) -> None:
     _title, text = VOICE_TEMPLATES[template_index]
     await handle_set_voice_command(settings_store, gateway, chat_id, text)

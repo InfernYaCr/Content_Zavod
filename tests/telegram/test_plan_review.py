@@ -104,7 +104,9 @@ async def test_will_enqueue_regeneration_is_false_before_first_press(review: Pla
 
 
 @pytest.mark.asyncio
-async def test_will_enqueue_regeneration_is_true_on_matching_second_press(review: PlanReview) -> None:
+async def test_will_enqueue_regeneration_is_true_on_matching_second_press(
+    review: PlanReview,
+) -> None:
     await review.handle_action(1, 10, PlanItemId("item-1"), "regenerate")
 
     assert review.will_enqueue_regeneration(1, 10, PlanItemId("item-1")) is True

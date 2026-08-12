@@ -1,14 +1,20 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
 
 from content_zavod.domain import PlanId, TopicDraft
-from content_zavod.telegram import PlanItemId, PlanItemView, PlanView, TelegramGateway, handle_topic_command
+from content_zavod.telegram import (
+    PlanItemId,
+    PlanItemView,
+    PlanView,
+    TelegramGateway,
+    handle_topic_command,
+)
 
 _TZ = ZoneInfo("UTC")
-_NOW = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)  # Monday of ISO week 2026-W33
+_NOW = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)  # Monday of ISO week 2026-W33
 
 
 class FakeBot:
@@ -29,7 +35,9 @@ class FakePlan:
         self._plan = PlanView(
             id=PlanId("plan-1"),
             week_label="2026-W33",
-            items=[PlanItemView(id=PlanItemId("item-1"), title="New Topic", status="pending_review")],
+            items=[
+                PlanItemView(id=PlanItemId("item-1"), title="New Topic", status="pending_review")
+            ],
         )
 
     async def recent_topic_titles(self, since: datetime) -> list[str]:

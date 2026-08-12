@@ -6,9 +6,10 @@ Telegram layer (#4) was built against — keep their shape stable.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal, NewType, Sequence
+from typing import Literal, NewType
 
 PlanId = NewType("PlanId", str)
 PlanItemId = NewType("PlanItemId", str)

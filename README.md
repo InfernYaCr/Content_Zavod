@@ -64,6 +64,24 @@ uv sync
 uv run pytest
 ```
 
+### Проверки качества
+
+После клонирования один раз установите Git hooks:
+
+```bash
+uv sync --all-groups --frozen
+uv run pre-commit install
+```
+
+Локальный прогон тех же проверок, что выполняет CI:
+
+```bash
+uv run --frozen ruff check .
+uv run --frozen ruff format --check .
+uv run --frozen pytest
+uv run pre-commit run --all-files
+```
+
 ## Issue-трекер
 
 GitHub Issues в этом репозитории, через `gh` CLI — см. [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md) и [docs/agents/triage-labels.md](docs/agents/triage-labels.md).

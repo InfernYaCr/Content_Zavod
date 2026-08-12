@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from apscheduler.triggers.cron import CronTrigger
@@ -12,10 +12,11 @@ from content_zavod.scheduling import (
 )
 
 MOSCOW = ZoneInfo("Europe/Moscow")
+DEFAULT_JOB_ID = JobId(1)
 
 
 class FakePlan:
-    def __init__(self, job_id: JobId = JobId(1)) -> None:
+    def __init__(self, job_id: JobId = DEFAULT_JOB_ID) -> None:
         self.job_id = job_id
         self.requested: list[str] = []
 
@@ -33,21 +34,21 @@ class FakeScheduler:
 
 
 def test_week_label_for_formats_as_iso_year_and_week() -> None:
-    monday = datetime(2026, 8, 3, 6, 0, tzinfo=timezone.utc)  # 2026-W32 Monday
+    monday = datetime(2026, 8, 3, 6, 0, tzinfo=UTC)  # 2026-W32 Monday
 
     assert week_label_for(monday, MOSCOW) == "2026-W32"
 
 
 def test_week_label_for_uses_the_local_calendar_day_across_the_timezone_boundary() -> None:
     # 2026-08-02 23:30 UTC is already 2026-08-03 02:30 in Moscow (UTC+3): next ISO week.
-    sunday_night_utc = datetime(2026, 8, 2, 23, 30, tzinfo=timezone.utc)
+    sunday_night_utc = datetime(2026, 8, 2, 23, 30, tzinfo=UTC)
 
     assert week_label_for(sunday_night_utc, MOSCOW) == "2026-W32"
 
 
 async def test_trigger_weekly_plan_requests_the_current_weeks_label() -> None:
     plan = FakePlan(job_id=JobId(42))
-    fixed_now = datetime(2026, 8, 3, 6, 0, tzinfo=timezone.utc)
+    fixed_now = datetime(2026, 8, 3, 6, 0, tzinfo=UTC)
 
     job_id = await trigger_weekly_plan(plan, tz=MOSCOW, now=lambda: fixed_now)
 
@@ -88,7 +89,7 @@ async def test_the_registered_job_calls_through_to_plan_request_new() -> None:
 
     schedule_weekly_plan_trigger(scheduler, plan, tz=MOSCOW)
     job = scheduler.jobs[0]
-    fixed_now = datetime(2026, 8, 3, 6, 0, tzinfo=timezone.utc)
+    fixed_now = datetime(2026, 8, 3, 6, 0, tzinfo=UTC)
 
     await job["func"](*job["args"], **job["kwargs"], now=lambda: fixed_now)
 

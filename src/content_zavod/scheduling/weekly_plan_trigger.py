@@ -14,8 +14,9 @@ already made" check: `Plan.request_new` is idempotent per week_label anyway.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Callable, Protocol
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -45,7 +46,7 @@ async def trigger_weekly_plan(
     plan: PlanTrigger,
     *,
     tz: ZoneInfo,
-    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> JobId:
     return await plan.request_new(week_label_for(now(), tz))
 

@@ -57,7 +57,9 @@ async def test_comment_reply_resolves_pending_regenerate(
 
 
 @pytest.mark.asyncio
-async def test_comment_reply_without_pending_wait_is_ignored(flow: CommentGatedRegeneration[str]) -> None:
+async def test_comment_reply_without_pending_wait_is_ignored(
+    flow: CommentGatedRegeneration[str],
+) -> None:
     consumed = await flow.handle_comment_reply(1, 10, "stray text")
 
     assert consumed is False
@@ -124,7 +126,9 @@ async def test_cancel_without_pending_wait_is_a_no_op(flow: CommentGatedRegenera
     flow.cancel(1, 10)  # must not raise
 
 
-def test_has_matching_pending_is_false_with_no_pending_wait(flow: CommentGatedRegeneration[str]) -> None:
+def test_has_matching_pending_is_false_with_no_pending_wait(
+    flow: CommentGatedRegeneration[str],
+) -> None:
     assert flow.has_matching_pending(1, 10, "item-1") is False
 
 

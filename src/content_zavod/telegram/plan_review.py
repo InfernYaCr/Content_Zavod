@@ -44,5 +44,7 @@ class PlanReview:
     async def handle_comment_reply(self, chat_id: int, user_id: int, text: str) -> bool:
         return await self._regeneration.handle_comment_reply(chat_id, user_id, text)
 
-    def will_enqueue_regeneration(self, chat_id: int, user_id: int, plan_item_id: PlanItemId) -> bool:
+    def will_enqueue_regeneration(
+        self, chat_id: int, user_id: int, plan_item_id: PlanItemId
+    ) -> bool:
         return self._regeneration.has_matching_pending(chat_id, user_id, plan_item_id)

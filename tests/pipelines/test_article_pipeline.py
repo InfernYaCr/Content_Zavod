@@ -15,7 +15,9 @@ class ScriptedTextGenerator:
         self._completions = list(completions)
         self.calls: list[list[Message]] = []
 
-    async def complete_with_usage(self, messages: list[Message], *, temperature: float = 0.7) -> Completion:
+    async def complete_with_usage(
+        self, messages: list[Message], *, temperature: float = 0.7
+    ) -> Completion:
         self.calls.append(messages)
         return self._completions.pop(0)
 
@@ -125,11 +127,16 @@ async def test_generate_article_uses_a_stricter_sources_prompt_for_money_or_lega
     )
 
     sources_step_system_prompt = text_generator.calls[3][0].text
-    assert "денег" in sources_step_system_prompt.lower() or "права" in sources_step_system_prompt.lower()
+    assert (
+        "денег" in sources_step_system_prompt.lower()
+        or "права" in sources_step_system_prompt.lower()
+    )
 
 
 @pytest.mark.asyncio
-async def test_generate_article_asks_the_model_for_markdown_formatting_in_outline_draft_and_rewrite() -> None:
+async def test_generate_article_asks_the_model_for_markdown_formatting_in_outline_draft_and_rewrite() -> (
+    None
+):
     text_generator = ScriptedTextGenerator(
         [_completion("outline"), _completion("draft"), _completion("rewrite"), _completion("")]
     )
@@ -151,7 +158,9 @@ async def test_generate_article_asks_the_model_for_markdown_formatting_in_outlin
 
 
 @pytest.mark.asyncio
-async def test_regenerate_article_sources_facts_from_the_current_version_not_a_fresh_payload() -> None:
+async def test_regenerate_article_sources_facts_from_the_current_version_not_a_fresh_payload() -> (
+    None
+):
     view = ArticleView(
         id="article-1",
         plan_item_id="item-1",
@@ -164,7 +173,9 @@ async def test_regenerate_article_sources_facts_from_the_current_version_not_a_f
         [_completion("outline"), _completion("draft"), _completion("new body"), _completion("")]
     )
     url_checker = FakeUrlReachabilityChecker(set())
-    handler = make_regenerate_article_handler(article_reader, text_generator, url_checker, FakeOwnerSettingsStore())
+    handler = make_regenerate_article_handler(
+        article_reader, text_generator, url_checker, FakeOwnerSettingsStore()
+    )
 
     output = await handler({"article_id": "article-1", "comment": "shorter please"})
 
@@ -181,7 +192,9 @@ async def test_generate_article_uses_default_voice_when_no_override_is_stored() 
         [_completion("outline"), _completion("draft"), _completion("rewrite"), _completion("")]
     )
     url_checker = FakeUrlReachabilityChecker(set())
-    handler = make_generate_article_handler(text_generator, url_checker, FakeOwnerSettingsStore(None))
+    handler = make_generate_article_handler(
+        text_generator, url_checker, FakeOwnerSettingsStore(None)
+    )
 
     await handler(
         {"article_id": "a", "title": "T", "summary": "", "keywords": [], "platform": "vc"}

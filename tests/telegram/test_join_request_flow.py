@@ -16,7 +16,11 @@ class FakeRequests:
         request_id = self._next_id
         self._next_id += 1
         self._requests[request_id] = JoinRequestView(
-            id=request_id, telegram_id=telegram_id, username=username, status="pending", resolved_by=None
+            id=request_id,
+            telegram_id=telegram_id,
+            username=username,
+            status="pending",
+            resolved_by=None,
         )
         self._broadcasts[request_id] = []
         return request_id
@@ -28,13 +32,17 @@ class FakeRequests:
         self, join_request_id: int, owner_telegram_id: int, chat_id: int, message_id: int
     ) -> None:
         self._broadcasts[join_request_id].append(
-            JoinRequestBroadcast(owner_telegram_id=owner_telegram_id, chat_id=chat_id, message_id=message_id)
+            JoinRequestBroadcast(
+                owner_telegram_id=owner_telegram_id, chat_id=chat_id, message_id=message_id
+            )
         )
 
     async def broadcasts_for(self, join_request_id: int) -> list[JoinRequestBroadcast]:
         return self._broadcasts[join_request_id]
 
-    async def resolve(self, join_request_id: int, *, approved: bool, resolved_by: int) -> JoinRequestView:
+    async def resolve(
+        self, join_request_id: int, *, approved: bool, resolved_by: int
+    ) -> JoinRequestView:
         current = self._requests[join_request_id]
         if current.status != "pending":
             return JoinRequestView(
@@ -107,7 +115,10 @@ async def test_approve_grants_content_manager_and_notifies_requester() -> None:
     await flow.handle_approve(resolver_id=10, resolver_name="Owner10", join_request_id=1)
 
     assert membership.added == [(100, "content_manager")]
-    assert (100, "Доступ выдан. Нажмите /start ещё раз, чтобы увидеть доступные команды.") in gateway.sent_messages
+    assert (
+        100,
+        "Доступ выдан. Нажмите /start ещё раз, чтобы увидеть доступные команды.",
+    ) in gateway.sent_messages
 
 
 @pytest.mark.asyncio

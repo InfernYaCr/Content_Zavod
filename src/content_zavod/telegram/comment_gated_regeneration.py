@@ -1,23 +1,22 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Generic, Protocol, TypeVar
+from typing import Protocol
 
-Id = TypeVar("Id")
-
-RegenerateOp = Callable[[Id, "str | None"], Awaitable[None]]
+type RegenerateOp[Id] = Callable[[Id, str | None], Awaitable[None]]
 
 
-class CommentPrompt(Protocol[Id]):
+class CommentPrompt[Id](Protocol):
     async def prompt_for_comment(self, chat_id: int, id_: Id) -> None: ...
 
 
 @dataclass(frozen=True)
-class _PendingComment(Generic[Id]):
+class _PendingComment[Id]:
     id_: Id
 
 
-class CommentGatedRegeneration(Generic[Id]):
+class CommentGatedRegeneration[Id]:
     """Regenerate-with-optional-comment flow, shared by any 'press to regenerate' UI.
 
     First press on a target prompts for a comment; a second press on the same

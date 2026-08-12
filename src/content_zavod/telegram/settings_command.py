@@ -26,7 +26,9 @@ class OwnerSettingsOperations(Protocol):
     async def get(self, key: str) -> str | None: ...
 
 
-async def handle_settings_command(settings_store: OwnerSettingsOperations, gateway: TelegramGateway, chat_id: int) -> None:
+async def handle_settings_command(
+    settings_store: OwnerSettingsOperations, gateway: TelegramGateway, chat_id: int
+) -> None:
     niche = await settings_store.get(NICHE_KEY)
     voice = await settings_store.get(VOICE_KEY)
     directions_raw = await settings_store.get(DIRECTIONS_KEY)

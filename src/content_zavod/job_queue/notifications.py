@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 from .models import JobResult
 from .queue import JobQueue
@@ -34,7 +34,7 @@ async def run_notifications(
 
         try:
             await handle(claimed.result)
-        except Exception as exc:  # noqa: BLE001 - a failing handler must not crash the notification loop
+        except Exception as exc:
             if queue.notification_attempts_exhausted(claimed.notification_attempts):
                 logger.error(
                     "Notification for job %s (%s) failed permanently after %d attempts: %s",
@@ -51,6 +51,8 @@ async def run_notifications(
                     claimed.result.job_type,
                     exc,
                 )
-                await queue.reschedule_notification(claimed.result.job_id, claimed.notification_attempts)
+                await queue.reschedule_notification(
+                    claimed.result.job_id, claimed.notification_attempts
+                )
         else:
             await queue.mark_notified(claimed.result.job_id)

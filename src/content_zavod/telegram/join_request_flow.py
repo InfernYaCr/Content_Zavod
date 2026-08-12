@@ -28,7 +28,9 @@ class JoinRequestOperations(Protocol):
 
     async def broadcasts_for(self, join_request_id: int) -> list[JoinRequestBroadcast]: ...
 
-    async def resolve(self, join_request_id: int, *, approved: bool, resolved_by: int) -> JoinRequestView: ...
+    async def resolve(
+        self, join_request_id: int, *, approved: bool, resolved_by: int
+    ) -> JoinRequestView: ...
 
 
 class MembershipOperations(Protocol):
@@ -39,7 +41,10 @@ class MembershipOperations(Protocol):
 
 class JoinRequestFlow:
     def __init__(
-        self, requests: JoinRequestOperations, membership: MembershipOperations, gateway: TelegramGateway
+        self,
+        requests: JoinRequestOperations,
+        membership: MembershipOperations,
+        gateway: TelegramGateway,
     ) -> None:
         self._requests = requests
         self._membership = membership
@@ -69,7 +74,9 @@ class JoinRequestFlow:
     async def _resolve(
         self, resolver_id: int, resolver_name: str, join_request_id: int, *, approved: bool
     ) -> JoinRequestView | None:
-        view = await self._requests.resolve(join_request_id, approved=approved, resolved_by=resolver_id)
+        view = await self._requests.resolve(
+            join_request_id, approved=approved, resolved_by=resolver_id
+        )
         if not view.resolved_now:
             return None  # another Owner won the atomic pending -> resolved transition
         if view.status == "approved":

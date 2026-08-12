@@ -17,8 +17,8 @@ results are posted to one shared team chat rather than fanned out.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -65,14 +65,12 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     api_key = env.get("YANDEX_API_KEY") or None
     oauth_token = env.get("YANDEX_OAUTH_TOKEN") or None
     if bool(api_key) == bool(oauth_token):
-        raise ConfigError(
-            "exactly one of YANDEX_API_KEY or YANDEX_OAUTH_TOKEN must be set"
-        )
+        raise ConfigError("exactly one of YANDEX_API_KEY or YANDEX_OAUTH_TOKEN must be set")
 
     timezone_name = env.get("APP_TIMEZONE", DEFAULT_TIMEZONE)
     try:
         timezone = ZoneInfo(timezone_name)
-    except Exception as exc:  # noqa: BLE001 - surface any zoneinfo failure as ConfigError
+    except Exception as exc:
         raise ConfigError(f"invalid APP_TIMEZONE={timezone_name!r}") from exc
 
     return Settings(

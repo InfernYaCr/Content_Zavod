@@ -8,7 +8,14 @@ render) worth a fast unit test.
 
 from __future__ import annotations
 
-from content_zavod.domain import ArticleView, GeneratedVersion, PlanId, PlanItemId, PlanView, TopicDraft
+from content_zavod.domain import (
+    ArticleView,
+    GeneratedVersion,
+    PlanId,
+    PlanItemId,
+    PlanView,
+    TopicDraft,
+)
 from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.entrypoints.bot import _make_notification_handler
 from content_zavod.job_queue import JobResult
@@ -52,7 +59,9 @@ class FakeArticle:
         return "article-1"
 
     async def get(self, article_id: str) -> ArticleView:
-        return ArticleView(id=article_id, plan_item_id="item-1", title="T", platform="P", content=b"c")
+        return ArticleView(
+            id=article_id, plan_item_id="item-1", title="T", platform="P", content=b"c"
+        )
 
 
 class FakeGateway:
@@ -127,7 +136,10 @@ async def test_generate_plan_appends_topics_and_sends_the_plan() -> None:
             job_id=1,
             job_type="generate_plan",
             status="done",
-            output={"week_label": "Week 1", "topics": [{"title": "T1", "summary": "s", "keywords": ["k"]}]},
+            output={
+                "week_label": "Week 1",
+                "topics": [{"title": "T1", "summary": "s", "keywords": ["k"]}],
+            },
         )
     )
 
@@ -149,7 +161,9 @@ async def test_regenerate_topic_applies_and_notifies() -> None:
         )
     )
 
-    assert plan.applied_regenerations == [("item-1", TopicDraft(title="New", summary="s", keywords=["k"]))]
+    assert plan.applied_regenerations == [
+        ("item-1", TopicDraft(title="New", summary="s", keywords=["k"]))
+    ]
     assert gateway.sent_notices == [(42, "Тема обновлена: New")]
 
 
@@ -176,7 +190,9 @@ async def test_generate_article_records_version_and_sends_article() -> None:
     assert article.recorded_versions == [
         (
             "article-1",
-            GeneratedVersion(content="body", prompt="p", model="m", tokens=10, cost=0.0, source_job_id=1),
+            GeneratedVersion(
+                content="body", prompt="p", model="m", tokens=10, cost=0.0, source_job_id=1
+            ),
         )
     ]
     assert len(gateway.sent_articles) == 1
@@ -193,8 +209,12 @@ async def test_replayed_article_result_reuses_version_then_retries_telegram_send
             job_type="generate_article",
             status="done",
             output={
-                "article_id": "article-1", "content": "body", "prompt": "p",
-                "model": "m", "tokens": 10, "cost": 0.0,
+                "article_id": "article-1",
+                "content": "body",
+                "prompt": "p",
+                "model": "m",
+                "tokens": 10,
+                "cost": 0.0,
             },
         )
     )
@@ -214,8 +234,12 @@ async def test_stale_article_result_is_not_sent() -> None:
             job_type="regenerate_article",
             status="done",
             output={
-                "article_id": "article-1", "content": "old", "prompt": "p",
-                "model": "m", "tokens": 10, "cost": 0.0,
+                "article_id": "article-1",
+                "content": "old",
+                "prompt": "p",
+                "model": "m",
+                "tokens": 10,
+                "cost": 0.0,
             },
         )
     )

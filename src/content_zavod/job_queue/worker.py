@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 from .models import JobHandler
 from .queue import JobQueue
@@ -57,7 +57,7 @@ async def run_worker(
         )
         try:
             output = await handler_task
-        except Exception as exc:  # noqa: BLE001 - a failing handler must not crash the worker loop
+        except Exception as exc:
             logger.warning("Job %s (%s) failed: %s", claimed.id, claimed.job_type, exc)
             await queue.fail(claimed.id, str(exc), claimed.lease_token)
         else:

@@ -76,7 +76,9 @@ async def test_voice_template_callback_saves_template_text_via_set_voice_path() 
     template_index = 1
     _title, template_text = VOICE_TEMPLATES[template_index]
 
-    await handle_voice_template_callback(settings_store, gateway, chat_id=1, template_index=template_index)
+    await handle_voice_template_callback(
+        settings_store, gateway, chat_id=1, template_index=template_index
+    )
 
     assert settings_store.set_calls == [("voice", template_text)]
 
@@ -89,7 +91,9 @@ async def test_voice_template_callback_saves_template_text_via_set_voice_path() 
 async def test_set_voice_persists_and_echoes_normalized_text() -> None:
     settings_store, gateway = FakeOwnerSettingsStore(), FakeGateway()
 
-    await handle_set_voice_command(settings_store, gateway, chat_id=1, args="  технооптимист-фаундер  ")
+    await handle_set_voice_command(
+        settings_store, gateway, chat_id=1, args="  технооптимист-фаундер  "
+    )
 
     assert settings_store.set_calls == [("voice", "технооптимист-фаундер")]
     assert gateway.sent_notices == [(1, "Голос изменён: технооптимист-фаундер", None)]

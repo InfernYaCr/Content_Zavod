@@ -19,7 +19,8 @@ so a `/set_voice` takes effect without a restart, shared across all
 from __future__ import annotations
 
 import re
-from typing import Any, Protocol, Sequence
+from collections.abc import Sequence
+from typing import Any, Protocol
 
 from ..domain import ArticleId, ArticleView
 from ..job_queue import JobHandler

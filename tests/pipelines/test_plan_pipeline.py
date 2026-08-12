@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -91,7 +91,7 @@ async def test_handler_picks_growing_keywords_and_skips_declining_ones() -> None
         _no_recent_titles,
         FakeOwnerSettingsStore(),
         seed_keywords=("growing kw", "declining kw"),
-        now=lambda: datetime(2026, 8, 7, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
     output = await handler({"week_label": "Week 1"})
@@ -123,7 +123,7 @@ async def test_handler_ranks_by_growth_and_respects_topics_per_plan() -> None:
         FakeOwnerSettingsStore(),
         seed_keywords=("small growth", "big growth"),
         topics_per_plan=1,
-        now=lambda: datetime(2026, 8, 7, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
     output = await handler({"week_label": "Week 1"})
@@ -147,7 +147,7 @@ async def test_handler_skips_a_topic_whose_title_was_already_used_recently() -> 
         recent_titles,
         FakeOwnerSettingsStore(),
         seed_keywords=("growing kw",),
-        now=lambda: datetime(2026, 8, 7, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
     output = await handler({"week_label": "Week 1"})
@@ -165,7 +165,7 @@ async def test_handler_swallows_a_keyword_dynamics_failure_for_one_keyword() -> 
         _no_recent_titles,
         FakeOwnerSettingsStore(),
         seed_keywords=("broken kw", "ok kw"),
-        now=lambda: datetime(2026, 8, 7, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
     output = await handler({"week_label": "Week 1"})
@@ -183,7 +183,7 @@ async def test_handler_requests_a_six_month_monthly_dynamics_window() -> None:
         _no_recent_titles,
         FakeOwnerSettingsStore(),
         seed_keywords=("missing kw",),
-        now=lambda: datetime(2026, 8, 7, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
     await handler({"week_label": "Week 1"})
@@ -203,7 +203,7 @@ async def test_handler_uses_default_niche_when_unset() -> None:
         _no_recent_titles,
         FakeOwnerSettingsStore(None),
         seed_keywords=("growing kw",),
-        now=lambda: datetime(2026, 8, 7, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
     await handler({"week_label": "Week 1"})
@@ -224,7 +224,7 @@ async def test_handler_reads_niche_from_owner_settings_store() -> None:
         _no_recent_titles,
         FakeOwnerSettingsStore("edtech"),
         seed_keywords=("growing kw",),
-        now=lambda: datetime(2026, 8, 7, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
     await handler({"week_label": "Week 1"})
@@ -242,7 +242,7 @@ async def test_handler_uses_default_directions_when_seed_keywords_and_store_are_
         text_generator,
         _no_recent_titles,
         FakeOwnerSettingsStore(),
-        now=lambda: datetime(2026, 8, 7, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
     await handler({"week_label": "Week 1"})
@@ -261,7 +261,7 @@ async def test_handler_reads_directions_from_owner_settings_store() -> None:
         text_generator,
         _no_recent_titles,
         FakeOwnerSettingsStore(directions="новая ниша"),
-        now=lambda: datetime(2026, 8, 7, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
     output = await handler({"week_label": "Week 1"})
@@ -272,7 +272,9 @@ async def test_handler_reads_directions_from_owner_settings_store() -> None:
 
 @pytest.mark.asyncio
 async def test_regenerate_topic_handler_redrafts_using_current_item_and_comment() -> None:
-    current = PlanItemDetail(id="item-1", title="Old Title", summary="old summary", keywords=["old kw"])
+    current = PlanItemDetail(
+        id="item-1", title="Old Title", summary="old summary", keywords=["old kw"]
+    )
     item_reader = FakePlanItemReader(current)
     text_generator = FakeTextGenerator(
         {"Old Title": "Title: New Title\nSummary: new summary\nKeywords: new kw"}
@@ -294,9 +296,7 @@ async def test_regenerate_topic_handler_redrafts_using_current_item_and_comment(
 async def test_regenerate_topic_handler_works_without_a_comment() -> None:
     current = PlanItemDetail(id="item-1", title="Old Title", summary="", keywords=[])
     item_reader = FakePlanItemReader(current)
-    text_generator = FakeTextGenerator(
-        {"Old Title": "Title: New Title\nSummary: \nKeywords: "}
-    )
+    text_generator = FakeTextGenerator({"Old Title": "Title: New Title\nSummary: \nKeywords: "})
     handler = make_regenerate_topic_handler(item_reader, text_generator, FakeOwnerSettingsStore())
 
     output = await handler({"plan_item_id": "item-1", "comment": None})
@@ -308,10 +308,10 @@ async def test_regenerate_topic_handler_works_without_a_comment() -> None:
 async def test_regenerate_topic_handler_reads_niche_from_owner_settings_store() -> None:
     current = PlanItemDetail(id="item-1", title="Old Title", summary="", keywords=[])
     item_reader = FakePlanItemReader(current)
-    text_generator = FakeTextGenerator(
-        {"Old Title": "Title: New Title\nSummary: \nKeywords: "}
+    text_generator = FakeTextGenerator({"Old Title": "Title: New Title\nSummary: \nKeywords: "})
+    handler = make_regenerate_topic_handler(
+        item_reader, text_generator, FakeOwnerSettingsStore("edtech")
     )
-    handler = make_regenerate_topic_handler(item_reader, text_generator, FakeOwnerSettingsStore("edtech"))
 
     await handler({"plan_item_id": "item-1", "comment": None})
 

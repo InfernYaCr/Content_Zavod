@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -48,7 +48,9 @@ async def test_get_item_returns_full_detail(plan: Plan) -> None:
 
     detail = await plan.get_item(item_id)
 
-    assert detail == PlanItemDetail(id=item_id, title="Topic A", summary="summary A", keywords=["kw1", "kw2"])
+    assert detail == PlanItemDetail(
+        id=item_id, title="Topic A", summary="summary A", keywords=["kw1", "kw2"]
+    )
 
 
 async def test_get_item_raises_for_unknown_item(plan: Plan) -> None:
@@ -121,7 +123,7 @@ async def test_approve_all_raises_for_unknown_plan(plan: Plan) -> None:
 
 
 async def test_get_summary_returns_id_week_label_and_status(plan: Plan) -> None:
-    plan_id, view = await _create_plan(plan)
+    plan_id, _view = await _create_plan(plan)
 
     summary = await plan.get_summary(plan_id)
 
@@ -182,7 +184,9 @@ async def test_approved_items_returns_only_approved_items_with_full_detail(plan:
     items = await plan.approved_items(plan_id)
 
     assert len(items) == 1
-    assert items[0] == PlanItemDetail(id=kept_id, title="Topic A", summary="s", keywords=["k1", "k2"])
+    assert items[0] == PlanItemDetail(
+        id=kept_id, title="Topic A", summary="s", keywords=["k1", "k2"]
+    )
 
 
 async def test_approved_items_is_empty_for_a_plan_with_no_approved_items(plan: Plan) -> None:
@@ -253,7 +257,7 @@ async def test_apply_regeneration_rejects_a_stale_result_after_approval(plan: Pl
 
 
 async def test_recent_topic_titles_returns_titles_created_since(plan: Plan) -> None:
-    before = datetime.now(timezone.utc) - timedelta(minutes=1)
+    before = datetime.now(UTC) - timedelta(minutes=1)
     await _create_plan(plan, titles=("Fresh Topic",))
 
     titles = await plan.recent_topic_titles(since=before)
@@ -263,7 +267,7 @@ async def test_recent_topic_titles_returns_titles_created_since(plan: Plan) -> N
 
 async def test_recent_topic_titles_excludes_titles_older_than_since(plan: Plan) -> None:
     await _create_plan(plan, titles=("Old Topic",))
-    after = datetime.now(timezone.utc) + timedelta(minutes=1)
+    after = datetime.now(UTC) + timedelta(minutes=1)
 
     titles = await plan.recent_topic_titles(since=after)
 
@@ -372,9 +376,13 @@ async def test_concurrent_add_topics_share_one_pending_plan(plan: Plan, pool: as
     )
 
     assert first_id == second_id
-    assert await pool.fetchval(
-        "SELECT count(*) FROM plans WHERE week_label = $1 AND status = 'pending_review'", "Week 1"
-    ) == 1
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM plans WHERE week_label = $1 AND status = 'pending_review'",
+            "Week 1",
+        )
+        == 1
+    )
     view = await plan.get(first_id)
     assert {item.title for item in view.items} == {"Topic A", "Topic B"}
 
@@ -415,7 +423,9 @@ async def test_request_cover_raises_for_unknown_item(plan: Plan) -> None:
         await plan.request_cover("missing")
 
 
-async def test_request_cover_after_apply_cover_enqueues_a_fresh_job(plan: Plan, queue: JobQueue) -> None:
+async def test_request_cover_after_apply_cover_enqueues_a_fresh_job(
+    plan: Plan, queue: JobQueue
+) -> None:
     """A manual re-request (e.g. the "🖼 Обложка" button, #15) after a cover already finished must
     enqueue a new Job rather than colliding with the completed one's idempotency key."""
     plan_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
@@ -458,7 +468,7 @@ async def test_find_active_ignores_an_archived_plan(plan: Plan) -> None:
 
 
 async def test_archive_marks_plan_and_pending_items_archived(plan: Plan) -> None:
-    plan_id, view = await _create_plan(plan)
+    plan_id, _view = await _create_plan(plan)
 
     await plan.archive(plan_id)
 

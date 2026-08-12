@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
@@ -290,9 +290,15 @@ async def test_send_article_ready_attaches_export_regenerate_and_approve_keyboar
     assert chat_id == 42
     (docx_button, md_button) = keyboard.inline_keyboard[0]
     (regenerate_button, approve_button) = keyboard.inline_keyboard[1]
-    assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == ("article-1", "docx")
+    assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == (
+        "article-1",
+        "docx",
+    )
     assert decode_export_id(decode_callback_data(md_button.callback_data)[1]) == ("article-1", "md")
-    assert decode_callback_data(regenerate_button.callback_data) == ("regenerate_article", "article-1")
+    assert decode_callback_data(regenerate_button.callback_data) == (
+        "regenerate_article",
+        "article-1",
+    )
     assert decode_callback_data(approve_button.callback_data) == ("approve", "article-1")
     (cover_button,) = keyboard.inline_keyboard[2]
     assert decode_callback_data(cover_button.callback_data) == ("request_cover", "item-1")
@@ -303,7 +309,9 @@ async def test_send_cover_sends_photo_with_filename_and_caption() -> None:
     bot = FakeBot()
     gateway = TelegramGateway(bot)
 
-    await gateway.send_cover(chat_id=42, image=b"fake jpeg bytes", mime_type="image/jpeg", title="Topic A")
+    await gateway.send_cover(
+        chat_id=42, image=b"fake jpeg bytes", mime_type="image/jpeg", title="Topic A"
+    )
 
     assert len(bot.sent_photos) == 1
     chat_id, photo, caption = bot.sent_photos[0]
@@ -358,7 +366,10 @@ async def test_send_error_chunks_long_text() -> None:
 
 
 def make_plan_summaries(count: int) -> list[PlanSummary]:
-    return [PlanSummary(id=PlanId(f"plan-{i}"), week_label="2026-W32", status="pending_review") for i in range(count)]
+    return [
+        PlanSummary(id=PlanId(f"plan-{i}"), week_label="2026-W32", status="pending_review")
+        for i in range(count)
+    ]
 
 
 def test_render_history_weeks_text_lists_week_range_and_status() -> None:
@@ -426,7 +437,9 @@ def test_build_history_articles_keyboard_error_status_gets_a_versions_only_row()
     """`error` isn't downloadable (no *last* ready Версия), but a prior successful Версия
     could still exist from before a later regeneration failed - so it still gets a "Версии"
     row, just without the export buttons (#26)."""
-    articles = [ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="error")]
+    articles = [
+        ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="error")
+    ]
 
     keyboard = build_history_articles_keyboard(articles, back_page=0)
 
@@ -482,7 +495,9 @@ async def test_send_history_weeks_sends_a_single_message_with_keyboard() -> None
     bot = FakeBot()
     gateway = TelegramGateway(bot)
 
-    await gateway.send_history_weeks(chat_id=1, plans_page=make_plan_summaries(1), page=0, page_count=1)
+    await gateway.send_history_weeks(
+        chat_id=1, plans_page=make_plan_summaries(1), page=0, page_count=1
+    )
 
     assert len(bot.sent_messages) == 1
     chat_id, text, keyboard = bot.sent_messages[0]
@@ -501,7 +516,7 @@ async def test_edit_history_weeks_edits_the_message() -> None:
     )
 
     assert len(bot.edited_messages) == 1
-    chat_id, message_id, text, keyboard = bot.edited_messages[0]
+    chat_id, message_id, _text, keyboard = bot.edited_messages[0]
     assert (chat_id, message_id) == (1, 9)
     assert keyboard is not None
 
@@ -511,9 +526,13 @@ async def test_edit_history_articles_edits_the_message_with_a_back_button() -> N
     bot = FakeBot()
     gateway = TelegramGateway(bot)
     plan_summary = PlanSummary(id=PlanId("plan-1"), week_label="2026-W32", status="approved")
-    articles = [ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="queued")]
+    articles = [
+        ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="queued")
+    ]
 
-    await gateway.edit_history_articles(chat_id=1, message_id=9, plan_summary=plan_summary, articles=articles, back_page=2)
+    await gateway.edit_history_articles(
+        chat_id=1, message_id=9, plan_summary=plan_summary, articles=articles, back_page=2
+    )
 
     chat_id, message_id, text, keyboard = bot.edited_messages[0]
     assert (chat_id, message_id) == (1, 9)
@@ -527,9 +546,13 @@ async def test_edit_history_articles_adds_a_download_row_for_a_ready_article() -
     bot = FakeBot()
     gateway = TelegramGateway(bot)
     plan_summary = PlanSummary(id=PlanId("plan-1"), week_label="2026-W32", status="approved")
-    articles = [ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="ready")]
+    articles = [
+        ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="ready")
+    ]
 
-    await gateway.edit_history_articles(chat_id=1, message_id=9, plan_summary=plan_summary, articles=articles, back_page=2)
+    await gateway.edit_history_articles(
+        chat_id=1, message_id=9, plan_summary=plan_summary, articles=articles, back_page=2
+    )
 
     _, _, _, keyboard = bot.edited_messages[0]
     docx_button, md_button, versions_button = keyboard.inline_keyboard[0]
@@ -599,14 +622,22 @@ def make_article_summary() -> ArticleSummary:
 
 def make_version_summary(id_: int = 2, model: str = "yandexgpt") -> ArticleVersionSummary:
     return ArticleVersionSummary(
-        id=id_, model=model, tokens=42, cost=0.0123, created_at=datetime(2026, 8, 11, 14, 3, tzinfo=timezone.utc)
+        id=id_,
+        model=model,
+        tokens=42,
+        cost=0.0123,
+        created_at=datetime(2026, 8, 11, 14, 3, tzinfo=UTC),
     )
 
 
 def make_version_view(content: str = "Hello, world.") -> ArticleVersionView:
     return ArticleVersionView(
-        id=2, content=content, model="yandexgpt", tokens=42, cost=0.0123,
-        created_at=datetime(2026, 8, 11, 14, 3, tzinfo=timezone.utc),
+        id=2,
+        content=content,
+        model="yandexgpt",
+        tokens=42,
+        cost=0.0123,
+        created_at=datetime(2026, 8, 11, 14, 3, tzinfo=UTC),
     )
 
 
@@ -638,7 +669,8 @@ def test_history_version_callback_data_stays_under_limit_for_max_length_article_
 
 def test_render_history_versions_text_lists_every_version_newest_first() -> None:
     text = render_history_versions_text(
-        make_article_summary(), [make_version_summary(id_=2, model="yandexgpt-2"), make_version_summary(id_=1)]
+        make_article_summary(),
+        [make_version_summary(id_=2, model="yandexgpt-2"), make_version_summary(id_=1)],
     )
 
     assert "Topic A (zen)" in text
@@ -698,7 +730,12 @@ async def test_edit_history_versions_edits_the_message_with_version_buttons() ->
     versions = [make_version_summary()]
 
     await gateway.edit_history_versions(
-        chat_id=1, message_id=9, article=make_article_summary(), plan_id="plan-1", versions=versions, back_page=2
+        chat_id=1,
+        message_id=9,
+        article=make_article_summary(),
+        plan_id="plan-1",
+        versions=versions,
+        back_page=2,
     )
 
     chat_id, message_id, text, keyboard = bot.edited_messages[0]
@@ -717,7 +754,11 @@ async def test_edit_history_version_edits_the_message_with_the_versions_content(
     gateway = TelegramGateway(bot)
 
     await gateway.edit_history_version(
-        chat_id=1, message_id=9, article=make_article_summary(), version=make_version_view(), back_page=2
+        chat_id=1,
+        message_id=9,
+        article=make_article_summary(),
+        version=make_version_view(),
+        back_page=2,
     )
 
     chat_id, message_id, text, keyboard = bot.edited_messages[0]
