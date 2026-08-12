@@ -1,7 +1,7 @@
 """OwnerSettingsStore: a generic key-value store for Owner-editable settings.
 
 Unlike `ScheduleSettings` (one fixed row), this backs several independent
-settings (Ниша, Голос, Направления, ...) sharing one table keyed by name, so
+settings (Ниша, Персона, Направления, ...) sharing one table keyed by name, so
 each new setting reuses this store rather than growing its own single-row
 table. `get()` returning `None` means "no override recorded yet" - each
 caller decides its own fallback default.

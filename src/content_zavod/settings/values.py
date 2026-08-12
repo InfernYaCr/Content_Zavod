@@ -1,15 +1,15 @@
-"""OwnerSettings: frozen snapshot returned by `SettingsService.read()`.
-
-Persona/Voice is out of scope for this module (#49) - it stays behind
-`article_pipeline.VOICE_KEY`, read directly from `OwnerSettingsStore`.
-"""
+"""OwnerSettings: frozen snapshot returned by `SettingsService.read()`."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from .persona import Persona
 
 
 @dataclass(frozen=True, slots=True)
 class OwnerSettings:
     niche: str
     directions: tuple[str, ...]
+    persona: Persona | None
+    custom_persona: str | None

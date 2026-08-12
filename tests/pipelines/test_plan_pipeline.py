@@ -29,8 +29,9 @@ class FakeOwnerSettingsStore:
     async def get(self, key: str) -> str | None:
         if key == "niche":
             return self._niche
-        assert key == "directions"
-        return self._directions
+        if key == "directions":
+            return self._directions
+        return None
 
     def set_niche(self, niche: str | None) -> None:
         self._niche = niche

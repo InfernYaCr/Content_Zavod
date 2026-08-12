@@ -1,5 +1,6 @@
-from content_zavod.personas import PERSONAS, platform_profile
+from content_zavod.personas import platform_profile
 from content_zavod.pipelines.article_prompts import outline_messages, rewrite_messages
+from content_zavod.settings import PERSONAS
 
 
 def test_custom_voice_is_marked_as_untrusted_data() -> None:

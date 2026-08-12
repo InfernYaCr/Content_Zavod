@@ -70,15 +70,15 @@ from ..telegram import (
     handle_history_week,
     handle_members_command,
     handle_niche_command,
+    handle_persona_command,
+    handle_persona_template_callback,
     handle_schedule_command,
     handle_set_directions_command,
     handle_set_niche_command,
+    handle_set_persona_command,
     handle_set_schedule_command,
-    handle_set_voice_command,
     handle_settings_command,
     handle_topic_command,
-    handle_voice_command,
-    handle_voice_template_callback,
     render_help_text,
     sync_commands,
 )
@@ -337,8 +337,8 @@ def _build_router(
             owner_settings_service, gateway, message.chat.id, command.args or ""
         )
 
-    @router.message(Command("voice"))
-    async def on_voice(message: Message) -> None:
+    @router.message(Command("persona"))
+    async def on_persona(message: Message) -> None:
         if message.from_user is None:
             return
         role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
@@ -347,10 +347,10 @@ def _build_router(
         if role != "owner":
             await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
             return
-        await handle_voice_command(owner_settings, gateway, message.chat.id)
+        await handle_persona_command(owner_settings_service, gateway, message.chat.id)
 
-    @router.message(Command("set_voice"))
-    async def on_set_voice(message: Message, command: CommandObject) -> None:
+    @router.message(Command("set_persona"))
+    async def on_set_persona(message: Message, command: CommandObject) -> None:
         if message.from_user is None:
             return
         role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
@@ -359,7 +359,9 @@ def _build_router(
         if role != "owner":
             await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
             return
-        await handle_set_voice_command(owner_settings, gateway, message.chat.id, command.args or "")
+        await handle_set_persona_command(
+            owner_settings_service, gateway, message.chat.id, command.args or ""
+        )
 
     @router.message(Command("settings"))
     async def on_settings(message: Message) -> None:
@@ -423,12 +425,14 @@ def _build_router(
                     return
                 await callback.answer()
                 await membership.remove_member(int(id_))
-            elif action == "voice_template":
+            elif action == "persona_template":
                 if role != "owner":
                     await callback.answer(_OWNER_ONLY_TEXT, show_alert=True)
                     return
                 await callback.answer()
-                await handle_voice_template_callback(owner_settings, gateway, chat_id, int(id_))
+                await handle_persona_template_callback(
+                    owner_settings_service, gateway, chat_id, int(id_)
+                )
             elif action == "page":
                 await callback.answer()
                 page_plan_id, page = decode_page_id(id_)

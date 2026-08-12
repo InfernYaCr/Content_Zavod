@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from ..personas import Persona, PlatformProfile
+from ..personas import PlatformProfile
+from ..settings import Persona
 from ..yandex import Message
 
 IMMUTABLE_RULES = """Ты — редактор Content Zavod.

@@ -48,7 +48,7 @@ Action = Literal[
     "history_week",
     "history_versions",
     "history_version",
-    "voice_template",
+    "persona_template",
 ]
 
 # Codes are 1-2 chars to leave room for id payloads within CALLBACK_DATA_LIMIT.
@@ -75,7 +75,7 @@ _ACTION_CODES: dict[Action, str] = {
     "history_week": "hw",
     "history_versions": "hv",
     "history_version": "hd",
-    "voice_template": "vt",
+    "persona_template": "pt",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
 
@@ -479,14 +479,14 @@ def build_confirm_keyboard(id_: str) -> InlineKeyboardMarkup:
     )
 
 
-def build_voice_keyboard(templates: Sequence[tuple[str, str]]) -> InlineKeyboardMarkup:
-    """One row per hardcoded Voice persona template, keyed by its position in `templates`
+def build_persona_keyboard(templates: Sequence[tuple[str, str]]) -> InlineKeyboardMarkup:
+    """One row per hardcoded Persona Preset, keyed by its position in `templates`
     rather than its (arbitrarily long) text, to stay within CALLBACK_DATA_LIMIT."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=title, callback_data=encode_callback_data("voice_template", str(index))
+                    text=title, callback_data=encode_callback_data("persona_template", str(index))
                 )
             ]
             for index, (title, _text) in enumerate(templates)
@@ -764,7 +764,7 @@ class TelegramGateway:
         self, chat_id: int, text: str, reply_markup: InlineKeyboardMarkup | None = None
     ) -> None:
         """Plain informational text, for job results that aren't a rendered Plan/Article/error.
-        `reply_markup`, if given, attaches only to the last chunk (e.g. /voice's persona-template
+        `reply_markup`, if given, attaches only to the last chunk (e.g. /persona's Preset
         buttons - a message needing an on-topic keyboard is never long enough to actually split)."""
         chunks = chunk_text(text)
         last_index = len(chunks) - 1

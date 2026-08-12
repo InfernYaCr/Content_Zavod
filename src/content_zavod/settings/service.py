@@ -1,14 +1,18 @@
 """SettingsService: typed read/write facade over `OwnerSettingsStore` for
-Ниша and Направления - the two Настройки this module owns (#49; Персона is
-untouched, it stays behind `article_pipeline.VOICE_KEY`).
+Ниша, Направления, and Персона - the three Настройки this module owns (#49
+brought in Ниша/Направления; #50 folded in Персона's type, Preset catalog,
+value parsing, and default from `personas.py`).
 
 `read()` returns one frozen `OwnerSettings` snapshot with defaults already
-applied, so callers (Job Handlers, `/niche`, `/directions`) never touch raw
-store keys or repeat fallback logic themselves. Typed setters normalize
-(strip / split-on-comma) internally and raise `InvalidSettingValue` on input
-that normalizes to nothing, instead of writing anything - the command layer
-decides how to phrase the rejection, this module only decides whether a
-write happens.
+applied, so callers (Job Handlers, `/niche`, `/directions`, `/persona`)
+never touch raw store keys or repeat fallback/resolution logic themselves.
+Typed setters normalize (strip / split-on-comma) internally and raise
+`InvalidSettingValue` on input that normalizes to nothing, instead of
+writing anything - the command layer decides how to phrase the rejection,
+this module only decides whether a write happens. `set_persona` writes
+whatever normalized string it's given, whether that's a Preset marker (from
+a template button) or the Owner's own text - `resolve_persona` decides at
+read time which one it is, so both paths save identically.
 
 `plan_pipeline` re-exports the constants and `parse_directions` below as
 aliases so existing importers (`/settings`, `/set_niche`, `/set_directions`)
@@ -20,6 +24,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from ..domain.errors import InvalidSettingValue
+from .persona import PERSONA_KEY, resolve_persona
 from .values import OwnerSettings
 
 NICHE_KEY = "niche"
@@ -59,9 +64,16 @@ class SettingsService:
     async def read(self) -> OwnerSettings:
         niche_raw = await self._store.get(NICHE_KEY)
         directions_raw = await self._store.get(DIRECTIONS_KEY)
+        persona_raw = await self._store.get(PERSONA_KEY)
         niche = niche_raw if niche_raw else DEFAULT_NICHE
         directions = parse_directions(directions_raw) if directions_raw else None
-        return OwnerSettings(niche=niche, directions=tuple(directions or DEFAULT_DIRECTIONS))
+        persona, custom_persona = resolve_persona(persona_raw)
+        return OwnerSettings(
+            niche=niche,
+            directions=tuple(directions or DEFAULT_DIRECTIONS),
+            persona=persona,
+            custom_persona=custom_persona,
+        )
 
     async def set_niche(self, value: str) -> str:
         normalized = value.strip()
@@ -75,4 +87,11 @@ class SettingsService:
         if not normalized:
             raise InvalidSettingValue("directions")
         await self._store.set(DIRECTIONS_KEY, ", ".join(normalized))
+        return normalized
+
+    async def set_persona(self, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise InvalidSettingValue("persona")
+        await self._store.set(PERSONA_KEY, normalized)
         return normalized
