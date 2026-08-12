@@ -4,11 +4,10 @@ import pytest
 
 from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.pipelines.plan_pipeline import (
-    DEFAULT_DIRECTIONS,
     make_generate_plan_handler,
     make_regenerate_topic_handler,
 )
-from content_zavod.settings import SettingsService
+from content_zavod.settings import DEFAULT_DIRECTIONS, SettingsService
 from content_zavod.yandex import KeywordDynamicsPoint, Message
 
 
