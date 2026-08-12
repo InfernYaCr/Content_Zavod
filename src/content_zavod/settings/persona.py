@@ -184,6 +184,17 @@ def persona_display_title(persona: Persona | None, custom_persona: CustomPersona
     return custom_persona_label(custom_persona) if custom_persona is not None else ""
 
 
+def persona_detail_text(persona: Persona | None, custom_persona: CustomPersona | None) -> str:
+    """The full Персона value as text for whichever Персона is active - a
+    Preset's `title`, or a Custom Персона's fields via `format_custom_persona`.
+    Shared by `/persona` and `/settings` so a change to how a Custom Персона's
+    body is rendered doesn't need editing both command modules in lockstep."""
+
+    if persona is not None:
+        return persona.title
+    return format_custom_persona(custom_persona) if custom_persona is not None else ""
+
+
 def serialize_custom_persona(persona: CustomPersona) -> str:
     payload = {
         field: value
