@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from .callback_codec import Action
 from .comment_gated_regeneration import CommentGatedRegeneration, CommentPrompt
-from .gateway import Action
 from .types import PlanItemId
 
 

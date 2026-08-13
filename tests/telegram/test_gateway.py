@@ -9,28 +9,22 @@ from content_zavod.telegram import (
     ArticleVersionSummary,
     ArticleVersionView,
     ArticleView,
+    ExportArticle,
+    HistoryVersion,
+    HistoryVersions,
+    HistoryWeek,
+    Page,
     PlanId,
     PlanItemId,
     PlanItemView,
     PlanSummary,
     PlanView,
+    SimpleAction,
     TelegramCommentPrompt,
     TelegramGateway,
     decode_callback_data,
-    decode_export_id,
-    decode_history_version_id,
-    decode_history_versions_id,
-    decode_history_week_id,
-    decode_page_id,
-    encode_callback_data,
-    encode_history_page_callback,
-    encode_history_version_callback,
-    encode_history_versions_callback,
-    encode_history_week_callback,
-    encode_page_callback,
 )
 from content_zavod.telegram.gateway import (
-    CALLBACK_DATA_LIMIT,
     ITEMS_PER_PAGE,
     MESSAGE_LIMIT,
     build_history_articles_keyboard,
@@ -109,10 +103,14 @@ async def test_send_plan_keyboard_callback_data_round_trips() -> None:
 
     _, _, keyboard = bot.sent_messages[0]
     regenerate_button, delete_button = keyboard.inline_keyboard[0]
-    assert decode_callback_data(regenerate_button.callback_data) == ("regenerate", "item-0")
-    assert decode_callback_data(delete_button.callback_data) == ("delete", "item-0")
+    assert decode_callback_data(regenerate_button.callback_data) == SimpleAction(
+        "regenerate", "item-0"
+    )
+    assert decode_callback_data(delete_button.callback_data) == SimpleAction("delete", "item-0")
     (approve_button,) = keyboard.inline_keyboard[1]
-    assert decode_callback_data(approve_button.callback_data) == ("approve_all", "plan-1")
+    assert decode_callback_data(approve_button.callback_data) == SimpleAction(
+        "approve_all", "plan-1"
+    )
 
 
 @pytest.mark.asyncio
@@ -138,7 +136,7 @@ def test_build_plan_keyboard_paginates_beyond_page_size() -> None:
     assert len(keyboard.inline_keyboard) == ITEMS_PER_PAGE + 2
     nav_row = keyboard.inline_keyboard[ITEMS_PER_PAGE]
     assert len(nav_row) == 1
-    assert decode_callback_data(nav_row[0].callback_data) == ("page", "plan-1:1")
+    assert decode_callback_data(nav_row[0].callback_data) == Page("plan-1", 1)
 
 
 def test_build_plan_keyboard_last_page_only_shows_back_button() -> None:
@@ -149,7 +147,7 @@ def test_build_plan_keyboard_last_page_only_shows_back_button() -> None:
     remaining_items = 3
     nav_row = keyboard.inline_keyboard[remaining_items]
     assert len(nav_row) == 1
-    assert decode_callback_data(nav_row[0].callback_data) == ("page", "plan-1:0")
+    assert decode_callback_data(nav_row[0].callback_data) == Page("plan-1", 0)
 
 
 def test_build_plan_keyboard_single_page_has_no_nav_row() -> None:
@@ -189,19 +187,6 @@ def test_format_week_range_spanning_two_months() -> None:
 
 def test_format_week_range_spanning_year_boundary() -> None:
     assert format_week_range("2026-W01") == "29 декабря 2025 – 4 января 2026"
-
-
-def test_encode_decode_page_callback_roundtrips() -> None:
-    data = encode_page_callback("plan-1", 2)
-
-    assert decode_page_id(decode_callback_data(data)[1]) == ("plan-1", 2)
-
-
-def test_page_callback_data_stays_under_limit_for_max_length_plan_id() -> None:
-    uuid_hex_plan_id = "a" * 32
-    data = encode_page_callback(uuid_hex_plan_id, 999)
-
-    assert len(data.encode("utf-8")) <= CALLBACK_DATA_LIMIT
 
 
 @pytest.mark.asyncio
@@ -250,7 +235,7 @@ async def test_send_error_with_retry_attaches_retry_keyboard() -> None:
     assert len(bot.sent_messages) == 1
     _, _, keyboard = bot.sent_messages[0]
     (retry_button,) = keyboard.inline_keyboard[0]
-    assert decode_callback_data(retry_button.callback_data) == ("retry", "42")
+    assert decode_callback_data(retry_button.callback_data) == SimpleAction("retry", "42")
 
 
 def make_article() -> ArticleView:
@@ -290,18 +275,18 @@ async def test_send_article_ready_attaches_export_regenerate_and_approve_keyboar
     assert chat_id == 42
     (docx_button, md_button) = keyboard.inline_keyboard[0]
     (regenerate_button, approve_button) = keyboard.inline_keyboard[1]
-    assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == (
-        "article-1",
-        "docx",
+    assert decode_callback_data(docx_button.callback_data) == ExportArticle("article-1", "docx")
+    assert decode_callback_data(md_button.callback_data) == ExportArticle("article-1", "md")
+    assert decode_callback_data(regenerate_button.callback_data) == SimpleAction(
+        "regenerate_article", "article-1"
     )
-    assert decode_export_id(decode_callback_data(md_button.callback_data)[1]) == ("article-1", "md")
-    assert decode_callback_data(regenerate_button.callback_data) == (
-        "regenerate_article",
-        "article-1",
+    assert decode_callback_data(approve_button.callback_data) == SimpleAction(
+        "approve", "article-1"
     )
-    assert decode_callback_data(approve_button.callback_data) == ("approve", "article-1")
     (cover_button,) = keyboard.inline_keyboard[2]
-    assert decode_callback_data(cover_button.callback_data) == ("request_cover", "item-1")
+    assert decode_callback_data(cover_button.callback_data) == SimpleAction(
+        "request_cover", "item-1"
+    )
 
 
 @pytest.mark.asyncio
@@ -388,9 +373,8 @@ def test_build_history_weeks_keyboard_one_button_per_week() -> None:
     keyboard = build_history_weeks_keyboard(make_plan_summaries(2), page=0, page_count=1)
 
     assert len(keyboard.inline_keyboard) == 2
-    action, id_ = decode_callback_data(keyboard.inline_keyboard[0][0].callback_data)
-    assert action == "history_week"
-    assert decode_history_week_id(id_) == ("plan-0", 0)
+    payload = decode_callback_data(keyboard.inline_keyboard[0][0].callback_data)
+    assert payload == HistoryWeek("plan-0", 0)
 
 
 def test_build_history_weeks_keyboard_paginates() -> None:
@@ -398,7 +382,7 @@ def test_build_history_weeks_keyboard_paginates() -> None:
 
     nav_row = keyboard.inline_keyboard[1]
     assert len(nav_row) == 1
-    assert decode_callback_data(nav_row[0].callback_data) == ("history_page", "1")
+    assert decode_callback_data(nav_row[0].callback_data) == SimpleAction("history_page", "1")
 
 
 def test_render_history_articles_text_shows_every_status_untranslated() -> None:
@@ -418,7 +402,7 @@ def test_build_history_articles_keyboard_back_button_returns_to_the_given_page()
     keyboard = build_history_articles_keyboard([], back_page=3)
 
     (back_button,) = keyboard.inline_keyboard[0]
-    assert decode_callback_data(back_button.callback_data) == ("history_page", "3")
+    assert decode_callback_data(back_button.callback_data) == SimpleAction("history_page", "3")
 
 
 def test_build_history_articles_keyboard_adds_no_row_for_articles_with_no_version_yet() -> None:
@@ -445,7 +429,7 @@ def test_build_history_articles_keyboard_error_status_gets_a_versions_only_row()
 
     assert len(keyboard.inline_keyboard) == 2
     (versions_button,) = keyboard.inline_keyboard[0]
-    assert decode_callback_data(versions_button.callback_data) == ("history_versions", "a-1:0")
+    assert decode_callback_data(versions_button.callback_data) == HistoryVersions("a-1", 0)
 
 
 def test_build_history_articles_keyboard_adds_a_download_row_per_article_with_content() -> None:
@@ -460,34 +444,15 @@ def test_build_history_articles_keyboard_adds_a_download_row_per_article_with_co
     # 3 download rows + trailing "Назад" row.
     assert len(keyboard.inline_keyboard) == 4
     docx_button, md_button, versions_button = keyboard.inline_keyboard[0]
-    assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == ("a-1", "docx")
-    assert decode_export_id(decode_callback_data(md_button.callback_data)[1]) == ("a-1", "md")
-    assert decode_callback_data(versions_button.callback_data) == ("history_versions", "a-1:1")
+    assert decode_callback_data(docx_button.callback_data) == ExportArticle("a-1", "docx")
+    assert decode_callback_data(md_button.callback_data) == ExportArticle("a-1", "md")
+    assert decode_callback_data(versions_button.callback_data) == HistoryVersions("a-1", 1)
     docx_button, md_button, versions_button = keyboard.inline_keyboard[1]
-    assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == ("a-2", "docx")
+    assert decode_callback_data(docx_button.callback_data) == ExportArticle("a-2", "docx")
     docx_button, md_button, versions_button = keyboard.inline_keyboard[2]
-    assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == ("a-3", "docx")
+    assert decode_callback_data(docx_button.callback_data) == ExportArticle("a-3", "docx")
     (back_button,) = keyboard.inline_keyboard[3]
-    assert decode_callback_data(back_button.callback_data) == ("history_page", "1")
-
-
-def test_encode_decode_history_week_callback_roundtrips() -> None:
-    data = encode_history_week_callback("plan-1", 2)
-
-    assert decode_history_week_id(decode_callback_data(data)[1]) == ("plan-1", 2)
-
-
-def test_history_week_callback_data_stays_under_limit_for_max_length_plan_id() -> None:
-    uuid_hex_plan_id = "a" * 32
-    data = encode_history_week_callback(uuid_hex_plan_id, 999)
-
-    assert len(data.encode("utf-8")) <= CALLBACK_DATA_LIMIT
-
-
-def test_encode_decode_history_page_callback_roundtrips() -> None:
-    data = encode_history_page_callback(5)
-
-    assert decode_callback_data(data) == ("history_page", "5")
+    assert decode_callback_data(back_button.callback_data) == SimpleAction("history_page", "1")
 
 
 @pytest.mark.asyncio
@@ -538,7 +503,7 @@ async def test_edit_history_articles_edits_the_message_with_a_back_button() -> N
     assert (chat_id, message_id) == (1, 9)
     assert "Topic A (zen) — queued" in text
     (back_button,) = keyboard.inline_keyboard[0]
-    assert decode_callback_data(back_button.callback_data) == ("history_page", "2")
+    assert decode_callback_data(back_button.callback_data) == SimpleAction("history_page", "2")
 
 
 @pytest.mark.asyncio
@@ -556,11 +521,11 @@ async def test_edit_history_articles_adds_a_download_row_for_a_ready_article() -
 
     _, _, _, keyboard = bot.edited_messages[0]
     docx_button, md_button, versions_button = keyboard.inline_keyboard[0]
-    assert decode_export_id(decode_callback_data(docx_button.callback_data)[1]) == ("a-1", "docx")
-    assert decode_export_id(decode_callback_data(md_button.callback_data)[1]) == ("a-1", "md")
-    assert decode_callback_data(versions_button.callback_data) == ("history_versions", "a-1:2")
+    assert decode_callback_data(docx_button.callback_data) == ExportArticle("a-1", "docx")
+    assert decode_callback_data(md_button.callback_data) == ExportArticle("a-1", "md")
+    assert decode_callback_data(versions_button.callback_data) == HistoryVersions("a-1", 2)
     (back_button,) = keyboard.inline_keyboard[1]
-    assert decode_callback_data(back_button.callback_data) == ("history_page", "2")
+    assert decode_callback_data(back_button.callback_data) == SimpleAction("history_page", "2")
 
 
 def test_chunk_text_returns_single_chunk_when_under_limit() -> None:
@@ -575,22 +540,6 @@ def test_chunk_text_splits_on_newline_boundary() -> None:
     assert chunks[1] == "tail"
 
 
-def test_encode_callback_data_round_trip() -> None:
-    data = encode_callback_data("regenerate", "abc123")
-    assert decode_callback_data(data) == ("regenerate", "abc123")
-
-
-def test_encode_callback_data_rejects_oversized_payload() -> None:
-    huge_id = "x" * CALLBACK_DATA_LIMIT
-    with pytest.raises(ValueError):
-        encode_callback_data("regenerate", huge_id)
-
-
-def test_decode_callback_data_rejects_unknown_code() -> None:
-    with pytest.raises(ValueError):
-        decode_callback_data("z:abc")
-
-
 @pytest.mark.asyncio
 async def test_comment_prompt_sends_message_with_skip_button_encoding_regenerate() -> None:
     bot = FakeBot()
@@ -602,7 +551,7 @@ async def test_comment_prompt_sends_message_with_skip_button_encoding_regenerate
     chat_id, _, keyboard = bot.sent_messages[0]
     assert chat_id == 1
     (skip_button,) = keyboard.inline_keyboard[0]
-    assert decode_callback_data(skip_button.callback_data) == ("regenerate", "item-1")
+    assert decode_callback_data(skip_button.callback_data) == SimpleAction("regenerate", "item-1")
 
 
 @pytest.mark.asyncio
@@ -613,7 +562,9 @@ async def test_comment_prompt_with_article_action_encodes_regenerate_article_on_
     await prompt.prompt_for_comment(chat_id=1, id_="article-1")
 
     (skip_button,) = bot.sent_messages[0][2].inline_keyboard[0]
-    assert decode_callback_data(skip_button.callback_data) == ("regenerate_article", "article-1")
+    assert decode_callback_data(skip_button.callback_data) == SimpleAction(
+        "regenerate_article", "article-1"
+    )
 
 
 def make_article_summary() -> ArticleSummary:
@@ -641,32 +592,6 @@ def make_version_view(content: str = "Hello, world.") -> ArticleVersionView:
     )
 
 
-def test_encode_decode_history_versions_callback_roundtrips() -> None:
-    data = encode_history_versions_callback("article-1", 2)
-
-    assert decode_history_versions_id(decode_callback_data(data)[1]) == ("article-1", 2)
-
-
-def test_history_versions_callback_data_stays_under_limit_for_max_length_article_id() -> None:
-    uuid_hex_article_id = "a" * 32
-    data = encode_history_versions_callback(uuid_hex_article_id, 999)
-
-    assert len(data.encode("utf-8")) <= CALLBACK_DATA_LIMIT
-
-
-def test_encode_decode_history_version_callback_roundtrips() -> None:
-    data = encode_history_version_callback("article-1", 7, 2)
-
-    assert decode_history_version_id(decode_callback_data(data)[1]) == ("article-1", 7, 2)
-
-
-def test_history_version_callback_data_stays_under_limit_for_max_length_article_id() -> None:
-    uuid_hex_article_id = "a" * 32
-    data = encode_history_version_callback(uuid_hex_article_id, 999999, 999)
-
-    assert len(data.encode("utf-8")) <= CALLBACK_DATA_LIMIT
-
-
 def test_render_history_versions_text_lists_every_version_newest_first() -> None:
     text = render_history_versions_text(
         make_article_summary(),
@@ -690,13 +615,12 @@ def test_build_history_versions_keyboard_one_button_per_version_and_a_back_butto
     keyboard = build_history_versions_keyboard("article-1", "plan-1", versions, back_page=3)
 
     assert len(keyboard.inline_keyboard) == 3
-    action, id_ = decode_callback_data(keyboard.inline_keyboard[0][0].callback_data)
-    assert action == "history_version"
-    assert decode_history_version_id(id_) == ("article-1", 2, 3)
-    action, id_ = decode_callback_data(keyboard.inline_keyboard[1][0].callback_data)
-    assert decode_history_version_id(id_) == ("article-1", 1, 3)
+    payload = decode_callback_data(keyboard.inline_keyboard[0][0].callback_data)
+    assert payload == HistoryVersion("article-1", 2, 3)
+    payload = decode_callback_data(keyboard.inline_keyboard[1][0].callback_data)
+    assert payload == HistoryVersion("article-1", 1, 3)
     (back_button,) = keyboard.inline_keyboard[2]
-    assert decode_callback_data(back_button.callback_data) == ("history_week", "plan-1:3")
+    assert decode_callback_data(back_button.callback_data) == HistoryWeek("plan-1", 3)
 
 
 def test_render_history_version_text_shows_header_and_content() -> None:
@@ -720,7 +644,7 @@ def test_build_history_version_keyboard_back_button_returns_to_the_versions_list
     keyboard = build_history_version_keyboard("article-1", back_page=3)
 
     (back_button,) = keyboard.inline_keyboard[0]
-    assert decode_callback_data(back_button.callback_data) == ("history_versions", "article-1:3")
+    assert decode_callback_data(back_button.callback_data) == HistoryVersions("article-1", 3)
 
 
 @pytest.mark.asyncio
@@ -741,11 +665,10 @@ async def test_edit_history_versions_edits_the_message_with_version_buttons() ->
     chat_id, message_id, text, keyboard = bot.edited_messages[0]
     assert (chat_id, message_id) == (1, 9)
     assert "Topic A (zen)" in text
-    action, id_ = decode_callback_data(keyboard.inline_keyboard[0][0].callback_data)
-    assert action == "history_version"
-    assert decode_history_version_id(id_) == ("a-1", 2, 2)
+    payload = decode_callback_data(keyboard.inline_keyboard[0][0].callback_data)
+    assert payload == HistoryVersion("a-1", 2, 2)
     (back_button,) = keyboard.inline_keyboard[1]
-    assert decode_callback_data(back_button.callback_data) == ("history_week", "plan-1:2")
+    assert decode_callback_data(back_button.callback_data) == HistoryWeek("plan-1", 2)
 
 
 @pytest.mark.asyncio
@@ -765,4 +688,4 @@ async def test_edit_history_version_edits_the_message_with_the_versions_content(
     assert (chat_id, message_id) == (1, 9)
     assert text.endswith("Hello, world.")
     (back_button,) = keyboard.inline_keyboard[0]
-    assert decode_callback_data(back_button.callback_data) == ("history_versions", "a-1:2")
+    assert decode_callback_data(back_button.callback_data) == HistoryVersions("a-1", 2)

@@ -51,14 +51,18 @@ from ..settings import SettingsService
 from ..telegram import (
     BotClient,
     CommentGatedRegeneration,
+    ExportArticle,
+    HistoryVersion,
+    HistoryVersions,
+    HistoryWeek,
     JoinRequestFlow,
+    Page,
     PlanReview,
+    SimpleAction,
     TelegramCommentPrompt,
     TelegramGateway,
     build_request_access_keyboard,
     decode_callback_data,
-    decode_export_id,
-    decode_page_id,
     handle_cancel_regenerate_plan,
     handle_confirm_regenerate_plan,
     handle_directions_command,
@@ -383,12 +387,12 @@ def _build_router(
         user_id = callback.from_user.id
 
         try:
-            action, id_ = decode_callback_data(callback.data or "")
+            payload = decode_callback_data(callback.data or "")
         except ValueError:
             await callback.answer()
             return
 
-        if action == "request_access":
+        if isinstance(payload, SimpleAction) and payload.action == "request_access":
             await callback.answer()
             await join_request_flow.request_access(user_id, callback.from_user.username)
             await gateway.edit_notice(
@@ -402,103 +406,112 @@ def _build_router(
             return
 
         try:
-            if action in ("approve_join", "decline_join"):
+            if isinstance(payload, SimpleAction) and payload.action in (
+                "approve_join",
+                "decline_join",
+            ):
                 if role != "owner":
                     await callback.answer(_OWNER_ONLY_TEXT, show_alert=True)
                     return
                 await callback.answer()
                 resolver_name = callback.from_user.full_name
-                if action == "approve_join":
+                if payload.action == "approve_join":
                     resolved = await join_request_flow.handle_approve(
-                        user_id, resolver_name, int(id_)
+                        user_id, resolver_name, int(payload.id_)
                     )
                 else:
                     resolved = await join_request_flow.handle_decline(
-                        user_id, resolver_name, int(id_)
+                        user_id, resolver_name, int(payload.id_)
                     )
                 if resolved is not None and resolved.status == "approved":
                     await sync_commands(bot_client, resolved.telegram_id, "content_manager")
-            elif action == "remove_member":
+            elif isinstance(payload, SimpleAction) and payload.action == "remove_member":
                 if role != "owner":
                     await callback.answer(_OWNER_ONLY_TEXT, show_alert=True)
                     return
                 await callback.answer()
-                await membership.remove_member(int(id_))
-            elif action == "persona_template":
+                await membership.remove_member(int(payload.id_))
+            elif isinstance(payload, SimpleAction) and payload.action == "persona_template":
                 if role != "owner":
                     await callback.answer(_OWNER_ONLY_TEXT, show_alert=True)
                     return
                 await callback.answer()
                 await handle_persona_template_callback(
-                    owner_settings_service, gateway, chat_id, int(id_)
+                    owner_settings_service, gateway, chat_id, int(payload.id_)
                 )
-            elif action == "page":
+            elif isinstance(payload, Page):
                 await callback.answer()
-                page_plan_id, page = decode_page_id(id_)
-                view = await plan.get(PlanId(page_plan_id))
-                await gateway.edit_plan(chat_id, message_id, view, page=page)
-            elif action == "history_page":
+                view = await plan.get(PlanId(payload.plan_id))
+                await gateway.edit_plan(chat_id, message_id, view, page=payload.page)
+            elif isinstance(payload, SimpleAction) and payload.action == "history_page":
                 await callback.answer()
-                await handle_history_page(plan, gateway, chat_id, message_id, int(id_))
-            elif action == "history_week":
+                await handle_history_page(plan, gateway, chat_id, message_id, int(payload.id_))
+            elif isinstance(payload, HistoryWeek):
                 await callback.answer()
-                await handle_history_week(plan, article, gateway, chat_id, message_id, id_)
-            elif action == "history_versions":
+                await handle_history_week(plan, article, gateway, chat_id, message_id, payload)
+            elif isinstance(payload, HistoryVersions):
                 await callback.answer()
-                await handle_history_versions(article, gateway, chat_id, message_id, id_)
-            elif action == "history_version":
+                await handle_history_versions(article, gateway, chat_id, message_id, payload)
+            elif isinstance(payload, HistoryVersion):
                 await callback.answer()
-                await handle_history_version(article, gateway, chat_id, message_id, id_)
-            elif action == "confirm_regenerate_plan":
+                await handle_history_version(article, gateway, chat_id, message_id, payload)
+            elif isinstance(payload, SimpleAction) and payload.action == "confirm_regenerate_plan":
                 await callback.answer()
                 await handle_confirm_regenerate_plan(
-                    plan, gateway, chat_id, message_id, PlanId(id_)
+                    plan, gateway, chat_id, message_id, PlanId(payload.id_)
                 )
-            elif action == "cancel_regenerate_plan":
+            elif isinstance(payload, SimpleAction) and payload.action == "cancel_regenerate_plan":
                 await callback.answer()
                 await handle_cancel_regenerate_plan(gateway, chat_id, message_id)
-            elif action == "retry":
+            elif isinstance(payload, SimpleAction) and payload.action == "retry":
                 await callback.answer()
-                await queue.retry(JobId(int(id_)))
-            elif action == "regenerate_article":
+                await queue.retry(JobId(int(payload.id_)))
+            elif isinstance(payload, SimpleAction) and payload.action == "regenerate_article":
                 will_enqueue = article_regeneration.has_matching_pending(
-                    chat_id, user_id, ArticleId(id_)
+                    chat_id, user_id, ArticleId(payload.id_)
                 )
                 await callback.answer("Принято, генерирую..." if will_enqueue else None)
                 if will_enqueue:
                     await gateway.edit_notice(chat_id, message_id, "⏳ Генерирую...")
-                await article_regeneration.request(chat_id, user_id, ArticleId(id_))
-            elif action == "approve":
+                await article_regeneration.request(chat_id, user_id, ArticleId(payload.id_))
+            elif isinstance(payload, SimpleAction) and payload.action == "approve":
                 await callback.answer()
                 # Accepting a ready Статья: no comment-wait, just the transition to "exported".
-                await article.mark_exported(ArticleId(id_))
-            elif action == "request_cover":
+                await article.mark_exported(ArticleId(payload.id_))
+            elif isinstance(payload, SimpleAction) and payload.action == "request_cover":
                 await callback.answer("Генерирую обложку...")
-                await plan.request_cover(PlanItemId(id_))
-            elif action == "export_article":
+                await plan.request_cover(PlanItemId(payload.id_))
+            elif isinstance(payload, ExportArticle):
                 await callback.answer()
-                export_article_id, export_format = decode_export_id(id_)
-                view = await article.get(ArticleId(export_article_id))
-                await gateway.send_article_document(chat_id, view, export_format)
-            elif action == "regenerate":
+                view = await article.get(ArticleId(payload.article_id))
+                await gateway.send_article_document(chat_id, view, payload.article_format)
+            elif isinstance(payload, SimpleAction) and payload.action == "regenerate":
                 will_enqueue = plan_review.will_enqueue_regeneration(
-                    chat_id, user_id, PlanItemId(id_)
+                    chat_id, user_id, PlanItemId(payload.id_)
                 )
                 await callback.answer("Принято, генерирую..." if will_enqueue else None)
                 if will_enqueue:
                     await gateway.edit_notice(chat_id, message_id, "⏳ Генерирую...")
-                await plan_review.handle_action(chat_id, user_id, PlanItemId(id_), action)
-            elif action == "approve_all":
+                await plan_review.handle_action(
+                    chat_id, user_id, PlanItemId(payload.id_), payload.action
+                )
+            elif isinstance(payload, SimpleAction) and payload.action == "approve_all":
                 await callback.answer()
-                await plan_review.handle_action(chat_id, user_id, PlanItemId(id_), action)
-                await _generate_articles_for_approved_plan(plan, article, PlanId(id_))
-            elif action == "delete":
+                await plan_review.handle_action(
+                    chat_id, user_id, PlanItemId(payload.id_), payload.action
+                )
+                await _generate_articles_for_approved_plan(plan, article, PlanId(payload.id_))
+            elif isinstance(payload, SimpleAction) and payload.action == "delete":
                 await callback.answer()
-                await plan_review.handle_action(chat_id, user_id, PlanItemId(id_), action)
+                await plan_review.handle_action(
+                    chat_id, user_id, PlanItemId(payload.id_), payload.action
+                )
                 await gateway.send_notice(chat_id, "Тема удалена.")
-            else:
+            elif isinstance(payload, SimpleAction):
                 await callback.answer()
-                await plan_review.handle_action(chat_id, user_id, PlanItemId(id_), action)
+                await plan_review.handle_action(
+                    chat_id, user_id, PlanItemId(payload.id_), payload.action
+                )
         except (DomainError, AccessError) as exc:
             await callback.answer(str(exc), show_alert=True)
 
