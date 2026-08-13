@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+from collections.abc import Awaitable, Callable
+from functools import wraps
 
 import asyncpg
 from aiogram import Bot, Dispatcher, Router
@@ -31,7 +33,7 @@ from aiogram.types import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from ..access import AccessError, JoinRequests, Membership, Role
+from ..access import COMMAND_ROLE, AccessError, JoinRequests, Membership, Role, require_role
 from ..config import Settings, load_settings
 from ..domain import (
     PLATFORMS,
@@ -148,15 +150,6 @@ class _AiogramBotClient:
         await self._bot.set_my_commands(commands, scope=scope)
 
 
-async def _role_for(
-    membership: Membership, gateway: TelegramGateway, chat_id: int, telegram_id: int
-) -> Role | None:
-    role = await membership.role_for(telegram_id)
-    if role is None:
-        await gateway.send_error(chat_id, _ACCESS_DENIED_TEXT)
-    return role
-
-
 async def _generate_articles_for_approved_plan(
     plan: Plan, article: Article, plan_id: PlanId
 ) -> None:
@@ -193,6 +186,29 @@ def _build_router(
 ) -> Router:
     router = Router()
 
+    def gated(
+        required: Role | None,
+    ) -> Callable[[Callable[..., Awaitable[None]]], Callable[..., Awaitable[None]]]:
+        """Resolve the caller's Role, refuse via `gateway.send_error` on mismatch, otherwise
+        run the wrapped handler. `@wraps` keeps the handler's own signature visible to aiogram's
+        argument injection, so `message`/`command` still reach it unchanged."""
+
+        def decorator(handler: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
+            @wraps(handler)
+            async def wrapper(message: Message, **kwargs: object) -> None:
+                if message.from_user is None:
+                    return
+                actual = await membership.role_for(message.from_user.id)
+                if not require_role(actual, required):
+                    text = _ACCESS_DENIED_TEXT if actual is None else _OWNER_ONLY_TEXT
+                    await gateway.send_error(message.chat.id, text)
+                    return
+                await handler(message, **kwargs)
+
+            return wrapper
+
+        return decorator
+
     @router.message(Command("start"))
     async def on_start(message: Message) -> None:
         if message.from_user is None:
@@ -211,74 +227,44 @@ def _build_router(
         await gateway.send_notice(chat_id, "Добро пожаловать. Список команд: /help")
 
     @router.message(Command("help"))
+    @gated(COMMAND_ROLE["help"])
     async def on_help(message: Message) -> None:
-        if message.from_user is None:
-            return
-        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
-        if role is None:
-            return
-        await gateway.send_notice(message.chat.id, render_help_text(role))
+        # gated() already confirmed message.from_user has a registered Role; re-fetch it here
+        # because on_help is the one handler that needs the actual value, not just pass/fail.
+        role = await membership.role_for(message.from_user.id)
+        if role is not None:
+            await gateway.send_notice(message.chat.id, render_help_text(role))
 
     @router.message(Command("topic"))
+    @gated(COMMAND_ROLE["topic"])
     async def on_topic(message: Message) -> None:
-        if message.from_user is None:
-            return
-        if await _role_for(membership, gateway, message.chat.id, message.from_user.id) is None:
-            return
         parts = (message.text or "").split(maxsplit=1)
         text = parts[1] if len(parts) > 1 else ""
         await handle_topic_command(plan, gateway, message.chat.id, text, tz=settings.timezone)
 
     @router.message(Command("generate_plan"))
+    @gated(COMMAND_ROLE["generate_plan"])
     async def on_generate_plan(message: Message) -> None:
-        if message.from_user is None:
-            return
-        if await _role_for(membership, gateway, message.chat.id, message.from_user.id) is None:
-            return
         await handle_generate_plan_command(plan, gateway, message.chat.id, tz=settings.timezone)
 
     @router.message(Command("history"))
+    @gated(COMMAND_ROLE["history"])
     async def on_history(message: Message) -> None:
-        if message.from_user is None:
-            return
-        if await _role_for(membership, gateway, message.chat.id, message.from_user.id) is None:
-            return
         await handle_history_command(plan, gateway, message.chat.id)
 
     @router.message(Command("members"))
+    @gated(COMMAND_ROLE["members"])
     async def on_members(message: Message) -> None:
-        if message.from_user is None:
-            return
-        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
-        if role is None:
-            return
-        if role != "owner":
-            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
-            return
         await handle_members_command(membership, gateway, message.chat.id)
 
     @router.message(Command("schedule"))
+    @gated(COMMAND_ROLE["schedule"])
     async def on_schedule(message: Message) -> None:
-        if message.from_user is None:
-            return
-        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
-        if role is None:
-            return
-        if role != "owner":
-            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
-            return
         await handle_schedule_command(schedule_settings, gateway, message.chat.id)
 
     @router.message(Command("set_schedule"))
+    @gated(COMMAND_ROLE["set_schedule"])
     async def on_set_schedule(message: Message, command: CommandObject) -> None:
-        if message.from_user is None:
-            return
-        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
-        if role is None:
-            return
-        if role != "owner":
-            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
-            return
         await handle_set_schedule_command(
             schedule_settings,
             scheduler,
@@ -289,93 +275,44 @@ def _build_router(
         )
 
     @router.message(Command("niche"))
+    @gated(COMMAND_ROLE["niche"])
     async def on_niche(message: Message) -> None:
-        if message.from_user is None:
-            return
-        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
-        if role is None:
-            return
-        if role != "owner":
-            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
-            return
         await handle_niche_command(owner_settings_service, gateway, message.chat.id)
 
     @router.message(Command("set_niche"))
+    @gated(COMMAND_ROLE["set_niche"])
     async def on_set_niche(message: Message, command: CommandObject) -> None:
-        if message.from_user is None:
-            return
-        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
-        if role is None:
-            return
-        if role != "owner":
-            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
-            return
         await handle_set_niche_command(
             owner_settings_service, gateway, message.chat.id, command.args or ""
         )
 
     @router.message(Command("directions"))
+    @gated(COMMAND_ROLE["directions"])
     async def on_directions(message: Message) -> None:
-        if message.from_user is None:
-            return
-        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
-        if role is None:
-            return
-        if role != "owner":
-            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
-            return
         await handle_directions_command(owner_settings_service, gateway, message.chat.id)
 
     @router.message(Command("set_directions"))
+    @gated(COMMAND_ROLE["set_directions"])
     async def on_set_directions(message: Message, command: CommandObject) -> None:
-        if message.from_user is None:
-            return
-        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
-        if role is None:
-            return
-        if role != "owner":
-            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
-            return
         await handle_set_directions_command(
             owner_settings_service, gateway, message.chat.id, command.args or ""
         )
 
     @router.message(Command("persona"))
+    @gated(COMMAND_ROLE["persona"])
     async def on_persona(message: Message) -> None:
-        if message.from_user is None:
-            return
-        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
-        if role is None:
-            return
-        if role != "owner":
-            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
-            return
         await handle_persona_command(owner_settings_service, gateway, message.chat.id)
 
     @router.message(Command("set_persona"))
+    @gated(COMMAND_ROLE["set_persona"])
     async def on_set_persona(message: Message, command: CommandObject) -> None:
-        if message.from_user is None:
-            return
-        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
-        if role is None:
-            return
-        if role != "owner":
-            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
-            return
         await handle_set_persona_command(
             owner_settings_service, gateway, message.chat.id, command.args or ""
         )
 
     @router.message(Command("settings"))
+    @gated(COMMAND_ROLE["settings"])
     async def on_settings(message: Message) -> None:
-        if message.from_user is None:
-            return
-        role = await _role_for(membership, gateway, message.chat.id, message.from_user.id)
-        if role is None:
-            return
-        if role != "owner":
-            await gateway.send_error(message.chat.id, _OWNER_ONLY_TEXT)
-            return
         await handle_settings_command(owner_settings_service, gateway, message.chat.id)
 
     @router.callback_query()
@@ -519,7 +456,9 @@ def _build_router(
     async def on_message(message: Message) -> None:
         if message.from_user is None:
             return
-        if await _role_for(membership, gateway, message.chat.id, message.from_user.id) is None:
+        actual = await membership.role_for(message.from_user.id)
+        if not require_role(actual, None):
+            await gateway.send_error(message.chat.id, _ACCESS_DENIED_TEXT)
             return
         chat_id, user_id, text = message.chat.id, message.from_user.id, message.text or ""
         consumed = await plan_review.handle_comment_reply(chat_id, user_id, text)
