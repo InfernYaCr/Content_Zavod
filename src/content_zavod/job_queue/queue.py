@@ -14,15 +14,12 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 import asyncpg
 
 from .errors import JobNotFound, JobQueueError
 from .models import JobId, JobResult, JobStatus
-
-_SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
 def _exponential_delay(base_delay: float, attempts: int) -> float:
@@ -61,9 +58,6 @@ class JobQueue:
         self._notification_max_attempts = notification_max_attempts
         self._notification_base_delay = notification_base_delay
         self._stuck_timeout = stuck_timeout
-
-    async def ensure_schema(self) -> None:
-        await self._pool.execute(_SCHEMA_SQL)
 
     async def enqueue(self, job_type: str, payload: dict[str, Any], idempotency_key: str) -> JobId:
         row = await self._pool.fetchrow(

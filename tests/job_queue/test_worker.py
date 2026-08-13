@@ -47,7 +47,6 @@ async def test_complete_writes_result_and_status_together(queue: JobQueue) -> No
 
 async def test_fail_requeues_with_backoff_until_attempts_are_exhausted(pool: asyncpg.Pool) -> None:
     queue = JobQueue(pool, max_attempts=2, base_delay=100.0)
-    await queue.ensure_schema()
     await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
 
@@ -70,7 +69,6 @@ async def test_fail_requeues_with_backoff_until_attempts_are_exhausted(pool: asy
 
 async def test_recover_stuck_requeues_abandoned_running_jobs(pool: asyncpg.Pool) -> None:
     queue = JobQueue(pool, stuck_timeout=timedelta(seconds=0))
-    await queue.ensure_schema()
     await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
     await queue.claim_next()
@@ -83,7 +81,6 @@ async def test_recover_stuck_requeues_abandoned_running_jobs(pool: asyncpg.Pool)
 
 async def test_stale_worker_cannot_complete_or_fail_a_reclaimed_job(pool: asyncpg.Pool) -> None:
     queue = JobQueue(pool, stuck_timeout=timedelta(seconds=0))
-    await queue.ensure_schema()
     await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
     stale = await queue.claim_next()
@@ -105,7 +102,6 @@ async def test_stale_worker_cannot_complete_or_fail_a_reclaimed_job(pool: asyncp
 
 async def test_heartbeat_prevents_recovery_until_lease_becomes_stale(pool: asyncpg.Pool) -> None:
     queue = JobQueue(pool, stuck_timeout=timedelta(seconds=10))
-    await queue.ensure_schema()
     await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
     claimed = await queue.claim_next()
@@ -234,7 +230,6 @@ async def test_run_worker_retries_a_failing_handler_and_eventually_marks_it_fail
     pool: asyncpg.Pool,
 ) -> None:
     queue = JobQueue(pool, max_attempts=2, base_delay=0.01)
-    await queue.ensure_schema()
     await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
 

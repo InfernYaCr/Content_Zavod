@@ -10,14 +10,11 @@ can be found and edited to "handled by X" once the first Owner responds.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
 import asyncpg
 
 from .errors import JoinRequestNotFound
-
-_SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 JoinRequestStatus = Literal["pending", "approved", "declined"]
 
@@ -42,9 +39,6 @@ class JoinRequestBroadcast:
 class JoinRequests:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
-
-    async def ensure_schema(self) -> None:
-        await self._pool.execute(_SCHEMA_SQL)
 
     async def create(self, telegram_id: int, username: str | None) -> int:
         row = await self._pool.fetchrow(

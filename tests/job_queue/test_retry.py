@@ -6,7 +6,6 @@ from content_zavod.job_queue import JobNotFound, JobQueue
 
 async def test_retry_resets_a_failed_job_to_queued(pool: asyncpg.Pool) -> None:
     queue = JobQueue(pool, max_attempts=1)
-    await queue.ensure_schema()
     await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {"week": 1}, idempotency_key="plan-1")
     claimed = await queue.claim_next()
@@ -20,7 +19,6 @@ async def test_retry_resets_a_failed_job_to_queued(pool: asyncpg.Pool) -> None:
 
 async def test_retry_lets_the_job_be_claimed_again(pool: asyncpg.Pool) -> None:
     queue = JobQueue(pool, max_attempts=1)
-    await queue.ensure_schema()
     await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {"week": 1}, idempotency_key="plan-1")
     first_claim = await queue.claim_next()

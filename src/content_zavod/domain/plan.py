@@ -31,7 +31,6 @@ import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from uuid import uuid4
 
 import asyncpg
@@ -59,9 +58,6 @@ class PlanItemDetail:
     keywords: list[str]
 
 
-_SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
-
-
 class Plan:
     def __init__(
         self,
@@ -73,9 +69,6 @@ class Plan:
         self._pool = pool
         self._queue = queue
         self._new_id = new_id
-
-    async def ensure_schema(self) -> None:
-        await self._pool.execute(_SCHEMA_SQL)
 
     async def find_active(self, week_label: str) -> PlanView | None:
         """The week's non-archived Plan, if one exists (used by the manual /generate_plan command)."""

@@ -18,22 +18,17 @@ async def queue(pool: asyncpg.Pool) -> AsyncIterator[JobQueue]:
         notification_base_delay=0.01,
         stuck_timeout=timedelta(seconds=0),
     )
-    await job_queue.ensure_schema()
     yield job_queue
 
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def plan(pool: asyncpg.Pool, queue: JobQueue) -> AsyncIterator[Plan]:
-    domain_plan = Plan(pool, queue)
-    await domain_plan.ensure_schema()
-    yield domain_plan
+    yield Plan(pool, queue)
 
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def article(pool: asyncpg.Pool, queue: JobQueue) -> AsyncIterator[Article]:
-    domain_article = Article(pool, queue)
-    await domain_article.ensure_schema()
-    yield domain_article
+    yield Article(pool, queue)
 
 
 @pytest_asyncio.fixture(autouse=True, loop_scope="session")

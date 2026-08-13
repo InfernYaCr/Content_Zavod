@@ -9,11 +9,9 @@ what `main()` falls back to at startup.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 import asyncpg
 
-_SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 _ROW_ID = "weekly_plan_trigger"
 
 
@@ -27,9 +25,6 @@ class ScheduleConfig:
 class ScheduleSettings:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
-
-    async def ensure_schema(self) -> None:
-        await self._pool.execute(_SCHEMA_SQL)
 
     async def get(self) -> ScheduleConfig | None:
         row = await self._pool.fetchrow(

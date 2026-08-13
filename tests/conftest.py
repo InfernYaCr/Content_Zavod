@@ -7,6 +7,8 @@ import pytest
 import pytest_asyncio
 from testcontainers.community.postgres import PostgresContainer
 
+from content_zavod.migrations import run_migrations
+
 
 @pytest.fixture(scope="session")
 def postgres_container() -> AsyncIterator[PostgresContainer]:
@@ -25,6 +27,7 @@ async def pool(postgres_container: PostgresContainer) -> AsyncIterator[asyncpg.P
     )
     assert db_pool is not None
     try:
+        await run_migrations(db_pool)
         yield db_pool
     finally:
         await db_pool.close()
