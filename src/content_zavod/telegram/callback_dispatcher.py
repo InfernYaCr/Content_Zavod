@@ -28,6 +28,7 @@ from ..job_queue import JobId, JobQueue
 from ..settings import SettingsService
 from .callback_codec import (
     ACTION_ROLE,
+    Action,
     CallbackPayload,
     ExportArticle,
     HistoryVersion,
@@ -52,8 +53,8 @@ from .persona_command import handle_persona_template_callback
 from .plan_review import PlanReview
 from .types import ArticleId, PlanId, PlanItemId
 
-_ACCESS_DENIED_TEXT = "Доступ запрещён. Обратитесь к владельцу бота, чтобы получить роль."
-_OWNER_ONLY_TEXT = "Эта команда доступна только владельцу."
+ACCESS_DENIED_TEXT = "Доступ запрещён. Обратитесь к владельцу бота, чтобы получить роль."
+OWNER_ONLY_TEXT = "Эта команда доступна только владельцу."
 
 
 @dataclass(frozen=True)
@@ -157,12 +158,22 @@ class CallbackDispatcher:
             return
 
         role = await self._membership.role_for(callback_input.user_id)
-        deny_text = _ACCESS_DENIED_TEXT if role is None else _OWNER_ONLY_TEXT
+        deny_text = ACCESS_DENIED_TEXT if role is None else OWNER_ONLY_TEXT
 
         try:
             await self._dispatch_gated(callback_input, payload, role, deny_text, answer)
         except (DomainError, AccessError) as exc:
             await answer(str(exc), show_alert=True)
+
+    async def _authorized(
+        self, action: Action, role: Role | None, deny_text: str, answer: CallbackAnswerer
+    ) -> bool:
+        """First line of every branch below: True to proceed, False (already answered
+        with `deny_text`, alerting) to skip the branch's collaborator entirely."""
+        if require_role(role, ACTION_ROLE[action]):
+            return True
+        await answer(deny_text, show_alert=True)
+        return False
 
     async def _dispatch_gated(
         self,
@@ -178,8 +189,7 @@ class CallbackDispatcher:
 
         match payload:
             case SimpleAction(action="approve_join", id_=id_):
-                if not require_role(role, ACTION_ROLE["approve_join"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("approve_join", role, deny_text, answer):
                     return
                 await answer()
                 resolved = await self._join_request_flow.handle_approve(
@@ -188,87 +198,75 @@ class CallbackDispatcher:
                 if resolved is not None and resolved.status == "approved":
                     await sync_commands(self._bot_client, resolved.telegram_id, "content_manager")
             case SimpleAction(action="decline_join", id_=id_):
-                if not require_role(role, ACTION_ROLE["decline_join"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("decline_join", role, deny_text, answer):
                     return
                 await answer()
                 await self._join_request_flow.handle_decline(
                     user_id, self._resolver_name(callback_input), int(id_)
                 )
             case SimpleAction(action="remove_member", id_=id_):
-                if not require_role(role, ACTION_ROLE["remove_member"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("remove_member", role, deny_text, answer):
                     return
                 await answer()
                 await self._membership.remove_member(int(id_))
             case SimpleAction(action="persona_template", id_=id_):
-                if not require_role(role, ACTION_ROLE["persona_template"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("persona_template", role, deny_text, answer):
                     return
                 await answer()
                 await handle_persona_template_callback(
                     self._owner_settings_service, self._gateway, chat_id, int(id_)
                 )
             case Page(plan_id=plan_id, page=page):
-                if not require_role(role, ACTION_ROLE["page"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("page", role, deny_text, answer):
                     return
                 await answer()
                 view = await self._plan.get(PlanId(plan_id))
                 await self._gateway.edit_plan(chat_id, message_id, view, page=page)
             case SimpleAction(action="history_page", id_=id_):
-                if not require_role(role, ACTION_ROLE["history_page"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("history_page", role, deny_text, answer):
                     return
                 await answer()
                 await handle_history_page(self._plan, self._gateway, chat_id, message_id, int(id_))
             case HistoryWeek():
-                if not require_role(role, ACTION_ROLE["history_week"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("history_week", role, deny_text, answer):
                     return
                 await answer()
                 await handle_history_week(
                     self._plan, self._article, self._gateway, chat_id, message_id, payload
                 )
             case HistoryVersions():
-                if not require_role(role, ACTION_ROLE["history_versions"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("history_versions", role, deny_text, answer):
                     return
                 await answer()
                 await handle_history_versions(
                     self._article, self._gateway, chat_id, message_id, payload
                 )
             case HistoryVersion():
-                if not require_role(role, ACTION_ROLE["history_version"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("history_version", role, deny_text, answer):
                     return
                 await answer()
                 await handle_history_version(
                     self._article, self._gateway, chat_id, message_id, payload
                 )
             case SimpleAction(action="confirm_regenerate_plan", id_=id_):
-                if not require_role(role, ACTION_ROLE["confirm_regenerate_plan"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("confirm_regenerate_plan", role, deny_text, answer):
                     return
                 await answer()
                 await handle_confirm_regenerate_plan(
                     self._plan, self._gateway, chat_id, message_id, PlanId(id_)
                 )
             case SimpleAction(action="cancel_regenerate_plan"):
-                if not require_role(role, ACTION_ROLE["cancel_regenerate_plan"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("cancel_regenerate_plan", role, deny_text, answer):
                     return
                 await answer()
                 await handle_cancel_regenerate_plan(self._gateway, chat_id, message_id)
             case SimpleAction(action="retry", id_=id_):
-                if not require_role(role, ACTION_ROLE["retry"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("retry", role, deny_text, answer):
                     return
                 await answer()
                 await self._queue.retry(JobId(int(id_)))
             case SimpleAction(action="regenerate_article", id_=id_):
-                if not require_role(role, ACTION_ROLE["regenerate_article"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("regenerate_article", role, deny_text, answer):
                     return
                 will_enqueue = self._article_regeneration.has_matching_pending(
                     chat_id, user_id, ArticleId(id_)
@@ -278,28 +276,24 @@ class CallbackDispatcher:
                     await self._gateway.edit_notice(chat_id, message_id, "⏳ Генерирую...")
                 await self._article_regeneration.request(chat_id, user_id, ArticleId(id_))
             case SimpleAction(action="approve", id_=id_):
-                if not require_role(role, ACTION_ROLE["approve"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("approve", role, deny_text, answer):
                     return
                 await answer()
                 # Accepting a ready Статья: no comment-wait, just the transition to "exported".
                 await self._article.mark_exported(ArticleId(id_))
             case SimpleAction(action="request_cover", id_=id_):
-                if not require_role(role, ACTION_ROLE["request_cover"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("request_cover", role, deny_text, answer):
                     return
                 await answer("Генерирую обложку...")
                 await self._plan.request_cover(PlanItemId(id_))
             case ExportArticle(article_id=article_id, article_format=article_format):
-                if not require_role(role, ACTION_ROLE["export_article"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("export_article", role, deny_text, answer):
                     return
                 await answer()
                 view = await self._article.get(ArticleId(article_id))
                 await self._gateway.send_article_document(chat_id, view, article_format)
             case SimpleAction(action="regenerate", id_=id_):
-                if not require_role(role, ACTION_ROLE["regenerate"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("regenerate", role, deny_text, answer):
                     return
                 plan_item_id = PlanItemId(id_)
                 will_enqueue = self._plan_review.will_enqueue_regeneration(
@@ -310,8 +304,7 @@ class CallbackDispatcher:
                     await self._gateway.edit_notice(chat_id, message_id, "⏳ Генерирую...")
                 await self._plan_review.handle_action(chat_id, user_id, plan_item_id, "regenerate")
             case SimpleAction(action="approve_all", id_=id_):
-                if not require_role(role, ACTION_ROLE["approve_all"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("approve_all", role, deny_text, answer):
                     return
                 await answer()
                 await self._plan_review.handle_action(
@@ -319,8 +312,7 @@ class CallbackDispatcher:
                 )
                 await _generate_articles_for_approved_plan(self._plan, self._article, PlanId(id_))
             case SimpleAction(action="delete", id_=id_):
-                if not require_role(role, ACTION_ROLE["delete"]):
-                    await answer(deny_text, show_alert=True)
+                if not await self._authorized("delete", role, deny_text, answer):
                     return
                 await answer()
                 await self._plan_review.handle_action(chat_id, user_id, PlanItemId(id_), "delete")

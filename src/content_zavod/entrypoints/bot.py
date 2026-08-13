@@ -47,8 +47,11 @@ from ..owner_settings import OwnerSettingsStore
 from ..scheduling import ScheduleSettings, schedule_weekly_plan_trigger
 from ..settings import SettingsService
 from ..telegram import (
+    ACCESS_DENIED_TEXT,
+    OWNER_ONLY_TEXT,
     ArticleId,
     BotClient,
+    CallbackDispatcher,
     CommentGatedRegeneration,
     JoinRequestFlow,
     PlanReview,
@@ -71,11 +74,6 @@ from ..telegram import (
     render_help_text,
     sync_commands,
     unpack_callback_query,
-)
-from ..telegram.callback_dispatcher import (
-    _ACCESS_DENIED_TEXT,
-    _OWNER_ONLY_TEXT,
-    CallbackDispatcher,
 )
 from ._process import register_shutdown
 
@@ -167,7 +165,7 @@ def _build_router(
                     return
                 actual = await membership.role_for(message.from_user.id)
                 if not require_role(actual, required):
-                    text = _ACCESS_DENIED_TEXT if actual is None else _OWNER_ONLY_TEXT
+                    text = ACCESS_DENIED_TEXT if actual is None else OWNER_ONLY_TEXT
                     await gateway.send_error(message.chat.id, text)
                     return
                 await handler(message, **kwargs)
@@ -312,7 +310,7 @@ def _build_router(
             return
         actual = await membership.role_for(message.from_user.id)
         if not require_role(actual, None):
-            await gateway.send_error(message.chat.id, _ACCESS_DENIED_TEXT)
+            await gateway.send_error(message.chat.id, ACCESS_DENIED_TEXT)
             return
         chat_id, user_id, text = message.chat.id, message.from_user.id, message.text or ""
         consumed = await plan_review.handle_comment_reply(chat_id, user_id, text)
