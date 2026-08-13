@@ -12,7 +12,14 @@ from content_zavod.domain import (
     PlanId,
     PlanSummary,
 )
-from content_zavod.telegram.gateway import ITEMS_PER_PAGE, TelegramGateway, decode_callback_data
+from content_zavod.telegram.callback_codec import (
+    HistoryVersion,
+    HistoryVersions,
+    HistoryWeek,
+    SimpleAction,
+    decode_callback_data,
+)
+from content_zavod.telegram.gateway import ITEMS_PER_PAGE, TelegramGateway
 from content_zavod.telegram.history_command import (
     handle_history_command,
     handle_history_page,
@@ -169,7 +176,9 @@ async def test_history_week_edits_the_message_with_that_weeks_articles() -> None
     )
     gateway = TelegramGateway(FakeBot())
 
-    await handle_history_week(plans, articles, gateway, chat_id=1, message_id=5, id_="plan-1:0")
+    await handle_history_week(
+        plans, articles, gateway, chat_id=1, message_id=5, payload=HistoryWeek("plan-1", 0)
+    )
 
     chat_id, message_id, text, keyboard = gateway._bot.edited_messages[0]
     assert (chat_id, message_id) == (1, 5)
@@ -178,8 +187,7 @@ async def test_history_week_edits_the_message_with_that_weeks_articles() -> None
     # A single "Назад" button, returning to the week list's page 0.
     assert len(keyboard.inline_keyboard) == 1
     back_button = keyboard.inline_keyboard[0][0]
-    action, id_ = decode_callback_data(back_button.callback_data)
-    assert (action, id_) == ("history_page", "0")
+    assert decode_callback_data(back_button.callback_data) == SimpleAction("history_page", "0")
 
 
 @pytest.mark.asyncio
@@ -188,7 +196,9 @@ async def test_history_week_with_no_articles_yet() -> None:
     articles = FakeArticles({})
     gateway = TelegramGateway(FakeBot())
 
-    await handle_history_week(plans, articles, gateway, chat_id=1, message_id=5, id_="plan-1:0")
+    await handle_history_week(
+        plans, articles, gateway, chat_id=1, message_id=5, payload=HistoryWeek("plan-1", 0)
+    )
 
     _, _, text, _ = gateway._bot.edited_messages[0]
     assert "Статей пока нет" in text
@@ -216,13 +226,15 @@ async def test_history_versions_edits_the_message_with_that_articles_versions() 
     )
     gateway = TelegramGateway(FakeBot())
 
-    await handle_history_versions(articles, gateway, chat_id=1, message_id=5, id_="a-1:0")
+    await handle_history_versions(
+        articles, gateway, chat_id=1, message_id=5, payload=HistoryVersions("a-1", 0)
+    )
 
     chat_id, message_id, text, keyboard = gateway._bot.edited_messages[0]
     assert (chat_id, message_id) == (1, 5)
     assert "Topic A (zen)" in text
-    action, id_ = decode_callback_data(keyboard.inline_keyboard[-1][0].callback_data)
-    assert (action, id_) == ("history_week", "plan-1:0")
+    payload = decode_callback_data(keyboard.inline_keyboard[-1][0].callback_data)
+    assert payload == HistoryWeek("plan-1", 0)
 
 
 @pytest.mark.asyncio
@@ -233,7 +245,9 @@ async def test_history_versions_with_no_versions_yet() -> None:
     articles = FakeArticles({"plan-1": [article_summary]}, plan_id_by_article={"a-1": "plan-1"})
     gateway = TelegramGateway(FakeBot())
 
-    await handle_history_versions(articles, gateway, chat_id=1, message_id=5, id_="a-1:0")
+    await handle_history_versions(
+        articles, gateway, chat_id=1, message_id=5, payload=HistoryVersions("a-1", 0)
+    )
 
     _, _, text, _ = gateway._bot.edited_messages[0]
     assert "Версий пока нет" in text
@@ -252,10 +266,12 @@ async def test_history_version_edits_the_message_with_that_versions_content() ->
     )
     gateway = TelegramGateway(FakeBot())
 
-    await handle_history_version(articles, gateway, chat_id=1, message_id=5, id_="a-1:2:0")
+    await handle_history_version(
+        articles, gateway, chat_id=1, message_id=5, payload=HistoryVersion("a-1", 2, 0)
+    )
 
     chat_id, message_id, text, keyboard = gateway._bot.edited_messages[0]
     assert (chat_id, message_id) == (1, 5)
     assert text.endswith("Hello, world.")
     (back_button,) = keyboard.inline_keyboard[0]
-    assert decode_callback_data(back_button.callback_data) == ("history_versions", "a-1:0")
+    assert decode_callback_data(back_button.callback_data) == HistoryVersions("a-1", 0)

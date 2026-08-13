@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import date
-from typing import Literal, Protocol
+from typing import Protocol
 
 from aiogram.types import (
     BotCommand,
@@ -12,6 +12,16 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 
+from .callback_codec import (
+    Action,
+    ExportArticle,
+    HistoryVersion,
+    HistoryVersions,
+    HistoryWeek,
+    Page,
+    SimpleAction,
+    encode_callback_data,
+)
 from .types import (
     ArticleFormat,
     ArticleSummary,
@@ -25,130 +35,7 @@ from .types import (
 )
 
 MESSAGE_LIMIT = 4096
-CALLBACK_DATA_LIMIT = 64
 ITEMS_PER_PAGE = 8
-
-Action = Literal[
-    "delete",
-    "regenerate",
-    "approve_all",
-    "regenerate_article",
-    "request_cover",
-    "approve",
-    "export_article",
-    "page",
-    "confirm_regenerate_plan",
-    "cancel_regenerate_plan",
-    "retry",
-    "request_access",
-    "approve_join",
-    "decline_join",
-    "remove_member",
-    "history_page",
-    "history_week",
-    "history_versions",
-    "history_version",
-    "persona_template",
-]
-
-# Codes are 1-2 chars to leave room for id payloads within CALLBACK_DATA_LIMIT.
-# "page" packs "<plan_id>:<page>" into its id via encode_page_callback/decode_page_id -
-# for a 32-char uuid4().hex plan id that's "pg:" + 32 + ":" + up to 3 digits, ~38 bytes.
-# "export_article" similarly packs "<article_id>:<format>" via encode_export_callback/decode_export_id.
-_ACTION_CODES: dict[Action, str] = {
-    "delete": "d",
-    "regenerate": "r",
-    "approve_all": "a",
-    "regenerate_article": "ar",
-    "request_cover": "cv",
-    "approve": "p",
-    "export_article": "ex",
-    "page": "pg",
-    "confirm_regenerate_plan": "cy",
-    "cancel_regenerate_plan": "cn",
-    "retry": "rt",
-    "request_access": "ra",
-    "approve_join": "aj",
-    "decline_join": "dj",
-    "remove_member": "rm",
-    "history_page": "hp",
-    "history_week": "hw",
-    "history_versions": "hv",
-    "history_version": "hd",
-    "persona_template": "pt",
-}
-_CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
-
-
-def encode_callback_data(action: Action, id_: str) -> str:
-    data = f"{_ACTION_CODES[action]}:{id_}"
-    if len(data.encode("utf-8")) > CALLBACK_DATA_LIMIT:
-        raise ValueError(f"callback_data exceeds {CALLBACK_DATA_LIMIT} bytes: {data!r}")
-    return data
-
-
-def decode_callback_data(data: str) -> tuple[Action, str]:
-    code, separator, id_ = data.partition(":")
-    if not separator or code not in _CODE_ACTIONS:
-        raise ValueError(f"unrecognized callback_data: {data!r}")
-    return _CODE_ACTIONS[code], id_
-
-
-def encode_page_callback(plan_id: str, page: int) -> str:
-    return encode_callback_data("page", f"{plan_id}:{page}")
-
-
-def decode_page_id(id_: str) -> tuple[str, int]:
-    plan_id, _, page = id_.rpartition(":")
-    return plan_id, int(page)
-
-
-def encode_history_page_callback(page: int) -> str:
-    return encode_callback_data("history_page", str(page))
-
-
-def encode_history_week_callback(plan_id: str, page: int) -> str:
-    """`page` is the week-list page the button was shown on, so the article screen's
-    "Назад" button can return to that exact page instead of always page 0."""
-    return encode_callback_data("history_week", f"{plan_id}:{page}")
-
-
-def decode_history_week_id(id_: str) -> tuple[str, int]:
-    plan_id, _, page = id_.rpartition(":")
-    return plan_id, int(page)
-
-
-def encode_history_versions_callback(article_id: str, back_page: int) -> str:
-    """`back_page` is the week-list page to return to once the whole (versions -> article
-    list -> week list) back chain unwinds - the article list itself is re-derived from the
-    Статья's plan_id, so it doesn't need to travel in this id."""
-    return encode_callback_data("history_versions", f"{article_id}:{back_page}")
-
-
-def decode_history_versions_id(id_: str) -> tuple[str, int]:
-    article_id, _, back_page = id_.rpartition(":")
-    return article_id, int(back_page)
-
-
-def encode_history_version_callback(article_id: str, version_id: int, back_page: int) -> str:
-    return encode_callback_data("history_version", f"{article_id}:{version_id}:{back_page}")
-
-
-def decode_history_version_id(id_: str) -> tuple[str, int, int]:
-    rest, _, back_page = id_.rpartition(":")
-    article_id, _, version_id = rest.rpartition(":")
-    return article_id, int(version_id), int(back_page)
-
-
-def encode_export_callback(article_id: str, article_format: ArticleFormat) -> str:
-    return encode_callback_data("export_article", f"{article_id}:{article_format}")
-
-
-def decode_export_id(id_: str) -> tuple[str, ArticleFormat]:
-    article_id, separator, article_format = id_.rpartition(":")
-    if not separator or article_format not in ("docx", "md"):
-        raise ValueError(f"unrecognized export callback id: {id_!r}")
-    return article_id, article_format  # type: ignore[return-value]
 
 
 def chunk_text(text: str, limit: int = MESSAGE_LIMIT) -> list[str]:
@@ -229,11 +116,11 @@ def build_plan_keyboard(plan: PlanView, *, page: int = 0) -> InlineKeyboardMarku
             [
                 InlineKeyboardButton(
                     text="🔄 Перегенерировать",
-                    callback_data=encode_callback_data("regenerate", item.id),
+                    callback_data=encode_callback_data(SimpleAction("regenerate", item.id)),
                 ),
                 InlineKeyboardButton(
                     text="❌ Удалить",
-                    callback_data=encode_callback_data("delete", item.id),
+                    callback_data=encode_callback_data(SimpleAction("delete", item.id)),
                 ),
             ]
         )
@@ -242,13 +129,15 @@ def build_plan_keyboard(plan: PlanView, *, page: int = 0) -> InlineKeyboardMarku
         if page > 0:
             nav_row.append(
                 InlineKeyboardButton(
-                    text="◀ Назад", callback_data=encode_page_callback(plan.id, page - 1)
+                    text="◀ Назад",
+                    callback_data=encode_callback_data(Page(plan.id, page - 1)),
                 )
             )
         if page < page_count - 1:
             nav_row.append(
                 InlineKeyboardButton(
-                    text="Вперёд ▶", callback_data=encode_page_callback(plan.id, page + 1)
+                    text="Вперёд ▶",
+                    callback_data=encode_callback_data(Page(plan.id, page + 1)),
                 )
             )
         if nav_row:
@@ -257,7 +146,7 @@ def build_plan_keyboard(plan: PlanView, *, page: int = 0) -> InlineKeyboardMarku
         [
             InlineKeyboardButton(
                 text="✅ Утвердить всё",
-                callback_data=encode_callback_data("approve_all", plan.id),
+                callback_data=encode_callback_data(SimpleAction("approve_all", plan.id)),
             )
         ]
     )
@@ -286,7 +175,7 @@ def build_history_weeks_keyboard(
         [
             InlineKeyboardButton(
                 text=f"{format_week_range(item.week_label)} — {item.status}",
-                callback_data=encode_history_week_callback(item.id, page),
+                callback_data=encode_callback_data(HistoryWeek(item.id, page)),
             )
         ]
         for item in plans_page
@@ -296,13 +185,15 @@ def build_history_weeks_keyboard(
         if page > 0:
             nav_row.append(
                 InlineKeyboardButton(
-                    text="◀ Назад", callback_data=encode_history_page_callback(page - 1)
+                    text="◀ Назад",
+                    callback_data=encode_callback_data(SimpleAction("history_page", str(page - 1))),
                 )
             )
         if page < page_count - 1:
             nav_row.append(
                 InlineKeyboardButton(
-                    text="Вперёд ▶", callback_data=encode_history_page_callback(page + 1)
+                    text="Вперёд ▶",
+                    callback_data=encode_callback_data(SimpleAction("history_page", str(page + 1))),
                 )
             )
         if nav_row:
@@ -328,9 +219,13 @@ def _export_button_row(
     /history download row (#28/#30) - only the labels differ between the two call sites."""
     return [
         InlineKeyboardButton(
-            text=docx_label, callback_data=encode_export_callback(article_id, "docx")
+            text=docx_label,
+            callback_data=encode_callback_data(ExportArticle(article_id, "docx")),
         ),
-        InlineKeyboardButton(text=md_label, callback_data=encode_export_callback(article_id, "md")),
+        InlineKeyboardButton(
+            text=md_label,
+            callback_data=encode_callback_data(ExportArticle(article_id, "md")),
+        ),
     ]
 
 
@@ -368,14 +263,15 @@ def build_history_articles_keyboard(
         row.append(
             InlineKeyboardButton(
                 text=f"🕓 {index}. Версии",
-                callback_data=encode_history_versions_callback(item.id, back_page),
+                callback_data=encode_callback_data(HistoryVersions(item.id, back_page)),
             )
         )
         rows.append(row)
     rows.append(
         [
             InlineKeyboardButton(
-                text="◀ Назад", callback_data=encode_history_page_callback(back_page)
+                text="◀ Назад",
+                callback_data=encode_callback_data(SimpleAction("history_page", str(back_page))),
             )
         ]
     )
@@ -403,12 +299,14 @@ def build_history_versions_keyboard(
     """One button per Версия, numbered to match `render_history_versions_text`, opening that
     Версия's content (#26). "Назад" returns to this Статья's row in the article list, which is
     re-derived from `plan_id` rather than carried through the versions id (see
-    `encode_history_versions_callback`)."""
+    `HistoryVersions`)."""
     rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(
                 text=f"{index}. {version.created_at:%d.%m %H:%M}",
-                callback_data=encode_history_version_callback(article_id, version.id, back_page),
+                callback_data=encode_callback_data(
+                    HistoryVersion(article_id, version.id, back_page)
+                ),
             )
         ]
         for index, version in enumerate(versions, start=1)
@@ -416,7 +314,8 @@ def build_history_versions_keyboard(
     rows.append(
         [
             InlineKeyboardButton(
-                text="◀ Назад", callback_data=encode_history_week_callback(plan_id, back_page)
+                text="◀ Назад",
+                callback_data=encode_callback_data(HistoryWeek(plan_id, back_page)),
             )
         ]
     )
@@ -444,7 +343,7 @@ def build_history_version_keyboard(article_id: str, *, back_page: int) -> Inline
             [
                 InlineKeyboardButton(
                     text="◀ Назад",
-                    callback_data=encode_history_versions_callback(article_id, back_page),
+                    callback_data=encode_callback_data(HistoryVersions(article_id, back_page)),
                 )
             ]
         ]
@@ -457,7 +356,7 @@ def build_skip_keyboard(id_: str, action: Action = "regenerate") -> InlineKeyboa
             [
                 InlineKeyboardButton(
                     text="Пропустить",
-                    callback_data=encode_callback_data(action, id_),
+                    callback_data=encode_callback_data(SimpleAction(action, id_)),
                 )
             ]
         ]
@@ -469,10 +368,14 @@ def build_confirm_keyboard(id_: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="✅ Да", callback_data=encode_callback_data("confirm_regenerate_plan", id_)
+                    text="✅ Да",
+                    callback_data=encode_callback_data(
+                        SimpleAction("confirm_regenerate_plan", id_)
+                    ),
                 ),
                 InlineKeyboardButton(
-                    text="❌ Нет", callback_data=encode_callback_data("cancel_regenerate_plan", id_)
+                    text="❌ Нет",
+                    callback_data=encode_callback_data(SimpleAction("cancel_regenerate_plan", id_)),
                 ),
             ]
         ]
@@ -486,7 +389,10 @@ def build_persona_keyboard(templates: Sequence[tuple[str, str]]) -> InlineKeyboa
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=title, callback_data=encode_callback_data("persona_template", str(index))
+                    text=title,
+                    callback_data=encode_callback_data(
+                        SimpleAction("persona_template", str(index))
+                    ),
                 )
             ]
             for index, (title, _text) in enumerate(templates)
@@ -499,7 +405,8 @@ def build_retry_keyboard(job_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🔁 Повторить", callback_data=encode_callback_data("retry", str(job_id))
+                    text="🔁 Повторить",
+                    callback_data=encode_callback_data(SimpleAction("retry", str(job_id))),
                 )
             ]
         ]
@@ -512,7 +419,9 @@ def build_request_access_keyboard(telegram_id: int) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="Запросить доступ",
-                    callback_data=encode_callback_data("request_access", str(telegram_id)),
+                    callback_data=encode_callback_data(
+                        SimpleAction("request_access", str(telegram_id))
+                    ),
                 )
             ]
         ]
@@ -525,11 +434,15 @@ def build_join_request_keyboard(join_request_id: int) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="✅ Одобрить",
-                    callback_data=encode_callback_data("approve_join", str(join_request_id)),
+                    callback_data=encode_callback_data(
+                        SimpleAction("approve_join", str(join_request_id))
+                    ),
                 ),
                 InlineKeyboardButton(
                     text="❌ Отклонить",
-                    callback_data=encode_callback_data("decline_join", str(join_request_id)),
+                    callback_data=encode_callback_data(
+                        SimpleAction("decline_join", str(join_request_id))
+                    ),
                 ),
             ]
         ]
@@ -542,7 +455,7 @@ def build_members_keyboard(members: list[tuple[int, str]]) -> InlineKeyboardMark
         [
             InlineKeyboardButton(
                 text=f"❌ Удалить {telegram_id} ({role})",
-                callback_data=encode_callback_data("remove_member", str(telegram_id)),
+                callback_data=encode_callback_data(SimpleAction("remove_member", str(telegram_id))),
             )
         ]
         for telegram_id, role in members
@@ -557,17 +470,19 @@ def build_article_keyboard(article_id: str, plan_item_id: str) -> InlineKeyboard
             [
                 InlineKeyboardButton(
                     text="🔄 Перегенерировать",
-                    callback_data=encode_callback_data("regenerate_article", article_id),
+                    callback_data=encode_callback_data(
+                        SimpleAction("regenerate_article", article_id)
+                    ),
                 ),
                 InlineKeyboardButton(
                     text="✅",
-                    callback_data=encode_callback_data("approve", article_id),
+                    callback_data=encode_callback_data(SimpleAction("approve", article_id)),
                 ),
             ],
             [
                 InlineKeyboardButton(
                     text="🖼 Обложка",
-                    callback_data=encode_callback_data("request_cover", plan_item_id),
+                    callback_data=encode_callback_data(SimpleAction("request_cover", plan_item_id)),
                 ),
             ],
         ]

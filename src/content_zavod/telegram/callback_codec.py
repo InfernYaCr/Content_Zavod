@@ -5,22 +5,44 @@ Payload is a union of six types: five immutable dataclasses for the composite
 `HistoryVersions`, `HistoryVersion`, `ExportArticle`), plus `SimpleAction` for
 the remaining fifteen Действия that carry a single opaque id.
 
-The wire format (Action code + ":" separator + packed fields, 64-byte limit)
-matches `gateway.py`'s existing codec byte-for-byte, so buttons already sent
-to Telegram keep decoding the same way. `gateway.py` itself is untouched -
-its thirteen functions keep working; nothing routes through this module yet
-(that swap is out of scope for #61/#62).
+`gateway.py` builds every keyboard through `encode_callback_data` here rather
+than packing ids itself (#63); the wire format (Action code + ":" separator +
+packed fields, 64-byte limit) is unchanged from before this module existed,
+so buttons already sent to Telegram keep decoding the same way.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
-from .gateway import CALLBACK_DATA_LIMIT, Action
 from .types import ArticleFormat
 
-# Must stay identical to gateway.py's _ACTION_CODES - both encode the same
-# twenty Действия to the same wire format.
+CALLBACK_DATA_LIMIT = 64
+
+Action = Literal[
+    "delete",
+    "regenerate",
+    "approve_all",
+    "regenerate_article",
+    "request_cover",
+    "approve",
+    "export_article",
+    "page",
+    "confirm_regenerate_plan",
+    "cancel_regenerate_plan",
+    "retry",
+    "request_access",
+    "approve_join",
+    "decline_join",
+    "remove_member",
+    "history_page",
+    "history_week",
+    "history_versions",
+    "history_version",
+    "persona_template",
+]
+
 _ACTION_CODES: dict[Action, str] = {
     "delete": "d",
     "regenerate": "r",

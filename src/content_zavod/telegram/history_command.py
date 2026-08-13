@@ -24,14 +24,8 @@ from ..domain import (
     PlanId,
     PlanSummary,
 )
-from .gateway import (
-    ITEMS_PER_PAGE,
-    TelegramGateway,
-    decode_history_version_id,
-    decode_history_versions_id,
-    decode_history_week_id,
-    total_pages,
-)
+from .callback_codec import HistoryVersion, HistoryVersions, HistoryWeek
+from .gateway import ITEMS_PER_PAGE, TelegramGateway, total_pages
 
 
 class HistoryPlans(Protocol):
@@ -74,37 +68,42 @@ async def handle_history_week(
     gateway: TelegramGateway,
     chat_id: int,
     message_id: int,
-    id_: str,
+    payload: HistoryWeek,
 ) -> None:
-    plan_id_text, back_page = decode_history_week_id(id_)
-    plan_id = PlanId(plan_id_text)
+    plan_id = PlanId(payload.plan_id)
     summary = await plans.get_summary(plan_id)
     article_summaries = await articles.list_summary_for_plan(plan_id)
     await gateway.edit_history_articles(
-        chat_id, message_id, summary, article_summaries, back_page=back_page
+        chat_id, message_id, summary, article_summaries, back_page=payload.page
     )
 
 
 async def handle_history_versions(
-    articles: HistoryArticles, gateway: TelegramGateway, chat_id: int, message_id: int, id_: str
+    articles: HistoryArticles,
+    gateway: TelegramGateway,
+    chat_id: int,
+    message_id: int,
+    payload: HistoryVersions,
 ) -> None:
-    article_id_text, back_page = decode_history_versions_id(id_)
-    article_id = ArticleId(article_id_text)
+    article_id = ArticleId(payload.article_id)
     article_summary = await articles.get_summary(article_id)
     plan_id = await articles.get_plan_id(article_id)
     versions = await articles.list_versions(article_id)
     await gateway.edit_history_versions(
-        chat_id, message_id, article_summary, plan_id, versions, back_page=back_page
+        chat_id, message_id, article_summary, plan_id, versions, back_page=payload.back_page
     )
 
 
 async def handle_history_version(
-    articles: HistoryArticles, gateway: TelegramGateway, chat_id: int, message_id: int, id_: str
+    articles: HistoryArticles,
+    gateway: TelegramGateway,
+    chat_id: int,
+    message_id: int,
+    payload: HistoryVersion,
 ) -> None:
-    article_id_text, version_id, back_page = decode_history_version_id(id_)
-    article_id = ArticleId(article_id_text)
+    article_id = ArticleId(payload.article_id)
     article_summary = await articles.get_summary(article_id)
-    version = await articles.get_version(article_id, version_id)
+    version = await articles.get_version(article_id, payload.version_id)
     await gateway.edit_history_version(
-        chat_id, message_id, article_summary, version, back_page=back_page
+        chat_id, message_id, article_summary, version, back_page=payload.back_page
     )
