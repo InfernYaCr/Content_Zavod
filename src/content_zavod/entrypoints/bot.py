@@ -33,51 +33,37 @@ from aiogram.types import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from ..access import COMMAND_ROLE, AccessError, JoinRequests, Membership, Role, require_role
+from ..access import COMMAND_ROLE, JoinRequests, Membership, Role, require_role
 from ..config import Settings, load_settings
 from ..domain import (
-    PLATFORMS,
     Article,
-    ArticleId,
-    DomainError,
     GeneratedVersion,
     Plan,
-    PlanId,
     PlanItemId,
     TopicDraft,
 )
-from ..job_queue import JobId, JobQueue, JobResult, run_notifications
+from ..job_queue import JobQueue, JobResult, run_notifications
 from ..owner_settings import OwnerSettingsStore
 from ..scheduling import ScheduleSettings, schedule_weekly_plan_trigger
 from ..settings import SettingsService
 from ..telegram import (
+    ACCESS_DENIED_TEXT,
+    OWNER_ONLY_TEXT,
+    ArticleId,
     BotClient,
+    CallbackDispatcher,
     CommentGatedRegeneration,
-    ExportArticle,
-    HistoryVersion,
-    HistoryVersions,
-    HistoryWeek,
     JoinRequestFlow,
-    Page,
     PlanReview,
-    SimpleAction,
     TelegramCommentPrompt,
     TelegramGateway,
     build_request_access_keyboard,
-    decode_callback_data,
-    handle_cancel_regenerate_plan,
-    handle_confirm_regenerate_plan,
     handle_directions_command,
     handle_generate_plan_command,
     handle_history_command,
-    handle_history_page,
-    handle_history_version,
-    handle_history_versions,
-    handle_history_week,
     handle_members_command,
     handle_niche_command,
     handle_persona_command,
-    handle_persona_template_callback,
     handle_schedule_command,
     handle_set_directions_command,
     handle_set_niche_command,
@@ -87,13 +73,11 @@ from ..telegram import (
     handle_topic_command,
     render_help_text,
     sync_commands,
+    unpack_callback_query,
 )
 from ._process import register_shutdown
 
 logger = logging.getLogger(__name__)
-
-_ACCESS_DENIED_TEXT = "Доступ запрещён. Обратитесь к владельцу бота, чтобы получить роль."
-_OWNER_ONLY_TEXT = "Эта команда доступна только владельцу."
 
 
 class _AiogramBotClient:
@@ -150,25 +134,6 @@ class _AiogramBotClient:
         await self._bot.set_my_commands(commands, scope=scope)
 
 
-async def _generate_articles_for_approved_plan(
-    plan: Plan, article: Article, plan_id: PlanId
-) -> None:
-    """Fan out each approved Тема into one Статья per Площадка and enqueue its `generate_article`
-    Job (#14), plus one `generate_cover` Job per Тема (#15 - the whole week's content, including
-    covers, is generated together, so no separate manual trigger is needed for the common case).
-    Reads current DB state (`Plan.approved_items`) rather than acting only on items this call just
-    approved, and both `Article.request_generation` and `Plan.request_cover` are themselves
-    idempotent - so replaying this for an already-approved Plan (a retried `approve_all` callback,
-    or a crash between approving and enqueueing) creates neither duplicate Статьи/обложки nor
-    duplicate Jobs."""
-    for item in await plan.approved_items(plan_id):
-        await plan.request_cover(item.id)
-        for platform in PLATFORMS:
-            await article.request_generation(
-                plan_id, item.id, item.title, item.summary, item.keywords, platform
-            )
-
-
 def _build_router(
     membership: Membership,
     plan: Plan,
@@ -200,7 +165,7 @@ def _build_router(
                     return
                 actual = await membership.role_for(message.from_user.id)
                 if not require_role(actual, required):
-                    text = _ACCESS_DENIED_TEXT if actual is None else _OWNER_ONLY_TEXT
+                    text = ACCESS_DENIED_TEXT if actual is None else OWNER_ONLY_TEXT
                     await gateway.send_error(message.chat.id, text)
                     return
                 await handler(message, **kwargs)
@@ -315,142 +280,29 @@ def _build_router(
     async def on_settings(message: Message) -> None:
         await handle_settings_command(owner_settings_service, gateway, message.chat.id)
 
+    dispatcher = CallbackDispatcher(
+        membership,
+        plan,
+        article,
+        gateway,
+        bot_client,
+        plan_review,
+        article_regeneration,
+        join_request_flow,
+        owner_settings_service,
+        queue,
+    )
+
     @router.callback_query()
     async def on_callback(callback: CallbackQuery) -> None:
-        if callback.from_user is None or callback.message is None:
-            return
-        chat_id = callback.message.chat.id
-        message_id = callback.message.message_id
-        user_id = callback.from_user.id
-
         try:
-            payload = decode_callback_data(callback.data or "")
+            callback_input = unpack_callback_query(callback)
         except ValueError:
             await callback.answer()
             return
-
-        if isinstance(payload, SimpleAction) and payload.action == "request_access":
-            await callback.answer()
-            await join_request_flow.request_access(user_id, callback.from_user.username)
-            await gateway.edit_notice(
-                chat_id, message_id, "Заявка отправлена. Ожидайте одобрения владельца."
-            )
+        if callback_input is None:
             return
-
-        role = await membership.role_for(user_id)
-        if role is None:
-            await callback.answer(_ACCESS_DENIED_TEXT, show_alert=True)
-            return
-
-        try:
-            if isinstance(payload, SimpleAction) and payload.action in (
-                "approve_join",
-                "decline_join",
-            ):
-                if role != "owner":
-                    await callback.answer(_OWNER_ONLY_TEXT, show_alert=True)
-                    return
-                await callback.answer()
-                resolver_name = callback.from_user.full_name
-                if payload.action == "approve_join":
-                    resolved = await join_request_flow.handle_approve(
-                        user_id, resolver_name, int(payload.id_)
-                    )
-                else:
-                    resolved = await join_request_flow.handle_decline(
-                        user_id, resolver_name, int(payload.id_)
-                    )
-                if resolved is not None and resolved.status == "approved":
-                    await sync_commands(bot_client, resolved.telegram_id, "content_manager")
-            elif isinstance(payload, SimpleAction) and payload.action == "remove_member":
-                if role != "owner":
-                    await callback.answer(_OWNER_ONLY_TEXT, show_alert=True)
-                    return
-                await callback.answer()
-                await membership.remove_member(int(payload.id_))
-            elif isinstance(payload, SimpleAction) and payload.action == "persona_template":
-                if role != "owner":
-                    await callback.answer(_OWNER_ONLY_TEXT, show_alert=True)
-                    return
-                await callback.answer()
-                await handle_persona_template_callback(
-                    owner_settings_service, gateway, chat_id, int(payload.id_)
-                )
-            elif isinstance(payload, Page):
-                await callback.answer()
-                view = await plan.get(PlanId(payload.plan_id))
-                await gateway.edit_plan(chat_id, message_id, view, page=payload.page)
-            elif isinstance(payload, SimpleAction) and payload.action == "history_page":
-                await callback.answer()
-                await handle_history_page(plan, gateway, chat_id, message_id, int(payload.id_))
-            elif isinstance(payload, HistoryWeek):
-                await callback.answer()
-                await handle_history_week(plan, article, gateway, chat_id, message_id, payload)
-            elif isinstance(payload, HistoryVersions):
-                await callback.answer()
-                await handle_history_versions(article, gateway, chat_id, message_id, payload)
-            elif isinstance(payload, HistoryVersion):
-                await callback.answer()
-                await handle_history_version(article, gateway, chat_id, message_id, payload)
-            elif isinstance(payload, SimpleAction) and payload.action == "confirm_regenerate_plan":
-                await callback.answer()
-                await handle_confirm_regenerate_plan(
-                    plan, gateway, chat_id, message_id, PlanId(payload.id_)
-                )
-            elif isinstance(payload, SimpleAction) and payload.action == "cancel_regenerate_plan":
-                await callback.answer()
-                await handle_cancel_regenerate_plan(gateway, chat_id, message_id)
-            elif isinstance(payload, SimpleAction) and payload.action == "retry":
-                await callback.answer()
-                await queue.retry(JobId(int(payload.id_)))
-            elif isinstance(payload, SimpleAction) and payload.action == "regenerate_article":
-                will_enqueue = article_regeneration.has_matching_pending(
-                    chat_id, user_id, ArticleId(payload.id_)
-                )
-                await callback.answer("Принято, генерирую..." if will_enqueue else None)
-                if will_enqueue:
-                    await gateway.edit_notice(chat_id, message_id, "⏳ Генерирую...")
-                await article_regeneration.request(chat_id, user_id, ArticleId(payload.id_))
-            elif isinstance(payload, SimpleAction) and payload.action == "approve":
-                await callback.answer()
-                # Accepting a ready Статья: no comment-wait, just the transition to "exported".
-                await article.mark_exported(ArticleId(payload.id_))
-            elif isinstance(payload, SimpleAction) and payload.action == "request_cover":
-                await callback.answer("Генерирую обложку...")
-                await plan.request_cover(PlanItemId(payload.id_))
-            elif isinstance(payload, ExportArticle):
-                await callback.answer()
-                view = await article.get(ArticleId(payload.article_id))
-                await gateway.send_article_document(chat_id, view, payload.article_format)
-            elif isinstance(payload, SimpleAction) and payload.action == "regenerate":
-                will_enqueue = plan_review.will_enqueue_regeneration(
-                    chat_id, user_id, PlanItemId(payload.id_)
-                )
-                await callback.answer("Принято, генерирую..." if will_enqueue else None)
-                if will_enqueue:
-                    await gateway.edit_notice(chat_id, message_id, "⏳ Генерирую...")
-                await plan_review.handle_action(
-                    chat_id, user_id, PlanItemId(payload.id_), payload.action
-                )
-            elif isinstance(payload, SimpleAction) and payload.action == "approve_all":
-                await callback.answer()
-                await plan_review.handle_action(
-                    chat_id, user_id, PlanItemId(payload.id_), payload.action
-                )
-                await _generate_articles_for_approved_plan(plan, article, PlanId(payload.id_))
-            elif isinstance(payload, SimpleAction) and payload.action == "delete":
-                await callback.answer()
-                await plan_review.handle_action(
-                    chat_id, user_id, PlanItemId(payload.id_), payload.action
-                )
-                await gateway.send_notice(chat_id, "Тема удалена.")
-            elif isinstance(payload, SimpleAction):
-                await callback.answer()
-                await plan_review.handle_action(
-                    chat_id, user_id, PlanItemId(payload.id_), payload.action
-                )
-        except (DomainError, AccessError) as exc:
-            await callback.answer(str(exc), show_alert=True)
+        await dispatcher.dispatch(callback_input, callback.answer)
 
     @router.message()
     async def on_message(message: Message) -> None:
@@ -458,7 +310,7 @@ def _build_router(
             return
         actual = await membership.role_for(message.from_user.id)
         if not require_role(actual, None):
-            await gateway.send_error(message.chat.id, _ACCESS_DENIED_TEXT)
+            await gateway.send_error(message.chat.id, ACCESS_DENIED_TEXT)
             return
         chat_id, user_id, text = message.chat.id, message.from_user.id, message.text or ""
         consumed = await plan_review.handle_comment_reply(chat_id, user_id, text)

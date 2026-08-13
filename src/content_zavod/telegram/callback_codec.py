@@ -5,6 +5,11 @@ Payload is a union of six types: five immutable dataclasses for the composite
 `HistoryVersions`, `HistoryVersion`, `ExportArticle`), plus `SimpleAction` for
 the remaining fifteen Действия that carry a single opaque id.
 
+`ACTION_ROLE` says which of the twenty Действия need "owner" and which accept any
+registered Role - `request_access` is absent, same reasoning as `COMMAND_ROLE`
+omitting `start` (see ADR-0012). The callback dispatcher (`callback_dispatcher.py`)
+is what actually enforces it.
+
 `gateway.py` builds every keyboard through `encode_callback_data` here rather
 than packing ids itself (#63); the wire format (Action code + ":" separator +
 packed fields, 64-byte limit) is unchanged from before this module existed,
@@ -16,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from ..access import Role
 from .types import ArticleFormat
 
 CALLBACK_DATA_LIMIT = 64
@@ -66,6 +72,31 @@ _ACTION_CODES: dict[Action, str] = {
     "persona_template": "pt",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
+
+# Role required to run each Action's callback branch, mirroring `access.COMMAND_ROLE` for
+# commands (see ADR-0012). `request_access` is deliberately absent - it works for
+# unregistered callers, so the callback dispatcher handles it before resolving a Role at all.
+ACTION_ROLE: dict[Action, Role | None] = {
+    "delete": None,
+    "regenerate": None,
+    "approve_all": None,
+    "regenerate_article": None,
+    "request_cover": None,
+    "approve": None,
+    "export_article": None,
+    "page": None,
+    "confirm_regenerate_plan": None,
+    "cancel_regenerate_plan": None,
+    "retry": None,
+    "approve_join": "owner",
+    "decline_join": "owner",
+    "remove_member": "owner",
+    "history_page": None,
+    "history_week": None,
+    "history_versions": None,
+    "history_version": None,
+    "persona_template": "owner",
+}
 
 # The five composite Действия each get their own type below - see them out
 # individually in _ACTION_CODES rather than by iterating, so a typo in one

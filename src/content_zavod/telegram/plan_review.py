@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Literal, Protocol
 
-from .callback_codec import Action
 from .comment_gated_regeneration import CommentGatedRegeneration, CommentPrompt
 from .types import PlanItemId
 
@@ -29,7 +28,7 @@ class PlanReview:
         chat_id: int,
         user_id: int,
         plan_item_id: PlanItemId,
-        action: Action,
+        action: Literal["regenerate", "delete", "approve_all"],
     ) -> None:
         if action == "regenerate":
             await self._regeneration.request(chat_id, user_id, plan_item_id)
