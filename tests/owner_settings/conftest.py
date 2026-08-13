@@ -11,6 +11,5 @@ from content_zavod.owner_settings import OwnerSettingsStore
 @pytest_asyncio.fixture(loop_scope="session")
 async def owner_settings(pool: asyncpg.Pool) -> AsyncIterator[OwnerSettingsStore]:
     instance = OwnerSettingsStore(pool)
-    await instance.ensure_schema()
     await pool.execute("TRUNCATE TABLE owner_settings")
     yield instance

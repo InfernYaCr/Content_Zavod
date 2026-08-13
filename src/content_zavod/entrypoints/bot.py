@@ -43,6 +43,7 @@ from ..domain import (
     TopicDraft,
 )
 from ..job_queue import JobQueue, JobResult, run_notifications
+from ..migrations import run_migrations
 from ..owner_settings import OwnerSettingsStore
 from ..scheduling import ScheduleSettings, schedule_weekly_plan_trigger
 from ..settings import SettingsService
@@ -394,21 +395,16 @@ async def main(settings: Settings | None = None) -> None:
     pool = await asyncpg.create_pool(dsn=settings.postgres_dsn)
     assert pool is not None
     try:
+        await run_migrations(pool)
+
         queue = JobQueue(pool)
-        await queue.ensure_schema()
         membership = Membership(pool)
-        await membership.ensure_schema()
         join_requests = JoinRequests(pool)
-        await join_requests.ensure_schema()
         schedule_settings = ScheduleSettings(pool)
-        await schedule_settings.ensure_schema()
         owner_settings = OwnerSettingsStore(pool)
-        await owner_settings.ensure_schema()
         owner_settings_service = SettingsService(owner_settings)
         plan = Plan(pool, queue)
-        await plan.ensure_schema()
         article = Article(pool, queue)
-        await article.ensure_schema()
 
         bot = Bot(token=settings.telegram_bot_token)
         bot_client = _AiogramBotClient(bot)

@@ -11,7 +11,6 @@ idempotent on their target state so a retried Telegram callback is a no-op.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
@@ -31,8 +30,6 @@ from .types import (
     PlanItemId,
 )
 
-_SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
-
 _REGENERABLE_STATUSES: frozenset[ArticleStatus] = frozenset({"ready", "error"})
 
 GenerationResultApplication = Literal["applied", "already_applied", "stale"]
@@ -49,9 +46,6 @@ class Article:
         self._pool = pool
         self._queue = queue
         self._new_id = new_id
-
-    async def ensure_schema(self) -> None:
-        await self._pool.execute(_SCHEMA_SQL)
 
     async def create(
         self, plan_id: PlanId, plan_item_id: PlanItemId, title: str, platform: str

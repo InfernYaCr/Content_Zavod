@@ -9,19 +9,12 @@ caller decides its own fallback default.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import asyncpg
-
-_SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
 class OwnerSettingsStore:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
-
-    async def ensure_schema(self) -> None:
-        await self._pool.execute(_SCHEMA_SQL)
 
     async def get(self, key: str) -> str | None:
         row = await self._pool.fetchrow("SELECT value FROM owner_settings WHERE key = $1", key)

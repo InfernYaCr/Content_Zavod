@@ -19,6 +19,7 @@ import asyncpg
 from ..config import Settings, YandexCredentials, load_settings
 from ..domain import Article, Plan
 from ..job_queue import JobHandler, JobQueue, run_worker
+from ..migrations import run_migrations
 from ..owner_settings import OwnerSettingsStore
 from ..pipelines import (
     HttpxUrlReachabilityChecker,
@@ -55,15 +56,12 @@ async def main(settings: Settings | None = None) -> None:
     pool = await asyncpg.create_pool(dsn=settings.postgres_dsn)
     assert pool is not None
     try:
-        queue = JobQueue(pool)
-        await queue.ensure_schema()
+        await run_migrations(pool)
 
+        queue = JobQueue(pool)
         plan = Plan(pool, queue)
-        await plan.ensure_schema()
         article = Article(pool, queue)
-        await article.ensure_schema()
         owner_settings = OwnerSettingsStore(pool)
-        await owner_settings.ensure_schema()
         owner_settings_service = SettingsService(owner_settings)
 
         text_generator = _build_yandex_client(

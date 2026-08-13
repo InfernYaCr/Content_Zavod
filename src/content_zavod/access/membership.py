@@ -9,14 +9,11 @@ and content-manager are the two roles named in the domain vocabulary
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
 import asyncpg
 
 from .errors import MemberNotFound
-
-_SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 Role = Literal["owner", "content_manager"]
 
@@ -30,9 +27,6 @@ class MemberView:
 class Membership:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
-
-    async def ensure_schema(self) -> None:
-        await self._pool.execute(_SCHEMA_SQL)
 
     async def role_for(self, telegram_id: int) -> Role | None:
         row = await self._pool.fetchrow(
