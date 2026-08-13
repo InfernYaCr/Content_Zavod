@@ -1,10 +1,10 @@
-"""Unit tests for bot_main's approve_all fan-out (`_generate_articles_for_approved_plan`, #14/#15)."""
+"""Unit tests for the approve_all fan-out (`_generate_articles_for_approved_plan`, #14/#15)."""
 
 from __future__ import annotations
 
 from content_zavod.domain import PLATFORMS, PlanId, PlanItemId
 from content_zavod.domain.plan import PlanItemDetail
-from content_zavod.entrypoints.bot import _generate_articles_for_approved_plan
+from content_zavod.telegram.callback_dispatcher import _generate_articles_for_approved_plan
 
 
 class FakePlan:
