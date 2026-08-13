@@ -6,6 +6,7 @@ from apscheduler.triggers.cron import CronTrigger
 from content_zavod.job_queue import JobId
 from content_zavod.scheduling import (
     JOB_ID,
+    reconcile_weekly_plan,
     schedule_weekly_plan_trigger,
     trigger_weekly_plan,
     week_label_for,
@@ -16,13 +17,19 @@ DEFAULT_JOB_ID = JobId(1)
 
 
 class FakePlan:
-    def __init__(self, job_id: JobId = DEFAULT_JOB_ID) -> None:
+    def __init__(
+        self, job_id: JobId = DEFAULT_JOB_ID, *, active_weeks: set[str] | None = None
+    ) -> None:
         self.job_id = job_id
         self.requested: list[str] = []
+        self._active_weeks = active_weeks or set()
 
     async def request_new(self, week_label: str) -> JobId:
         self.requested.append(week_label)
         return self.job_id
+
+    async def find_active(self, week_label: str) -> object | None:
+        return object() if week_label in self._active_weeks else None
 
 
 class FakeScheduler:
@@ -94,3 +101,65 @@ async def test_the_registered_job_calls_through_to_plan_request_new() -> None:
     await job["func"](*job["args"], **job["kwargs"], now=lambda: fixed_now)
 
     assert plan.requested == ["2026-W32"]
+
+
+async def test_reconcile_weekly_plan_does_nothing_before_this_weeks_deadline() -> None:
+    plan = FakePlan()
+    # Monday 2026-08-03 08:00 Moscow, before the default mon 09:00 deadline.
+    before_deadline = datetime(2026, 8, 3, 5, 0, tzinfo=UTC)
+
+    result = await reconcile_weekly_plan(plan, tz=MOSCOW, now=lambda: before_deadline)
+
+    assert result is None
+    assert plan.requested == []
+
+
+async def test_reconcile_weekly_plan_requests_the_missed_weeks_plan_after_the_deadline() -> None:
+    plan = FakePlan()
+    # Monday 2026-08-03 10:00 Moscow, after the default mon 09:00 deadline.
+    after_deadline = datetime(2026, 8, 3, 7, 0, tzinfo=UTC)
+
+    result = await reconcile_weekly_plan(plan, tz=MOSCOW, now=lambda: after_deadline)
+
+    assert plan.requested == ["2026-W32"]
+    assert result == DEFAULT_JOB_ID
+
+
+async def test_reconcile_weekly_plan_still_recovers_the_week_late_in_the_same_iso_week() -> None:
+    plan = FakePlan()
+    # Sunday 2026-08-09 is still ISO week 32 (started Monday 2026-08-03); the
+    # deadline was missed days ago but this week's Plan is still recoverable.
+    sunday_same_week = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
+
+    result = await reconcile_weekly_plan(plan, tz=MOSCOW, now=lambda: sunday_same_week)
+
+    assert plan.requested == ["2026-W32"]
+    assert result == DEFAULT_JOB_ID
+
+
+async def test_reconcile_weekly_plan_does_not_duplicate_an_already_existing_plan() -> None:
+    plan = FakePlan(active_weeks={"2026-W32"})
+    after_deadline = datetime(2026, 8, 3, 7, 0, tzinfo=UTC)
+
+    result = await reconcile_weekly_plan(plan, tz=MOSCOW, now=lambda: after_deadline)
+
+    assert result is None
+    assert plan.requested == []
+
+
+async def test_reconcile_weekly_plan_respects_a_persisted_custom_schedule() -> None:
+    plan = FakePlan()
+    # Wednesday 2026-08-05, before/after a custom wed 14:30 deadline (Moscow).
+    before_custom_deadline = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
+    after_custom_deadline = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
+
+    before_result = await reconcile_weekly_plan(
+        plan, tz=MOSCOW, day_of_week="wed", hour=14, minute=30, now=lambda: before_custom_deadline
+    )
+    after_result = await reconcile_weekly_plan(
+        plan, tz=MOSCOW, day_of_week="wed", hour=14, minute=30, now=lambda: after_custom_deadline
+    )
+
+    assert before_result is None
+    assert plan.requested == ["2026-W32"]
+    assert after_result == DEFAULT_JOB_ID

@@ -44,7 +44,15 @@ from ..domain import (
 )
 from ..job_queue import JobQueue, JobResult, run_notifications
 from ..owner_settings import OwnerSettingsStore
-from ..scheduling import ScheduleSettings, schedule_weekly_plan_trigger
+from ..scheduling import (
+    DEFAULT_DAY_OF_WEEK,
+    DEFAULT_HOUR,
+    DEFAULT_MINUTE,
+    ScheduleConfig,
+    ScheduleSettings,
+    reconcile_weekly_plan,
+    schedule_weekly_plan_trigger,
+)
 from ..settings import SettingsService
 from ..telegram import (
     ACCESS_DENIED_TEXT,
@@ -424,17 +432,26 @@ async def main(settings: Settings | None = None) -> None:
         # The scheduler must exist before _build_router so /set_schedule can reschedule its job.
         scheduler = AsyncIOScheduler()
         persisted_schedule = await schedule_settings.get()
-        if persisted_schedule is not None:
-            schedule_weekly_plan_trigger(
-                scheduler,
-                plan,
-                tz=settings.timezone,
-                day_of_week=persisted_schedule.day_of_week,
-                hour=persisted_schedule.hour,
-                minute=persisted_schedule.minute,
-            )
-        else:
-            schedule_weekly_plan_trigger(scheduler, plan, tz=settings.timezone)
+        resolved_schedule = persisted_schedule or ScheduleConfig(
+            day_of_week=DEFAULT_DAY_OF_WEEK, hour=DEFAULT_HOUR, minute=DEFAULT_MINUTE
+        )
+        schedule_weekly_plan_trigger(
+            scheduler,
+            plan,
+            tz=settings.timezone,
+            day_of_week=resolved_schedule.day_of_week,
+            hour=resolved_schedule.hour,
+            minute=resolved_schedule.minute,
+        )
+        # Recover a trigger missed while the process was down (#72) before the live
+        # cron job takes over for future weeks.
+        await reconcile_weekly_plan(
+            plan,
+            tz=settings.timezone,
+            day_of_week=resolved_schedule.day_of_week,
+            hour=resolved_schedule.hour,
+            minute=resolved_schedule.minute,
+        )
         scheduler.start()
 
         dispatcher = Dispatcher()
