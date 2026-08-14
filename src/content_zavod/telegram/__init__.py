@@ -60,6 +60,7 @@ from .persona_command import (
     handle_persona_template_callback,
     handle_set_persona_command,
 )
+from .plan_delivery import PlanMessageRefs, deliver_plan_message
 from .plan_review import PlanOperations, PlanReview
 from .schedule_command import handle_schedule_command, handle_set_schedule_command
 from .settings_command import handle_settings_command
@@ -74,6 +75,7 @@ from .types import (
     PlanId,
     PlanItemId,
     PlanItemView,
+    PlanMessageRef,
     PlanSummary,
     PlanView,
 )
@@ -108,6 +110,8 @@ __all__ = [
     "PlanId",
     "PlanItemId",
     "PlanItemView",
+    "PlanMessageRef",
+    "PlanMessageRefs",
     "PlanOperations",
     "PlanProposal",
     "PlanReview",
@@ -126,6 +130,7 @@ __all__ = [
     "build_retry_keyboard",
     "build_skip_keyboard",
     "decode_callback_data",
+    "deliver_plan_message",
     "encode_callback_data",
     "handle_cancel_regenerate_plan",
     "handle_confirm_regenerate_plan",

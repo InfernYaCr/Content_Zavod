@@ -23,6 +23,14 @@ operation.
 the week, while an explicit full replacement supplies a generation identity:
 retries of that request collapse, but it cannot collide with the week's
 original, already-completed Job.
+
+`get_message_ref`/`record_message_ref` track the Plan's one canonical
+Telegram message (ADR-0005, #73): the delivery side (see
+`telegram.plan_delivery.deliver_plan_message`) sends only when no ref is
+recorded yet and edits otherwise, so a crash between a successful Telegram
+send and the caller's own delivered-mark no longer produces a second
+message on retry - `record_message_ref` runs, and is durable, before that
+mark is ever attempted.
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ from .types import (
     PlanItemId,
     PlanItemStatus,
     PlanItemView,
+    PlanMessageRef,
     PlanSummary,
     PlanView,
     TopicDraft,
@@ -95,6 +104,36 @@ class Plan:
             for row in item_rows
         ]
         return PlanView(id=PlanId(plan_row["id"]), week_label=plan_row["week_label"], items=items)
+
+    async def get_message_ref(self, plan_id: PlanId) -> PlanMessageRef | None:
+        """The Plan's canonical Telegram message identity, if a delivery has recorded one yet
+        (#73). `None` means this Plan has never been successfully delivered - the next delivery
+        should send a new message rather than edit."""
+        row = await self._pool.fetchrow(
+            "SELECT telegram_chat_id, telegram_message_id FROM plans WHERE id = $1", plan_id
+        )
+        if row is None:
+            raise PlanNotFound(plan_id)
+        if row["telegram_chat_id"] is None or row["telegram_message_id"] is None:
+            return None
+        return PlanMessageRef(
+            chat_id=row["telegram_chat_id"], message_id=row["telegram_message_id"]
+        )
+
+    async def record_message_ref(self, plan_id: PlanId, chat_id: int, message_id: int) -> None:
+        """Records the Plan's canonical Telegram message identity after a successful send
+        (#73). First-writer-wins (`telegram_message_id IS NULL`) so a delivery that raced
+        another one for the same still-unrecorded Plan can't clobber the identity the other
+        delivery already established."""
+        await self._pool.execute(
+            """
+            UPDATE plans SET telegram_chat_id = $2, telegram_message_id = $3
+            WHERE id = $1 AND telegram_message_id IS NULL
+            """,
+            plan_id,
+            chat_id,
+            message_id,
+        )
 
     async def get_summary(self, plan_id: PlanId) -> PlanSummary:
         """A Plan's header only (no items join) - what /history's week-select screen resolves

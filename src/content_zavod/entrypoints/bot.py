@@ -17,6 +17,7 @@ import asyncio
 import base64
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from functools import wraps
 
 import asyncpg
@@ -39,6 +40,7 @@ from ..domain import (
     Article,
     GeneratedVersion,
     Plan,
+    PlanId,
     PlanItemId,
     TopicDraft,
 )
@@ -67,6 +69,7 @@ from ..telegram import (
     TelegramCommentPrompt,
     TelegramGateway,
     build_request_access_keyboard,
+    deliver_plan_message,
     handle_directions_command,
     handle_generate_plan_command,
     handle_history_command,
@@ -329,69 +332,133 @@ def _build_router(
     return router
 
 
+@dataclass(frozen=True)
+class _PlanDelivery:
+    plan_id: PlanId
+
+
+@dataclass(frozen=True)
+class _NoticeDelivery:
+    text: str
+
+
+@dataclass(frozen=True)
+class _ArticleDelivery:
+    article_id: ArticleId
+
+
+@dataclass(frozen=True)
+class _CoverDelivery:
+    plan_item_id: PlanItemId
+    image: bytes
+    mime_type: str
+
+
+@dataclass(frozen=True)
+class _ErrorDelivery:
+    text: str
+    job_id: int
+
+
+_Delivery = _PlanDelivery | _NoticeDelivery | _ArticleDelivery | _CoverDelivery | _ErrorDelivery
+
+
+async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Delivery | None:
+    """The DB half of notification handling (#73): applies a finished Job's result to
+    domain state and returns what, if anything, still needs delivering to Telegram - `None`
+    for a stale result nothing should be sent for. Pure DB writes only; no Telegram call
+    happens here, so retrying this half alone (as a redelivered notification does) is exactly
+    as idempotent as the domain operations it calls."""
+    if result.status == "failed":
+        if result.job_type in ("generate_article", "regenerate_article"):
+            article_id = await article.mark_generation_failed(result.job_id)
+            if article_id is None:
+                logger.info("Ignoring stale Article failure for job_id=%s", result.job_id)
+                return None
+        return _ErrorDelivery(
+            text=f"Задача {result.job_type} завершилась ошибкой: {result.error}",
+            job_id=result.job_id,
+        )
+
+    output = result.output or {}
+    if result.job_type == "generate_plan":
+        topics = [
+            TopicDraft(
+                title=t["title"], summary=t.get("summary", ""), keywords=t.get("keywords", [])
+            )
+            for t in output["topics"]
+        ]
+        plan_id = await plan.add_topics(output["week_label"], topics)
+        return _PlanDelivery(plan_id=plan_id)
+    if result.job_type == "regenerate_topic":
+        plan_item_id = PlanItemId(output["plan_item_id"])
+        await plan.apply_regeneration(
+            plan_item_id,
+            TopicDraft(
+                title=output["title"], summary=output["summary"], keywords=output["keywords"]
+            ),
+        )
+        return _NoticeDelivery(text=f"Тема обновлена: {output['title']}")
+    if result.job_type in ("generate_article", "regenerate_article"):
+        article_id = ArticleId(output["article_id"])
+        application = await article.record_version(
+            article_id,
+            GeneratedVersion(
+                content=output["content"],
+                prompt=output["prompt"],
+                model=output["model"],
+                tokens=output["tokens"],
+                cost=output["cost"],
+                source_job_id=result.job_id,
+            ),
+        )
+        if application == "stale":
+            logger.info("Ignoring stale Article result for job_id=%s", result.job_id)
+            return None
+        return _ArticleDelivery(article_id=article_id)
+    if result.job_type == "generate_cover":
+        plan_item_id = PlanItemId(output["plan_item_id"])
+        image = base64.b64decode(output["image"])
+        await plan.apply_cover(plan_item_id, image, output["mime_type"])
+        return _CoverDelivery(plan_item_id=plan_item_id, image=image, mime_type=output["mime_type"])
+
+    logger.warning("No notification renderer for job_type=%r", result.job_type)
+    return None
+
+
+async def _deliver(
+    plan: Plan,
+    article: Article,
+    gateway: TelegramGateway,
+    notify_chat_id: int,
+    delivery: _Delivery,
+) -> None:
+    """The Telegram half of notification handling (#73): turns an `_apply_result` outcome
+    into the actual message(s). A Plan delivery goes through `deliver_plan_message`, which
+    sends only the first time and edits the Plan's canonical message every time after -
+    the fix for #73's duplicate-message gap."""
+    if isinstance(delivery, _PlanDelivery):
+        view = await plan.get(delivery.plan_id)
+        await deliver_plan_message(plan, gateway, notify_chat_id, view)
+    elif isinstance(delivery, _NoticeDelivery):
+        await gateway.send_notice(notify_chat_id, delivery.text)
+    elif isinstance(delivery, _ArticleDelivery):
+        view = await article.get(delivery.article_id)
+        await gateway.send_article_ready(notify_chat_id, view)
+    elif isinstance(delivery, _CoverDelivery):
+        item = await plan.get_item(delivery.plan_item_id)
+        await gateway.send_cover(notify_chat_id, delivery.image, delivery.mime_type, item.title)
+    elif isinstance(delivery, _ErrorDelivery):
+        await gateway.send_error_with_retry(notify_chat_id, delivery.text, delivery.job_id)
+
+
 def _make_notification_handler(
     plan: Plan, article: Article, gateway: TelegramGateway, notify_chat_id: int
 ):
     async def handle(result: JobResult) -> None:
-        if result.status == "failed":
-            if result.job_type in ("generate_article", "regenerate_article"):
-                article_id = await article.mark_generation_failed(result.job_id)
-                if article_id is None:
-                    logger.info("Ignoring stale Article failure for job_id=%s", result.job_id)
-                    return
-            await gateway.send_error_with_retry(
-                notify_chat_id,
-                f"Задача {result.job_type} завершилась ошибкой: {result.error}",
-                result.job_id,
-            )
-            return
-
-        output = result.output or {}
-        if result.job_type == "generate_plan":
-            topics = [
-                TopicDraft(
-                    title=t["title"], summary=t.get("summary", ""), keywords=t.get("keywords", [])
-                )
-                for t in output["topics"]
-            ]
-            plan_id = await plan.add_topics(output["week_label"], topics)
-            view = await plan.get(plan_id)
-            await gateway.send_plan(notify_chat_id, view)
-        elif result.job_type == "regenerate_topic":
-            plan_item_id = PlanItemId(output["plan_item_id"])
-            await plan.apply_regeneration(
-                plan_item_id,
-                TopicDraft(
-                    title=output["title"], summary=output["summary"], keywords=output["keywords"]
-                ),
-            )
-            await gateway.send_notice(notify_chat_id, f"Тема обновлена: {output['title']}")
-        elif result.job_type in ("generate_article", "regenerate_article"):
-            article_id = ArticleId(output["article_id"])
-            application = await article.record_version(
-                article_id,
-                GeneratedVersion(
-                    content=output["content"],
-                    prompt=output["prompt"],
-                    model=output["model"],
-                    tokens=output["tokens"],
-                    cost=output["cost"],
-                    source_job_id=result.job_id,
-                ),
-            )
-            if application == "stale":
-                logger.info("Ignoring stale Article result for job_id=%s", result.job_id)
-                return
-            view = await article.get(article_id)
-            await gateway.send_article_ready(notify_chat_id, view)
-        elif result.job_type == "generate_cover":
-            plan_item_id = PlanItemId(output["plan_item_id"])
-            image = base64.b64decode(output["image"])
-            await plan.apply_cover(plan_item_id, image, output["mime_type"])
-            item = await plan.get_item(plan_item_id)
-            await gateway.send_cover(notify_chat_id, image, output["mime_type"], item.title)
-        else:
-            logger.warning("No notification renderer for job_type=%r", result.job_type)
+        delivery = await _apply_result(plan, article, result)
+        if delivery is not None:
+            await _deliver(plan, article, gateway, notify_chat_id, delivery)
 
     return handle
 

@@ -13,6 +13,7 @@ from content_zavod.domain import (
     GeneratedVersion,
     PlanId,
     PlanItemId,
+    PlanMessageRef,
     PlanView,
     TopicDraft,
 )
@@ -26,6 +27,7 @@ class FakePlan:
         self.added_topics: list[tuple[str, list[TopicDraft]]] = []
         self.applied_regenerations: list[tuple[str, TopicDraft]] = []
         self.applied_covers: list[tuple[str, bytes, str]] = []
+        self.message_refs: dict[str, PlanMessageRef] = {}
 
     async def add_topics(self, week_label: str, topics: list[TopicDraft]) -> PlanId:
         self.added_topics.append((week_label, topics))
@@ -42,6 +44,14 @@ class FakePlan:
 
     async def apply_cover(self, plan_item_id: str, image: bytes, mime_type: str) -> None:
         self.applied_covers.append((plan_item_id, image, mime_type))
+
+    async def get_message_ref(self, plan_id: PlanId) -> PlanMessageRef | None:
+        return self.message_refs.get(plan_id)
+
+    async def record_message_ref(self, plan_id: PlanId, chat_id: int, message_id: int) -> None:
+        self.message_refs.setdefault(
+            plan_id, PlanMessageRef(chat_id=chat_id, message_id=message_id)
+        )
 
 
 class FakeArticle:
@@ -67,14 +77,21 @@ class FakeArticle:
 class FakeGateway:
     def __init__(self) -> None:
         self.sent_plans: list[tuple[int, PlanView]] = []
+        self.edited_plans: list[tuple[int, int, PlanView]] = []
         self.sent_articles: list[tuple[int, ArticleView]] = []
         self.sent_errors: list[tuple[int, str]] = []
         self.sent_errors_with_retry: list[tuple[int, str, int]] = []
         self.sent_notices: list[tuple[int, str]] = []
         self.sent_covers: list[tuple[int, bytes, str, str]] = []
+        self._next_message_id = 0
 
-    async def send_plan(self, chat_id: int, plan: PlanView) -> None:
+    async def send_plan(self, chat_id: int, plan: PlanView) -> int:
         self.sent_plans.append((chat_id, plan))
+        self._next_message_id += 1
+        return self._next_message_id
+
+    async def edit_plan(self, chat_id: int, message_id: int, plan: PlanView) -> None:
+        self.edited_plans.append((chat_id, message_id, plan))
 
     async def send_article_ready(self, chat_id: int, article: ArticleView) -> None:
         self.sent_articles.append((chat_id, article))
@@ -146,6 +163,33 @@ async def test_generate_plan_appends_topics_and_sends_the_plan() -> None:
     assert plan.added_topics == [("Week 1", [TopicDraft(title="T1", summary="s", keywords=["k"])])]
     assert len(gateway.sent_plans) == 1
     assert gateway.sent_plans[0][0] == 42
+
+
+async def test_redelivered_generate_plan_result_edits_the_canonical_message_instead_of_resending() -> (
+    None
+):
+    """#73: a redelivered notification (e.g. a crash after the first Telegram send but before
+    `notified_at` was marked) must not post a second Plan message - it should edit the one
+    already recorded for this Plan."""
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    handle = _make_notification_handler(plan, article, gateway, 42)
+    result = JobResult(
+        job_id=1,
+        job_type="generate_plan",
+        status="done",
+        output={
+            "week_label": "Week 1",
+            "topics": [{"title": "T1", "summary": "s", "keywords": ["k"]}],
+        },
+    )
+
+    await handle(result)
+    await handle(result)
+
+    assert len(gateway.sent_plans) == 1
+    assert len(gateway.edited_plans) == 1
+    edited_chat_id, edited_message_id, _view = gateway.edited_plans[0]
+    assert (edited_chat_id, edited_message_id) == (42, 1)
 
 
 async def test_regenerate_topic_applies_and_notifies() -> None:
