@@ -21,3 +21,16 @@ class JobResult:
     status: Literal["done", "failed"]
     output: dict[str, Any] | None = None
     error: str | None = None
+
+
+class JobPartialFailure(Exception):
+    """Raised by a Job Handler that wants a failure to still carry whatever
+    JSON-serializable partial output it produced before failing - e.g. the
+    provenance/cost of LLM steps that ran successfully before a later step
+    errored out. `run_worker`'s `on_attempt` hook receives `partial_output`
+    for every attempt, not only the one a Job finally succeeds or exhausts
+    retries on, so a Job's total cost reflects every attempt (#74)."""
+
+    def __init__(self, message: str, partial_output: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.partial_output = partial_output

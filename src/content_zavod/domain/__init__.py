@@ -11,6 +11,7 @@ from .errors import (
     PlanNotFound,
 )
 from .export import build_export_document, build_export_filename
+from .generation_steps import GenerationSteps, GenerationStepView, JobCostSummary
 from .plan import Plan, PlanItemDetail
 from .types import (
     PLATFORMS,
@@ -49,7 +50,10 @@ __all__ = [
     "ArticleView",
     "DomainError",
     "GeneratedVersion",
+    "GenerationStepView",
+    "GenerationSteps",
     "InvalidSettingValue",
+    "JobCostSummary",
     "Plan",
     "PlanId",
     "PlanItemDetail",

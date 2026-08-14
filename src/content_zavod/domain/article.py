@@ -170,7 +170,7 @@ class Article:
                 id=row["id"],
                 model=row["model"],
                 tokens=row["tokens"],
-                cost=float(row["cost"]),
+                cost=float(row["cost"]) if row["cost"] is not None else None,
                 created_at=row["created_at"],
             )
             for row in rows
@@ -191,7 +191,7 @@ class Article:
             content=row["content"],
             model=row["model"],
             tokens=row["tokens"],
-            cost=float(row["cost"]),
+            cost=float(row["cost"]) if row["cost"] is not None else None,
             created_at=row["created_at"],
         )
 

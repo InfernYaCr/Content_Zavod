@@ -6,7 +6,7 @@ from datetime import timedelta
 import asyncpg
 import pytest_asyncio
 
-from content_zavod.domain import Article, Plan
+from content_zavod.domain import Article, GenerationSteps, Plan
 from content_zavod.job_queue import JobQueue
 
 
@@ -31,8 +31,14 @@ async def article(pool: asyncpg.Pool, queue: JobQueue) -> AsyncIterator[Article]
     yield Article(pool, queue)
 
 
+@pytest_asyncio.fixture(loop_scope="session")
+async def generation_steps(pool: asyncpg.Pool) -> AsyncIterator[GenerationSteps]:
+    yield GenerationSteps(pool)
+
+
 @pytest_asyncio.fixture(autouse=True, loop_scope="session")
 async def _clean_tables(pool: asyncpg.Pool, queue: JobQueue, plan: Plan, article: Article) -> None:
     await pool.execute(
-        "TRUNCATE TABLE jobs, article_versions, articles, plan_items, plans RESTART IDENTITY CASCADE"
+        "TRUNCATE TABLE jobs, article_versions, articles, plan_items, plans, "
+        "generation_steps RESTART IDENTITY CASCADE"
     )

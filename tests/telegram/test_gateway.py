@@ -609,6 +609,21 @@ def test_render_history_versions_text_empty() -> None:
     assert "Версий пока нет." in text
 
 
+def test_render_history_versions_text_shows_placeholder_when_usage_is_unknown() -> None:
+    version = ArticleVersionSummary(
+        id=1,
+        model="yandexgpt",
+        tokens=None,
+        cost=None,
+        created_at=datetime(2026, 8, 11, 14, 3, tzinfo=UTC),
+    )
+
+    text = render_history_versions_text(make_article_summary(), [version])
+
+    assert "ток.: н/д" in text
+    assert "стоимость: н/д" in text
+
+
 def test_build_history_versions_keyboard_one_button_per_version_and_a_back_button() -> None:
     versions = [make_version_summary(id_=2), make_version_summary(id_=1)]
 
