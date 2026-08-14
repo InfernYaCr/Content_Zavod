@@ -49,7 +49,9 @@ class FakePlan:
         return self.message_refs.get(plan_id)
 
     async def record_message_ref(self, plan_id: PlanId, chat_id: int, message_id: int) -> None:
-        self.message_refs.setdefault(plan_id, PlanMessageRef(chat_id=chat_id, message_id=message_id))
+        self.message_refs.setdefault(
+            plan_id, PlanMessageRef(chat_id=chat_id, message_id=message_id)
+        )
 
 
 class FakeArticle:

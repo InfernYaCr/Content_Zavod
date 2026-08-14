@@ -420,9 +420,7 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
         plan_item_id = PlanItemId(output["plan_item_id"])
         image = base64.b64decode(output["image"])
         await plan.apply_cover(plan_item_id, image, output["mime_type"])
-        return _CoverDelivery(
-            plan_item_id=plan_item_id, image=image, mime_type=output["mime_type"]
-        )
+        return _CoverDelivery(plan_item_id=plan_item_id, image=image, mime_type=output["mime_type"])
 
     logger.warning("No notification renderer for job_type=%r", result.job_type)
     return None
