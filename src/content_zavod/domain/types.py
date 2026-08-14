@@ -68,6 +68,16 @@ class ArticleSummary:
 
 
 @dataclass(frozen=True)
+class PlanMessageRef:
+    """The canonical Telegram message a Plan is rendered as (ADR-0005, #73):
+    at most one per Plan, recorded once the first delivery sends it so a
+    later delivery for the same Plan edits it instead of sending another."""
+
+    chat_id: int
+    message_id: int
+
+
+@dataclass(frozen=True)
 class TopicDraft:
     """A Тема ready to be stored, either from automatic Wordstat sourcing or a manual proposal."""
 

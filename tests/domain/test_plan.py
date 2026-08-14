@@ -8,6 +8,7 @@ from content_zavod.domain import (
     PlanId,
     PlanItemNotEditable,
     PlanItemNotFound,
+    PlanMessageRef,
     PlanNotFound,
     PlanSummary,
     PlanView,
@@ -519,3 +520,33 @@ async def test_apply_cover_persists_image_and_mime_type(plan: Plan, pool: asyncp
     assert bytes(row["cover_image"]) == b"fake-image-bytes"
     assert row["cover_mime_type"] == "image/jpeg"
     assert row["cover_generated_at"] is not None
+
+
+async def test_get_message_ref_returns_none_before_any_delivery(plan: Plan) -> None:
+    plan_id, _ = await _create_plan(plan)
+
+    assert await plan.get_message_ref(plan_id) is None
+
+
+async def test_get_message_ref_raises_for_unknown_plan(plan: Plan) -> None:
+    with pytest.raises(PlanNotFound):
+        await plan.get_message_ref("missing")
+
+
+async def test_record_message_ref_round_trips_through_get_message_ref(plan: Plan) -> None:
+    plan_id, _ = await _create_plan(plan)
+
+    await plan.record_message_ref(plan_id, chat_id=42, message_id=100)
+
+    assert await plan.get_message_ref(plan_id) == PlanMessageRef(chat_id=42, message_id=100)
+
+
+async def test_record_message_ref_is_first_writer_wins(plan: Plan) -> None:
+    """#73: a delivery that raced another one for the same still-unrecorded Plan must not
+    clobber the identity the other delivery already established."""
+    plan_id, _ = await _create_plan(plan)
+
+    await plan.record_message_ref(plan_id, chat_id=42, message_id=100)
+    await plan.record_message_ref(plan_id, chat_id=42, message_id=999)
+
+    assert await plan.get_message_ref(plan_id) == PlanMessageRef(chat_id=42, message_id=100)

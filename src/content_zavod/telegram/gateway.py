@@ -547,8 +547,10 @@ class TelegramGateway:
         this exact message later (e.g. editing a join-request broadcast)."""
         return await self._bot.send_message(chat_id, text, reply_markup=reply_markup)
 
-    async def send_plan(self, chat_id: int, plan: PlanView, *, page: int = 0) -> None:
-        await self._bot.send_message(
+    async def send_plan(self, chat_id: int, plan: PlanView, *, page: int = 0) -> int:
+        """Returns the sent message's id, so callers can record it as the Plan's canonical
+        Telegram identity (see `telegram.plan_delivery.deliver_plan_message`, #73)."""
+        return await self._bot.send_message(
             chat_id,
             render_plan_text(plan, page=page),
             reply_markup=build_plan_keyboard(plan, page=page),
