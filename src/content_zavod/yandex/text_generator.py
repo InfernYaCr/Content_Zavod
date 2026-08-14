@@ -8,6 +8,7 @@ ContentPolicyError.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -18,6 +19,11 @@ from .errors import YandexError
 from .http import HttpResponse, HttpTransport, HttpxTransport
 
 COMPLETION_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+
+# The single source of truth for `complete`/`complete_with_usage`'s default `temperature` -
+# callers that record provenance (see `pipelines.provenance`) import this instead of
+# re-hardcoding the number, so the recorded `params` can't drift from what was actually sent.
+DEFAULT_TEMPERATURE = 0.7
 
 Role = Literal["system", "user", "assistant"]
 
@@ -33,6 +39,9 @@ class Completion:
     text: str
     model: str
     tokens: int
+    usage_missing: bool = False
+    latency_ms: int = 0
+    cost: float | None = None
 
 
 class TextGenerator:
@@ -46,6 +55,8 @@ class TextGenerator:
         max_retries: int = 3,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         url: str = COMPLETION_URL,
+        clock: Callable[[], float] = time.monotonic,
+        cost_per_1k_tokens: float | None = None,
     ) -> None:
         self._transport = transport
         self._credentials = credentials
@@ -54,6 +65,8 @@ class TextGenerator:
         self._max_retries = max_retries
         self._sleep = sleep
         self._url = url
+        self._clock = clock
+        self._cost_per_1k_tokens = cost_per_1k_tokens
 
     @classmethod
     def with_service_account_key(
@@ -73,12 +86,14 @@ class TextGenerator:
             **kwargs,
         )
 
-    async def complete(self, messages: list[Message], *, temperature: float = 0.7) -> str:
+    async def complete(
+        self, messages: list[Message], *, temperature: float = DEFAULT_TEMPERATURE
+    ) -> str:
         completion = await self.complete_with_usage(messages, temperature=temperature)
         return completion.text
 
     async def complete_with_usage(
-        self, messages: list[Message], *, temperature: float = 0.7
+        self, messages: list[Message], *, temperature: float = DEFAULT_TEMPERATURE
     ) -> Completion:
         async def call() -> HttpResponse:
             headers = await self._credentials.auth_header()
@@ -88,8 +103,10 @@ class TextGenerator:
                 json=self._request_body(messages, temperature),
             )
 
+        started = self._clock()
         response = await with_backoff_retry(call, max_retries=self._max_retries, sleep=self._sleep)
-        return self._extract_completion(response.body)
+        latency_ms = max(0, round((self._clock() - started) * 1000))
+        return self._extract_completion(response.body, latency_ms=latency_ms)
 
     def _request_body(self, messages: list[Message], temperature: float) -> dict[str, Any]:
         return {
@@ -98,19 +115,30 @@ class TextGenerator:
             "messages": [{"role": m.role, "text": m.text} for m in messages],
         }
 
-    @staticmethod
-    def _extract_completion(body: dict[str, Any]) -> Completion:
+    def _extract_completion(self, body: dict[str, Any], *, latency_ms: int) -> Completion:
         try:
             result = body["result"]
             text = str(result["alternatives"][0]["message"]["text"])
         except (KeyError, IndexError, TypeError) as exc:
             raise YandexError(f"Malformed YandexGPT response: {body}") from exc
-        # usage/modelVersion are absent from some sandbox responses; tokens/model
-        # default rather than fail the whole completion over accounting fields.
+        # `usage` is absent entirely from some sandbox responses - that's a real gap in
+        # what we know this call cost, not a legitimate zero, so it's tracked explicitly
+        # via `usage_missing` rather than folded into `tokens` defaulting to 0.
+        usage_missing = not isinstance(result.get("usage"), dict)
         usage = result.get("usage") or {}
         try:
             tokens = int(usage.get("totalTokens", 0))
         except (TypeError, ValueError):
             tokens = 0
         model = str(result.get("modelVersion", ""))
-        return Completion(text=text, model=model, tokens=tokens)
+        cost = None
+        if not usage_missing and self._cost_per_1k_tokens is not None:
+            cost = tokens * self._cost_per_1k_tokens / 1000
+        return Completion(
+            text=text,
+            model=model,
+            tokens=tokens,
+            usage_missing=usage_missing,
+            latency_ms=latency_ms,
+            cost=cost,
+        )

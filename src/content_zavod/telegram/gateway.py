@@ -278,6 +278,14 @@ def build_history_articles_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _format_usage(tokens: int | None, cost: float | None) -> str:
+    """Renders «н/д» rather than a bare 0 when a Версия's tokens/cost are unknown (#74) -
+    e.g. a step didn't report usage or had no pricing configured."""
+    tokens_text = f"{tokens} ток." if tokens is not None else "ток.: н/д"
+    cost_text = f"{cost:.4f}" if cost is not None else "стоимость: н/д"
+    return f"{tokens_text}, {cost_text}"
+
+
 def render_history_versions_text(
     article: ArticleSummary, versions: Sequence[ArticleVersionSummary]
 ) -> str:
@@ -288,7 +296,7 @@ def render_history_versions_text(
     for index, version in enumerate(versions, start=1):
         lines.append(
             f"{index}. {version.created_at:%d.%m.%Y %H:%M} — {version.model}, "
-            f"{version.tokens} ток., {version.cost:.4f}"
+            f"{_format_usage(version.tokens, version.cost)}"
         )
     return "\n".join(lines)
 
@@ -328,7 +336,8 @@ _TRUNCATION_NOTICE = "\n\n[…обрезано, версия длиннее ли
 def render_history_version_text(article: ArticleSummary, version: ArticleVersionView) -> str:
     header = (
         f"🕓 {article.title} ({article.platform})\n"
-        f"{version.created_at:%d.%m.%Y %H:%M} — {version.model}, {version.tokens} ток., {version.cost:.4f}\n\n"
+        f"{version.created_at:%d.%m.%Y %H:%M} — {version.model}, "
+        f"{_format_usage(version.tokens, version.cost)}\n\n"
     )
     remaining = MESSAGE_LIMIT - len(header)
     content = version.content

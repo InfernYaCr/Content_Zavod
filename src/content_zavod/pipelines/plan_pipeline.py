@@ -20,7 +20,15 @@ from typing import Any, Protocol
 from ..domain import PlanItemDetail, PlanItemId, TopicDraft
 from ..job_queue import JobHandler
 from ..settings import SettingsReader
-from ..yandex import KeywordDynamicsPoint, KeywordStats, Message, TextGenerator
+from ..yandex import (
+    DEFAULT_TEMPERATURE,
+    Completion,
+    KeywordDynamicsPoint,
+    KeywordStats,
+    Message,
+    TextGenerator,
+)
+from .provenance import StepRecord, StepRecorder
 
 __all__ = [
     "make_generate_plan_handler",
@@ -30,6 +38,10 @@ __all__ = [
 TOPICS_PER_PLAN = 3
 DYNAMICS_MONTHS = 6
 RECENT_HISTORY_DAYS = 90
+
+# Bumped whenever a step's prompt-building function changes shape (#74).
+_TOPIC_DRAFT_PROMPT_VERSION = "topic-draft-v1"
+_TOPIC_REGENERATE_PROMPT_VERSION = "topic-regenerate-v1"
 
 
 def _topic_prompt_system(niche: str) -> str:
@@ -59,6 +71,7 @@ def make_generate_plan_handler(
         owner_settings = await settings.read()
         niche = owner_settings.niche
         directions = seed_keywords if seed_keywords is not None else owner_settings.directions
+        recorder = StepRecorder()
 
         growing: list[tuple[float, str]] = []
         for keyword in directions:
@@ -77,18 +90,25 @@ def make_generate_plan_handler(
         used_titles = {title.lower() for title in await recent_topic_titles(since)}
 
         topics: list[dict[str, Any]] = []
-        for _, keyword in growing:
-            if len(topics) >= topics_per_plan:
-                break
-            draft = await _draft_topic(text_generator, keyword, niche)
-            if draft.title.lower() in used_titles:
-                continue
-            topics.append(
-                {"title": draft.title, "summary": draft.summary, "keywords": list(draft.keywords)}
-            )
-            used_titles.add(draft.title.lower())
+        try:
+            for _, keyword in growing:
+                if len(topics) >= topics_per_plan:
+                    break
+                draft = await _draft_topic(text_generator, recorder, keyword, niche)
+                if draft.title.lower() in used_titles:
+                    continue
+                topics.append(
+                    {
+                        "title": draft.title,
+                        "summary": draft.summary,
+                        "keywords": list(draft.keywords),
+                    }
+                )
+                used_titles.add(draft.title.lower())
+        except Exception as exc:
+            raise recorder.fail(exc) from exc
 
-        return {"week_label": week_label, "topics": topics}
+        return {"week_label": week_label, "topics": topics, "steps": recorder.as_output()}
 
     return handle
 
@@ -118,30 +138,45 @@ def make_regenerate_topic_handler(
         comment = payload.get("comment")
         current = await item_reader.get_item(plan_item_id)
         owner_settings = await settings.read()
-        draft = await _redraft_topic(text_generator, current, comment, owner_settings.niche)
+        recorder = StepRecorder()
+        try:
+            draft = await _redraft_topic(
+                text_generator, recorder, current, comment, owner_settings.niche
+            )
+        except Exception as exc:
+            raise recorder.fail(exc, plan_item_id=plan_item_id) from exc
         return {
             "plan_item_id": plan_item_id,
             "title": draft.title,
             "summary": draft.summary,
             "keywords": list(draft.keywords),
+            "steps": recorder.as_output(),
         }
 
     return handle
 
 
 async def _redraft_topic(
-    text_generator: TextGenerator, current: PlanItemDetail, comment: str | None, niche: str
+    text_generator: TextGenerator,
+    recorder: StepRecorder,
+    current: PlanItemDetail,
+    comment: str | None,
+    niche: str,
 ) -> TopicDraft:
     user_text = (
         f"Текущая Тема:\nTitle: {current.title}\nSummary: {current.summary}\n"
         f"Keywords: {', '.join(current.keywords)}\n\n"
         f"Комментарий: {comment or '(без комментария)'}"
     )
-    text = await text_generator.complete(
+    text = await _complete_step(
+        text_generator,
+        recorder,
+        "topic_regenerate",
+        _TOPIC_REGENERATE_PROMPT_VERSION,
         [
             Message(role="system", text=_regenerate_prompt_system(niche)),
             Message(role="user", text=user_text),
-        ]
+        ],
     )
     return _parse_topic(text, fallback_keyword=current.title)
 
@@ -167,14 +202,41 @@ def _growth_ratio(points: list[KeywordDynamicsPoint]) -> float | None:
     return last / first
 
 
-async def _draft_topic(text_generator: TextGenerator, keyword: str, niche: str) -> TopicDraft:
-    text = await text_generator.complete(
+async def _draft_topic(
+    text_generator: TextGenerator, recorder: StepRecorder, keyword: str, niche: str
+) -> TopicDraft:
+    text = await _complete_step(
+        text_generator,
+        recorder,
+        "topic_draft",
+        _TOPIC_DRAFT_PROMPT_VERSION,
         [
             Message(role="system", text=_topic_prompt_system(niche)),
             Message(role="user", text=f"Растущий поисковый запрос: «{keyword}». Предложи Тему."),
-        ]
+        ],
     )
     return _parse_topic(text, fallback_keyword=keyword)
+
+
+async def _complete_step(
+    text_generator: TextGenerator,
+    recorder: StepRecorder,
+    step_name: str,
+    prompt_version: str,
+    messages: list[Message],
+) -> str:
+    prompt_text = "\n".join(f"[{m.role}] {m.text}" for m in messages)
+    completion: Completion = await text_generator.complete_with_usage(messages)
+    recorder.add(
+        StepRecord.from_completion(
+            completion,
+            step_name=step_name,
+            prompt_template_version=prompt_version,
+            prompt_text=prompt_text,
+            params={"temperature": DEFAULT_TEMPERATURE},
+        )
+    )
+    return completion.text
 
 
 def _parse_topic(text: str, *, fallback_keyword: str) -> TopicDraft:

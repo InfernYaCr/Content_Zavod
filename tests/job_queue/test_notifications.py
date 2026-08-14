@@ -69,7 +69,7 @@ async def test_run_notifications_retries_a_failing_handler_until_it_succeeds(
     pool: asyncpg.Pool,
 ) -> None:
     queue = JobQueue(pool, notification_max_attempts=5, notification_base_delay=0.01)
-    await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
+    await pool.execute("TRUNCATE TABLE jobs, generation_steps RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
     job = await queue.claim_next()
     assert job is not None
@@ -98,7 +98,7 @@ async def test_run_notifications_gives_up_after_max_attempts_and_marks_delivered
     pool: asyncpg.Pool,
 ) -> None:
     queue = JobQueue(pool, notification_max_attempts=2, notification_base_delay=0.01)
-    await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
+    await pool.execute("TRUNCATE TABLE jobs, generation_steps RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
     job = await queue.claim_next()
     assert job is not None

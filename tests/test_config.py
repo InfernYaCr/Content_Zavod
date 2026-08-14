@@ -78,3 +78,30 @@ def test_load_settings_raises_for_invalid_timezone() -> None:
 
     with pytest.raises(ConfigError):
         load_settings(env)
+
+
+def test_load_settings_defaults_pricing_to_unset() -> None:
+    settings = load_settings(_BASE_ENV)
+
+    assert settings.yandex_pricing.text_cost_per_1k_tokens is None
+    assert settings.yandex_pricing.image_cost_per_generation is None
+
+
+def test_load_settings_parses_configured_pricing() -> None:
+    env = {
+        **_BASE_ENV,
+        "YANDEX_TEXT_COST_PER_1K_TOKENS": "0.2",
+        "YANDEX_IMAGE_COST_PER_GENERATION": "5",
+    }
+
+    settings = load_settings(env)
+
+    assert settings.yandex_pricing.text_cost_per_1k_tokens == 0.2
+    assert settings.yandex_pricing.image_cost_per_generation == 5.0
+
+
+def test_load_settings_raises_for_non_numeric_pricing() -> None:
+    env = {**_BASE_ENV, "YANDEX_TEXT_COST_PER_1K_TOKENS": "not-a-number"}
+
+    with pytest.raises(ConfigError):
+        load_settings(env)

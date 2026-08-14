@@ -10,6 +10,7 @@ import asyncio
 import base64
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from ._resilience import with_backoff_retry
@@ -19,6 +20,14 @@ from .http import HttpResponse, HttpTransport, HttpxTransport
 
 GENERATE_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1/imageGenerationAsync"
 OPERATION_URL_TEMPLATE = "https://operation.api.cloud.yandex.net/operations/{operation_id}"
+
+
+@dataclass(frozen=True)
+class GeneratedImage:
+    image: bytes
+    model: str
+    latency_ms: int
+    cost: float | None
 
 
 class ImageGenerator:
@@ -36,6 +45,7 @@ class ImageGenerator:
         clock: Callable[[], float] = time.monotonic,
         generate_url: str = GENERATE_URL,
         operation_url_template: str = OPERATION_URL_TEMPLATE,
+        cost_per_generation: float | None = None,
     ) -> None:
         self._transport = transport
         self._credentials = credentials
@@ -48,6 +58,7 @@ class ImageGenerator:
         self._clock = clock
         self._generate_url = generate_url
         self._operation_url_template = operation_url_template
+        self._cost_per_generation = cost_per_generation
 
     @classmethod
     def with_service_account_key(
@@ -68,12 +79,21 @@ class ImageGenerator:
         )
 
     async def generate_cover(self, prompt: str) -> bytes:
+        generated = await self.generate_cover_with_usage(prompt)
+        return generated.image
+
+    async def generate_cover_with_usage(self, prompt: str) -> GeneratedImage:
+        started = self._clock()
         operation_id = await self._submit(prompt)
         result = await self._poll(operation_id)
+        latency_ms = max(0, round((self._clock() - started) * 1000))
         try:
-            return base64.b64decode(result["image"])
+            image = base64.b64decode(result["image"])
         except KeyError as exc:
             raise YandexError(f"Malformed YandexART result: {result}") from exc
+        return GeneratedImage(
+            image=image, model=self._model, latency_ms=latency_ms, cost=self._cost_per_generation
+        )
 
     async def _submit(self, prompt: str) -> str:
         async def call() -> HttpResponse:

@@ -5,8 +5,10 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import asyncpg
+import pytest
 
-from content_zavod.job_queue import JobQueue, run_worker
+from content_zavod.domain import GenerationSteps
+from content_zavod.job_queue import ClaimedJob, JobPartialFailure, JobQueue, run_worker
 
 
 async def test_claim_next_returns_none_when_queue_is_empty(queue: JobQueue) -> None:
@@ -47,7 +49,7 @@ async def test_complete_writes_result_and_status_together(queue: JobQueue) -> No
 
 async def test_fail_requeues_with_backoff_until_attempts_are_exhausted(pool: asyncpg.Pool) -> None:
     queue = JobQueue(pool, max_attempts=2, base_delay=100.0)
-    await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
+    await pool.execute("TRUNCATE TABLE jobs, generation_steps RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
 
     first = await queue.claim_next()
@@ -69,7 +71,7 @@ async def test_fail_requeues_with_backoff_until_attempts_are_exhausted(pool: asy
 
 async def test_recover_stuck_requeues_abandoned_running_jobs(pool: asyncpg.Pool) -> None:
     queue = JobQueue(pool, stuck_timeout=timedelta(seconds=0))
-    await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
+    await pool.execute("TRUNCATE TABLE jobs, generation_steps RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
     await queue.claim_next()
 
@@ -81,7 +83,7 @@ async def test_recover_stuck_requeues_abandoned_running_jobs(pool: asyncpg.Pool)
 
 async def test_stale_worker_cannot_complete_or_fail_a_reclaimed_job(pool: asyncpg.Pool) -> None:
     queue = JobQueue(pool, stuck_timeout=timedelta(seconds=0))
-    await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
+    await pool.execute("TRUNCATE TABLE jobs, generation_steps RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
     stale = await queue.claim_next()
     assert stale is not None
@@ -102,7 +104,7 @@ async def test_stale_worker_cannot_complete_or_fail_a_reclaimed_job(pool: asyncp
 
 async def test_heartbeat_prevents_recovery_until_lease_becomes_stale(pool: asyncpg.Pool) -> None:
     queue = JobQueue(pool, stuck_timeout=timedelta(seconds=10))
-    await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
+    await pool.execute("TRUNCATE TABLE jobs, generation_steps RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
     claimed = await queue.claim_next()
     assert claimed is not None
@@ -230,7 +232,7 @@ async def test_run_worker_retries_a_failing_handler_and_eventually_marks_it_fail
     pool: asyncpg.Pool,
 ) -> None:
     queue = JobQueue(pool, max_attempts=2, base_delay=0.01)
-    await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
+    await pool.execute("TRUNCATE TABLE jobs, generation_steps RESTART IDENTITY")
     job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
 
     call_count = 0
@@ -259,3 +261,133 @@ async def test_run_worker_retries_a_failing_handler_and_eventually_marks_it_fail
 
     assert call_count == 2
     assert await queue.get_status(job_id) == "failed"
+
+
+async def test_run_worker_calls_on_attempt_with_output_on_success(queue: JobQueue) -> None:
+    await queue.enqueue("generate_plan", {"week": 1}, idempotency_key="plan-1")
+    seen: list[tuple[ClaimedJob, dict | None, BaseException | None]] = []
+    stop = asyncio.Event()
+
+    async def handler(payload: dict) -> dict:
+        return {"steps": [{"step_name": "outline"}]}
+
+    async def on_attempt(claimed: ClaimedJob, output: dict | None, error) -> None:
+        seen.append((claimed, output, error))
+        stop.set()
+
+    await asyncio.wait_for(
+        run_worker(
+            queue,
+            {"generate_plan": handler},
+            poll_interval=0.01,
+            stop=stop,
+            on_attempt=on_attempt,
+        ),
+        timeout=5,
+    )
+
+    assert len(seen) == 1
+    claimed, output, error = seen[0]
+    assert claimed.job_type == "generate_plan"
+    assert output == {"steps": [{"step_name": "outline"}]}
+    assert error is None
+
+
+async def test_run_worker_calls_on_attempt_with_error_on_failure(pool: asyncpg.Pool) -> None:
+    queue = JobQueue(pool, max_attempts=1, base_delay=0.01)
+    await pool.execute("TRUNCATE TABLE jobs, generation_steps RESTART IDENTITY")
+    await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
+    seen: list[BaseException | None] = []
+    stop = asyncio.Event()
+
+    async def failing_handler(payload: dict) -> dict:
+        raise JobPartialFailure("boom", {"steps": [{"step_name": "outline"}]})
+
+    async def on_attempt(claimed: ClaimedJob, output: dict | None, error) -> None:
+        seen.append(error)
+        stop.set()
+
+    await asyncio.wait_for(
+        run_worker(
+            queue,
+            {"generate_plan": failing_handler},
+            poll_interval=0.01,
+            stop=stop,
+            on_attempt=on_attempt,
+        ),
+        timeout=5,
+    )
+
+    assert len(seen) == 1
+    assert isinstance(seen[0], JobPartialFailure)
+    assert seen[0].partial_output == {"steps": [{"step_name": "outline"}]}
+
+
+async def test_job_cost_sums_every_attempt_end_to_end_through_a_retry(pool: asyncpg.Pool) -> None:
+    """Wires `run_worker`'s `on_attempt` hook to a real `GenerationSteps` (as
+    `entrypoints.worker._make_on_attempt` does) to prove a Job's cost reflects every
+    attempt including a failed one, not only the retry that finally succeeds (#74)."""
+    queue = JobQueue(pool, max_attempts=2, base_delay=0.01)
+    await pool.execute("TRUNCATE TABLE jobs, generation_steps RESTART IDENTITY")
+    generation_steps = GenerationSteps(pool)
+    job_id = await queue.enqueue("generate_article", {}, idempotency_key="article-1")
+
+    def _step(step_name: str, cost: float) -> dict:
+        return {
+            "step_name": step_name,
+            "provider": "yandex",
+            "model": "yandexgpt/latest",
+            "params": {},
+            "prompt_template_version": "v1",
+            "prompt_hash": "abc",
+            "tokens": 10,
+            "usage_missing": False,
+            "latency_ms": 5,
+            "cost": cost,
+        }
+
+    call_count = 0
+
+    async def handler(payload: dict) -> dict:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise JobPartialFailure("model unavailable", {"steps": [_step("outline", 0.05)]})
+        return {"steps": [_step("outline", 0.05), _step("draft", 0.1)]}
+
+    async def on_attempt(claimed, output, error) -> None:
+        if output is not None:
+            steps = output.get("steps") or []
+        elif isinstance(error, JobPartialFailure):
+            steps = error.partial_output.get("steps") or []
+        else:
+            steps = []
+        await generation_steps.record_many(
+            job_id=claimed.id, job_type=claimed.job_type, article_id=None, steps=steps
+        )
+
+    stop = asyncio.Event()
+
+    async def watcher() -> None:
+        while await queue.get_status(job_id) != "done":  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+        stop.set()
+
+    await asyncio.wait_for(
+        asyncio.gather(
+            run_worker(
+                queue,
+                {"generate_article": handler},
+                poll_interval=0.01,
+                stop=stop,
+                on_attempt=on_attempt,
+            ),
+            watcher(),
+        ),
+        timeout=5,
+    )
+
+    assert call_count == 2
+    summary = await generation_steps.job_cost(job_id)
+    assert summary.total == pytest.approx(0.05 + 0.05 + 0.1)
+    assert summary.step_count == 3

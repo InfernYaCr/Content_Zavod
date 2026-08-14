@@ -26,8 +26,9 @@ from ..domain import ArticleId, ArticleView
 from ..job_queue import JobHandler
 from ..personas import platform_profile
 from ..settings import SettingsReader
-from ..yandex import Completion, Message, TextGenerator
+from ..yandex import DEFAULT_TEMPERATURE, Completion, Message, TextGenerator
 from .article_prompts import draft_messages, outline_messages, rewrite_messages
+from .provenance import StepRecord, StepRecorder
 from .url_reachability import UrlReachabilityChecker
 
 _URL_RE = re.compile(r"https?://\S+")
@@ -49,9 +50,14 @@ _SENSITIVE_KEYWORDS = frozenset(
     }
 )
 
-# MVP: real per-token Yandex billing isn't wired up yet (no confirmed pricing
-# figures) - cost stays 0.0 until that lands as a follow-up.
-_COST_PER_TOKEN = 0.0
+# Bumped whenever a step's prompt-building function changes shape, so a stored Версия's
+# provenance stays explainable without reading logs (#74).
+_PROMPT_VERSIONS = {
+    "outline": "outline-v1",
+    "draft": "draft-v1",
+    "rewrite": "rewrite-v1",
+    "sources": "sources-v1",
+}
 
 
 class ArticleReader(Protocol):
@@ -116,59 +122,82 @@ async def _run_pipeline(
 ) -> dict[str, Any]:
     completions: list[Completion] = []
     prompts: list[str] = []
+    recorder = StepRecorder()
 
-    async def run_step(messages: list[Message]) -> str:
+    async def run_step(step_name: str, messages: list[Message]) -> str:
+        prompt_text = "\n".join(f"[{m.role}] {m.text}" for m in messages)
         completion = await text_generator.complete_with_usage(messages)
         completions.append(completion)
-        prompts.append("\n".join(f"[{m.role}] {m.text}" for m in messages))
+        prompts.append(prompt_text)
+        recorder.add(
+            StepRecord.from_completion(
+                completion,
+                step_name=step_name,
+                prompt_template_version=_PROMPT_VERSIONS[step_name],
+                prompt_text=prompt_text,
+                params={"temperature": DEFAULT_TEMPERATURE},
+            )
+        )
         return completion.text
 
-    owner_settings = await settings.read()
-    persona, custom_persona = owner_settings.persona, owner_settings.custom_persona
-    profile = platform_profile(platform)
-    outline = await run_step(
-        outline_messages(
-            title=title,
-            summary=summary,
-            keywords=keywords,
-            previous_content=previous_content,
-            comment=comment,
-            persona=persona,
-            custom_persona=custom_persona,
-            profile=profile,
+    try:
+        owner_settings = await settings.read()
+        persona, custom_persona = owner_settings.persona, owner_settings.custom_persona
+        profile = platform_profile(platform)
+        outline = await run_step(
+            "outline",
+            outline_messages(
+                title=title,
+                summary=summary,
+                keywords=keywords,
+                previous_content=previous_content,
+                comment=comment,
+                persona=persona,
+                custom_persona=custom_persona,
+                profile=profile,
+            ),
         )
-    )
-    draft = await run_step(
-        draft_messages(
-            title=title,
-            outline=outline,
-            persona=persona,
-            custom_persona=custom_persona,
-            profile=profile,
+        draft = await run_step(
+            "draft",
+            draft_messages(
+                title=title,
+                outline=outline,
+                persona=persona,
+                custom_persona=custom_persona,
+                profile=profile,
+            ),
         )
-    )
-    rewrite = await run_step(
-        rewrite_messages(
-            draft=draft,
-            persona=persona,
-            custom_persona=custom_persona,
-            profile=profile,
+        rewrite = await run_step(
+            "rewrite",
+            rewrite_messages(
+                draft=draft,
+                persona=persona,
+                custom_persona=custom_persona,
+                profile=profile,
+            ),
         )
-    )
-    sensitive = _is_money_or_legal(title, keywords)
-    sources_text = await run_step(_sources_messages(rewrite, sensitive=sensitive))
+        sensitive = _is_money_or_legal(title, keywords)
+        sources_text = await run_step("sources", _sources_messages(rewrite, sensitive=sensitive))
 
-    urls = _extract_urls(sources_text)
-    reachable_urls = [url for url in urls if await url_checker.is_reachable(url)]
-    content = _assemble_content(rewrite, reachable_urls)
+        urls = _extract_urls(sources_text)
+        reachable_urls = [url for url in urls if await url_checker.is_reachable(url)]
+        content = _assemble_content(rewrite, reachable_urls)
+    except Exception as exc:
+        raise recorder.fail(exc, article_id=article_id) from exc
 
+    # A total is only as good as its worst component - one step with unreported usage or
+    # unconfigured pricing makes the whole Версия's tokens/cost unknown, not a partial sum
+    # quietly presented as final (#74).
+    usage_complete = not any(c.usage_missing for c in completions)
+    cost_complete = not any(c.cost is None for c in completions)
     return {
         "article_id": article_id,
         "content": content,
         "prompt": "\n\n---\n\n".join(prompts),
         "model": completions[-1].model,
-        "tokens": sum(c.tokens for c in completions),
-        "cost": sum(c.tokens * _COST_PER_TOKEN for c in completions),
+        "tokens": sum(c.tokens for c in completions) if usage_complete else None,
+        "cost": sum(c.cost for c in completions) if cost_complete else None,
+        "steps": recorder.as_output(),
     }
 
 

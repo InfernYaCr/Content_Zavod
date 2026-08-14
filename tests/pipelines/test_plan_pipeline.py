@@ -3,12 +3,13 @@ from datetime import UTC, datetime
 import pytest
 
 from content_zavod.domain.plan import PlanItemDetail
+from content_zavod.job_queue import JobPartialFailure
 from content_zavod.pipelines.plan_pipeline import (
     make_generate_plan_handler,
     make_regenerate_topic_handler,
 )
 from content_zavod.settings import DEFAULT_DIRECTIONS, SettingsService
-from content_zavod.yandex import KeywordDynamicsPoint, Message
+from content_zavod.yandex import Completion, KeywordDynamicsPoint, Message
 
 
 class FakePlanItemReader:
@@ -55,12 +56,14 @@ class FakeTextGenerator:
         self._responses = responses
         self.calls: list[list[Message]] = []
 
-    async def complete(self, messages: list[Message], *, temperature: float = 0.7) -> str:
+    async def complete_with_usage(
+        self, messages: list[Message], *, temperature: float = 0.7
+    ) -> Completion:
         self.calls.append(messages)
         user_text = messages[-1].text
         for keyword, response in self._responses.items():
             if keyword in user_text:
-                return response
+                return Completion(text=response, model="yandexgpt/latest", tokens=10)
         raise AssertionError(f"no fake response configured for prompt: {user_text!r}")
 
 
@@ -310,12 +313,11 @@ async def test_regenerate_topic_handler_redrafts_using_current_item_and_comment(
 
     output = await handler({"plan_item_id": "item-1", "comment": "make it punchier"})
 
-    assert output == {
-        "plan_item_id": "item-1",
-        "title": "New Title",
-        "summary": "new summary",
-        "keywords": ["new kw"],
-    }
+    assert output["plan_item_id"] == "item-1"
+    assert output["title"] == "New Title"
+    assert output["summary"] == "new summary"
+    assert output["keywords"] == ["new kw"]
+    assert [step["step_name"] for step in output["steps"]] == ["topic_regenerate"]
     assert "make it punchier" in text_generator.calls[0][-1].text
 
 
@@ -364,3 +366,53 @@ async def test_regenerate_topic_handler_reads_niche_fresh_on_each_run_without_be
     store._niche = "b2b saas"
     await handler({"plan_item_id": "item-1", "comment": None})
     assert "«b2b saas»" in text_generator.calls[-1][0].text
+
+
+@pytest.mark.asyncio
+async def test_handler_reports_step_provenance_per_topic_draft() -> None:
+    keyword_stats = FakeKeywordStats(
+        {"kw1": _growing(100, 500), "kw2": _growing(100, 500)},
+    )
+    text_generator = FakeTextGenerator(
+        {
+            "kw1": "Title: T1\nSummary: s\nKeywords: kw1",
+            "kw2": "Title: T2\nSummary: s\nKeywords: kw2",
+        }
+    )
+    handler = make_generate_plan_handler(
+        keyword_stats,
+        text_generator,
+        _no_recent_titles,
+        SettingsService(FakeOwnerSettingsStore()),
+        seed_keywords=("kw1", "kw2"),
+        topics_per_plan=2,
+        now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
+    )
+
+    output = await handler({"week_label": "Week 1"})
+
+    assert len(output["steps"]) == 2
+    assert {step["step_name"] for step in output["steps"]} == {"topic_draft"}
+
+
+class _FailingTextGenerator:
+    async def complete_with_usage(
+        self, messages: list[Message], *, temperature: float = 0.7
+    ) -> Completion:
+        raise RuntimeError("model unavailable")
+
+
+@pytest.mark.asyncio
+async def test_regenerate_topic_handler_failure_raises_partial_failure() -> None:
+    current = PlanItemDetail(id="item-1", title="Old Title", summary="", keywords=[])
+    handler = make_regenerate_topic_handler(
+        FakePlanItemReader(current),
+        _FailingTextGenerator(),
+        SettingsService(FakeOwnerSettingsStore()),
+    )
+
+    with pytest.raises(JobPartialFailure) as excinfo:
+        await handler({"plan_item_id": "item-1", "comment": None})
+
+    assert excinfo.value.partial_output["plan_item_id"] == "item-1"
+    assert excinfo.value.partial_output["steps"] == []

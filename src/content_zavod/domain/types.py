@@ -88,13 +88,17 @@ class TopicDraft:
 
 @dataclass(frozen=True)
 class GeneratedVersion:
-    """One generation run of an Article: its own prompt, model, and cost (ADR-driven Версия)."""
+    """One generation run of an Article: its own prompt, model, and cost (ADR-driven Версия).
+
+    `tokens`/`cost` are `None` when any of the run's steps didn't report usage or had no
+    pricing configured (#74) - a real number here is always a complete one; an unknown
+    component never gets silently folded into a `0`."""
 
     content: str
     prompt: str
     model: str
-    tokens: int
-    cost: float
+    tokens: int | None
+    cost: float | None
     source_job_id: int | None = None
 
 
@@ -105,8 +109,8 @@ class ArticleVersionSummary:
 
     id: int
     model: str
-    tokens: int
-    cost: float
+    tokens: int | None
+    cost: float | None
     created_at: datetime
 
 
@@ -117,6 +121,6 @@ class ArticleVersionView:
     id: int
     content: str
     model: str
-    tokens: int
-    cost: float
+    tokens: int | None
+    cost: float | None
     created_at: datetime

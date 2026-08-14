@@ -6,11 +6,17 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from .models import JobHandler
-from .queue import JobQueue
+from .queue import ClaimedJob, JobQueue
 
 logger = logging.getLogger(__name__)
+
+# Invoked once per attempt, after `queue.complete`/`queue.fail` - `output` is set on
+# success, `error` on failure (queued for retry or terminally failed alike), so the
+# caller sees every attempt, not only the one a Job finally settles on.
+OnAttempt = Callable[[ClaimedJob, dict[str, Any] | None, BaseException | None], Awaitable[None]]
 
 
 async def run_worker(
@@ -23,6 +29,7 @@ async def run_worker(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     stop: asyncio.Event | None = None,
     clock: Callable[[], float] = time.monotonic,
+    on_attempt: OnAttempt | None = None,
 ) -> None:
     last_recovery = clock() - stuck_recovery_interval
     while stop is None or not stop.is_set():
@@ -60,8 +67,12 @@ async def run_worker(
         except Exception as exc:
             logger.warning("Job %s (%s) failed: %s", claimed.id, claimed.job_type, exc)
             await queue.fail(claimed.id, str(exc), claimed.lease_token)
+            if on_attempt is not None:
+                await on_attempt(claimed, None, exc)
         else:
             await queue.complete(claimed.id, output, claimed.lease_token)
+            if on_attempt is not None:
+                await on_attempt(claimed, output, None)
         finally:
             heartbeat_task.cancel()
             await asyncio.gather(heartbeat_task, return_exceptions=True)

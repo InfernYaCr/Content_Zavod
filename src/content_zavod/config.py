@@ -38,11 +38,23 @@ class YandexCredentials:
 
 
 @dataclass(frozen=True)
+class YandexPricing:
+    """Per-step cost accounting (#74) needs a real price to turn tokens/images into a
+    cost - unlike every other setting here, both fields are optional: with neither set,
+    every generation step's `cost` stays explicitly unknown (`None`, never a silent
+    `0.0`) rather than assuming a number nobody configured."""
+
+    text_cost_per_1k_tokens: float | None
+    image_cost_per_generation: float | None
+
+
+@dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
     telegram_notify_chat_id: int
     postgres_dsn: str
     yandex: YandexCredentials
+    yandex_pricing: YandexPricing
     timezone: ZoneInfo
 
 
@@ -78,6 +90,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         telegram_notify_chat_id=telegram_notify_chat_id,
         postgres_dsn=postgres_dsn,
         yandex=YandexCredentials(folder_id=folder_id, api_key=api_key, oauth_token=oauth_token),
+        yandex_pricing=YandexPricing(
+            text_cost_per_1k_tokens=_optional_float(env, "YANDEX_TEXT_COST_PER_1K_TOKENS"),
+            image_cost_per_generation=_optional_float(env, "YANDEX_IMAGE_COST_PER_GENERATION"),
+        ),
         timezone=timezone,
     )
 
@@ -87,3 +103,13 @@ def _require(env: Mapping[str, str], name: str) -> str:
     if not value:
         raise ConfigError(f"missing required environment variable: {name}")
     return value
+
+
+def _optional_float(env: Mapping[str, str], name: str) -> float | None:
+    value = env.get(name)
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ConfigError(f"invalid {name}={value!r}, must be a number") from exc

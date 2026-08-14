@@ -47,6 +47,46 @@ async def test_generate_cover_submits_polls_and_decodes_result() -> None:
 
 
 @pytest.mark.asyncio
+async def test_generate_cover_with_usage_reports_model_latency_and_cost() -> None:
+    transport = FakeHttpTransport()
+    image_bytes = b"fake-png-bytes"
+    transport.queue_post(GENERATE_URL, HttpResponse(status=200, body={"id": "op-1"}))
+    transport.queue_get(
+        OPERATION_URL,
+        HttpResponse(
+            status=200,
+            body={"done": True, "response": {"image": base64.b64encode(image_bytes).decode()}},
+        ),
+    )
+    generator = _make_generator(transport, model="yandex-art", cost_per_generation=5.0)
+
+    generated = await generator.generate_cover_with_usage("a cat riding a bike")
+
+    assert generated.image == image_bytes
+    assert generated.model == "yandex-art"
+    assert generated.cost == 5.0
+    assert generated.latency_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_generate_cover_with_usage_leaves_cost_unknown_without_pricing_configured() -> None:
+    transport = FakeHttpTransport()
+    transport.queue_post(GENERATE_URL, HttpResponse(status=200, body={"id": "op-1"}))
+    transport.queue_get(
+        OPERATION_URL,
+        HttpResponse(
+            status=200,
+            body={"done": True, "response": {"image": base64.b64encode(b"x").decode()}},
+        ),
+    )
+    generator = _make_generator(transport)
+
+    generated = await generator.generate_cover_with_usage("prompt")
+
+    assert generated.cost is None
+
+
+@pytest.mark.asyncio
 async def test_raises_on_operation_error() -> None:
     transport = FakeHttpTransport()
     transport.queue_post(GENERATE_URL, HttpResponse(status=200, body={"id": "op-1"}))

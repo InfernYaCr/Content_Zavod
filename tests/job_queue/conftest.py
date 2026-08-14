@@ -17,5 +17,5 @@ async def queue(pool: asyncpg.Pool) -> AsyncIterator[JobQueue]:
         notification_base_delay=0.01,
         stuck_timeout=timedelta(seconds=0),
     )
-    await pool.execute("TRUNCATE TABLE jobs RESTART IDENTITY")
+    await pool.execute("TRUNCATE TABLE jobs, generation_steps RESTART IDENTITY")
     yield job_queue

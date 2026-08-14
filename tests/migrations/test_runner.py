@@ -15,6 +15,8 @@ async def test_run_pending_applies_every_migration_once_and_is_idempotent(
         "0001_baseline",
         "0002_dedupe_pending_review_plans",
         "0003_plan_telegram_message_ref",
+        "0004_generation_steps",
+        "0005_nullable_article_version_cost",
     ]
 
     applied_second_run = await run_migrations(isolated_pool)
@@ -25,6 +27,8 @@ async def test_run_pending_applies_every_migration_once_and_is_idempotent(
         "0001_baseline",
         "0002_dedupe_pending_review_plans",
         "0003_plan_telegram_message_ref",
+        "0004_generation_steps",
+        "0005_nullable_article_version_cost",
     ]
 
 
@@ -108,9 +112,11 @@ async def test_concurrent_run_pending_does_not_race_on_the_tracking_insert(
         "0001_baseline",
         "0002_dedupe_pending_review_plans",
         "0003_plan_telegram_message_ref",
+        "0004_generation_steps",
+        "0005_nullable_article_version_cost",
     }
     recorded = await isolated_pool.fetch("SELECT version FROM schema_migrations")
-    assert len(recorded) == 3
+    assert len(recorded) == 5
 
 
 async def test_rollback_of_0002_drops_only_the_index_without_losing_data(
@@ -147,7 +153,12 @@ async def test_rollback_of_0002_drops_only_the_index_without_losing_data(
     remaining_versions = {
         row["version"] for row in await isolated_pool.fetch("SELECT version FROM schema_migrations")
     }
-    assert remaining_versions == {"0001_baseline", "0003_plan_telegram_message_ref"}
+    assert remaining_versions == {
+        "0001_baseline",
+        "0003_plan_telegram_message_ref",
+        "0004_generation_steps",
+        "0005_nullable_article_version_cost",
+    }
     statuses = {
         row["id"]: row["status"]
         for row in await isolated_pool.fetch("SELECT id, status FROM plans")
