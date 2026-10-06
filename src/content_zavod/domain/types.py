@@ -78,6 +78,18 @@ class PlanMessageRef:
 
 
 @dataclass(frozen=True)
+class PlanItemCoverView:
+    """One Тема's generated cover image, for the batch-done burst (#91) - the individual
+    generate_cover Job result only has the image bytes in memory for the one Job that just
+    finished, so a later delivery needs to re-read every already-applied cover back out."""
+
+    plan_item_id: PlanItemId
+    title: str
+    image: bytes
+    mime_type: str
+
+
+@dataclass(frozen=True)
 class TopicDraft:
     """A Тема ready to be stored, either from automatic Wordstat sourcing or a manual proposal."""
 

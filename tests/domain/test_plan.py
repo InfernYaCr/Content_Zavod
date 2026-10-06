@@ -6,6 +6,7 @@ import pytest
 from content_zavod.domain import (
     Plan,
     PlanId,
+    PlanItemCoverView,
     PlanItemNotEditable,
     PlanItemNotFound,
     PlanMessageRef,
@@ -522,6 +523,55 @@ async def test_apply_cover_persists_image_and_mime_type(plan: Plan, pool: asyncp
     assert row["cover_generated_at"] is not None
 
 
+async def test_list_covers_for_plan_returns_only_items_with_a_stored_cover(plan: Plan) -> None:
+    plan_id, view = await _create_plan(plan, titles=("Topic A", "Topic B"))
+    await plan.apply_cover(view.items[0].id, b"fake-image-bytes", "image/jpeg")
+
+    covers = await plan.list_covers_for_plan(plan_id)
+
+    assert covers == [
+        PlanItemCoverView(
+            plan_item_id=view.items[0].id,
+            title="Topic A",
+            image=b"fake-image-bytes",
+            mime_type="image/jpeg",
+        )
+    ]
+
+
+async def test_mark_cover_generation_failed_resolves_the_owning_item(
+    plan: Plan, queue: JobQueue
+) -> None:
+    _, view = await _create_plan(plan)
+    item_id = view.items[0].id
+    await plan.request_cover(item_id)
+    claimed = await queue.claim_next()
+    assert claimed is not None
+
+    assert await plan.mark_cover_generation_failed(claimed.id) == item_id
+
+
+async def test_mark_cover_generation_failed_returns_none_for_an_unowned_job(plan: Plan) -> None:
+    assert await plan.mark_cover_generation_failed(999999) is None
+
+
+async def test_apply_cover_clears_the_active_cover_job_so_a_stale_failure_is_ignored(
+    plan: Plan, queue: JobQueue
+) -> None:
+    """A completed cover must release its job_id claim - otherwise a late failure
+    notification for that same (now-superseded) job could wrongly match a later Тема
+    that happens to reuse the id space, or mask a real subsequent failure."""
+    _, view = await _create_plan(plan)
+    item_id = view.items[0].id
+    await plan.request_cover(item_id)
+    claimed = await queue.claim_next()
+    assert claimed is not None
+
+    await plan.apply_cover(item_id, b"bytes", "image/jpeg")
+
+    assert await plan.mark_cover_generation_failed(claimed.id) is None
+
+
 async def test_get_message_ref_returns_none_before_any_delivery(plan: Plan) -> None:
     plan_id, _ = await _create_plan(plan)
 
@@ -550,3 +600,89 @@ async def test_record_message_ref_is_first_writer_wins(plan: Plan) -> None:
     await plan.record_message_ref(plan_id, chat_id=42, message_id=999)
 
     assert await plan.get_message_ref(plan_id) == PlanMessageRef(chat_id=42, message_id=100)
+
+
+async def test_start_generation_batch_returns_true_on_first_call(plan: Plan) -> None:
+    plan_id, _ = await _create_plan(plan)
+
+    assert await plan.start_generation_batch(plan_id, total=9) is True
+
+
+async def test_start_generation_batch_returns_false_on_replay(plan: Plan) -> None:
+    """#91: a retried approve_all callback (or a crash between approving and enqueueing)
+    replays the whole fan-out, including this call - it must not reset an in-progress
+    batch's total/done back to a fresh count."""
+    plan_id, _ = await _create_plan(plan)
+
+    await plan.start_generation_batch(plan_id, total=9)
+
+    assert await plan.start_generation_batch(plan_id, total=9) is False
+
+
+async def test_record_generation_progress_returns_none_when_no_batch_open(plan: Plan) -> None:
+    """No batch tracked (legacy Plan, or one whose batch already closed) - the caller falls
+    back to per-Job delivery rather than editing a progress message that doesn't exist."""
+    plan_id, _ = await _create_plan(plan)
+
+    assert await plan.record_generation_progress(plan_id) is None
+
+
+async def test_record_generation_progress_increments_and_returns_done_total(plan: Plan) -> None:
+    plan_id, _ = await _create_plan(plan)
+    await plan.start_generation_batch(plan_id, total=3)
+
+    assert await plan.record_generation_progress(plan_id) == (1, 3)
+    assert await plan.record_generation_progress(plan_id) == (2, 3)
+
+
+async def test_record_generation_progress_closes_the_batch_once_done_reaches_total(
+    plan: Plan,
+) -> None:
+    """Once the last Job of the batch reports in, the batch closes (`generation_total` resets
+    to NULL) so a later replay of the fan-out can open a fresh batch instead of finding one
+    already at capacity - observed here through `start_generation_batch` accepting a new batch
+    afterwards, the only public way to see that the count was reset."""
+    plan_id, _ = await _create_plan(plan)
+    await plan.start_generation_batch(plan_id, total=1)
+
+    assert await plan.record_generation_progress(plan_id) == (1, 1)
+
+    assert await plan.start_generation_batch(plan_id, total=5) is True
+
+
+async def test_get_progress_message_ref_returns_none_before_any_delivery(plan: Plan) -> None:
+    plan_id, _ = await _create_plan(plan)
+
+    assert await plan.get_progress_message_ref(plan_id) is None
+
+
+async def test_record_progress_message_ref_round_trips_through_get(plan: Plan) -> None:
+    plan_id, _ = await _create_plan(plan)
+
+    await plan.record_progress_message_ref(plan_id, chat_id=42, message_id=100)
+
+    assert await plan.get_progress_message_ref(plan_id) == PlanMessageRef(
+        chat_id=42, message_id=100
+    )
+
+
+async def test_record_progress_message_ref_is_first_writer_wins(plan: Plan) -> None:
+    plan_id, _ = await _create_plan(plan)
+
+    await plan.record_progress_message_ref(plan_id, chat_id=42, message_id=100)
+    await plan.record_progress_message_ref(plan_id, chat_id=42, message_id=999)
+
+    assert await plan.get_progress_message_ref(plan_id) == PlanMessageRef(
+        chat_id=42, message_id=100
+    )
+
+
+async def test_get_plan_id_for_item_resolves_the_owning_plan(plan: Plan) -> None:
+    plan_id, view = await _create_plan(plan)
+
+    assert await plan.get_plan_id_for_item(view.items[0].id) == plan_id
+
+
+async def test_get_plan_id_for_item_raises_for_unknown_item(plan: Plan) -> None:
+    with pytest.raises(PlanItemNotFound):
+        await plan.get_plan_id_for_item("missing")

@@ -34,6 +34,7 @@ from content_zavod.telegram.gateway import (
     build_plan_keyboard,
     chunk_text,
     format_week_range,
+    render_generation_progress_text,
     render_history_articles_text,
     render_history_version_text,
     render_history_versions_text,
@@ -175,6 +176,38 @@ def test_render_plan_text_shows_date_range_not_week_label() -> None:
 
     assert "2026-W32" not in text
     assert "3–9 августа 2026" in text
+
+
+def test_render_generation_progress_text_shows_the_running_count() -> None:
+    text = render_generation_progress_text(4, 9)
+
+    assert "4/9" in text
+
+
+def test_render_generation_progress_text_points_to_history_once_done() -> None:
+    text = render_generation_progress_text(9, 9)
+
+    assert "9/9" in text
+    assert "/history" in text
+
+
+async def test_send_generation_progress_sends_a_plain_message_and_returns_its_id() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    message_id = await gateway.send_generation_progress(chat_id=1, done=0, total=9)
+
+    assert message_id == 1
+    assert bot.sent_messages == [(1, "🔄 Готовлю материалы: 0/9", None)]
+
+
+async def test_edit_generation_progress_calls_edit_message_text() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    await gateway.edit_generation_progress(chat_id=1, message_id=99, done=4, total=9)
+
+    assert bot.edited_messages == [(1, 99, "🔄 Готовлю материалы: 4/9", None)]
 
 
 def test_format_week_range_within_single_month() -> None:

@@ -182,11 +182,15 @@ async def _redraft_topic(
 
 
 def _dynamics_window(now: datetime) -> tuple[str, str]:
-    to_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    from_month = to_month
+    # Wordstat rejects `toDate` unless it's a month's last day (confirmed against the
+    # live API - see docs/integrations/yandex-search-api.md), so the window ends at the
+    # last complete month rather than the first (incomplete) day of the current one.
+    first_of_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    to_month_end = first_of_current_month - timedelta(days=1)
+    from_month = first_of_current_month
     for _ in range(DYNAMICS_MONTHS):
         from_month = (from_month - timedelta(days=1)).replace(day=1)
-    return _to_api_date(from_month), _to_api_date(to_month)
+    return _to_api_date(from_month), _to_api_date(to_month_end)
 
 
 def _to_api_date(value: datetime) -> str:

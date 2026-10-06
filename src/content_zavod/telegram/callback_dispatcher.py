@@ -76,7 +76,7 @@ class CallbackAnswerer(Protocol):
 
 
 async def _generate_articles_for_approved_plan(
-    plan: Plan, article: Article, plan_id: PlanId
+    plan: Plan, article: Article, gateway: TelegramGateway, chat_id: int, plan_id: PlanId
 ) -> None:
     """Fan out each approved Тема into one Статья per Площадка and enqueue its `generate_article`
     Job (#14), plus one `generate_cover` Job per Тема (#15 - the whole week's content, including
@@ -85,8 +85,19 @@ async def _generate_articles_for_approved_plan(
     approved, and both `Article.request_generation` and `Plan.request_cover` are themselves
     idempotent - so replaying this for an already-approved Plan (a retried `approve_all` callback,
     or a crash between approving and enqueueing) creates neither duplicate Статьи/обложки nor
-    duplicate Jobs."""
-    for item in await plan.approved_items(plan_id):
+    duplicate Jobs.
+
+    Opens a progress batch sized for every Job this fan-out is about to enqueue (#91) and sends
+    the one live-edited progress message the notification handler updates as each Job finishes,
+    instead of one Telegram message per finished Job. `start_generation_batch` only returns
+    `True` the one time it actually opens the batch, so a replay of this same fan-out (which
+    creates no duplicate Jobs either, per above) doesn't send a second progress message."""
+    items = await plan.approved_items(plan_id)
+    total = len(items) * (1 + len(PLATFORMS))
+    if total > 0 and await plan.start_generation_batch(plan_id, total):
+        message_id = await gateway.send_generation_progress(chat_id, done=0, total=total)
+        await plan.record_progress_message_ref(plan_id, chat_id, message_id)
+    for item in items:
         await plan.request_cover(item.id)
         for platform in PLATFORMS:
             await article.request_generation(
@@ -310,7 +321,9 @@ class CallbackDispatcher:
                 await self._plan_review.handle_action(
                     chat_id, user_id, PlanItemId(id_), "approve_all"
                 )
-                await _generate_articles_for_approved_plan(self._plan, self._article, PlanId(id_))
+                await _generate_articles_for_approved_plan(
+                    self._plan, self._article, self._gateway, chat_id, PlanId(id_)
+                )
             case SimpleAction(action="delete", id_=id_):
                 if not await self._authorized("delete", role, deny_text, answer):
                     return

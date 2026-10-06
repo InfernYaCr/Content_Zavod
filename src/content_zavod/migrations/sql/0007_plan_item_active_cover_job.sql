@@ -1,0 +1,11 @@
+-- Tracks which generate_cover Job currently owns a Тема's cover generation (#91), mirroring
+-- `articles.active_generation_job_id`. Without this, a failed generate_cover Job has no way
+-- to resolve its plan_item_id (JobResult.output is NULL on failure) and so could not advance
+-- its open batch's progress - leaving that batch permanently short by one, which meant it
+-- would never close and the Статьи it already generated successfully would never be
+-- delivered (see Plan.mark_cover_generation_failed).
+--
+-- Rollback (no data loss): DROP COLUMN active_cover_job_id - a rolled-back deploy just loses
+-- the ability to resolve a failed cover Job back to its Тема; `request_cover` and
+-- `apply_cover` are unaffected.
+ALTER TABLE plan_items ADD COLUMN IF NOT EXISTS active_cover_job_id BIGINT;
