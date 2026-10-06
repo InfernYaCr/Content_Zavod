@@ -1,7 +1,7 @@
 """Article: Статья (one Площадка's rendering of a Тема) and its Версии.
 
 Status transitions: `queued` -> `generating`* -> `ready` <-> `regenerating` ->
-`exported`. (`generating` is a Job Handler concern, see #6 — this module only
+`exported` -> `regenerating` (✅ doesn't lock a Статья, #86). (`generating` is a Job Handler concern, see #6 — this module only
 ever observes `queued` or the effect of `record_version`.) `record_version`
 always appends a new Версия rather than overwriting; `get`/`list_for_plan`
 serve the latest one. `mark_exported` and `request_regeneration` are
@@ -30,7 +30,9 @@ from .types import (
     PlanItemId,
 )
 
-_REGENERABLE_STATUSES: frozenset[ArticleStatus] = frozenset({"ready", "error"})
+# `exported` stays regenerable (#86): the new Версия returns the Статья to `ready` via
+# `record_version`.
+_REGENERABLE_STATUSES: frozenset[ArticleStatus] = frozenset({"ready", "error", "exported"})
 
 GenerationResultApplication = Literal["applied", "already_applied", "stale"]
 

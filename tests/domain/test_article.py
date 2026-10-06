@@ -220,6 +220,27 @@ async def test_request_regeneration_raises_while_still_queued(article: Article, 
         await article.request_regeneration(article_id, comment=None)
 
 
+async def test_exported_article_can_be_regenerated_back_to_ready(
+    article: Article, plan: Plan, queue: JobQueue
+) -> None:
+    """#86: ✅ must not lock a Статья - a new Версия returns it to `ready`."""
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.create(plan_id, item_id, "Topic A", "zen")
+    await article.record_version(article_id, _VERSION)
+    await article.mark_exported(article_id)
+
+    await article.request_regeneration(article_id, comment=None)
+
+    assert (await article.get_summary(article_id)).status == "regenerating"
+    claimed = await queue.claim_next()
+    assert claimed is not None
+    assert claimed.job_type == "regenerate_article"
+
+    await article.record_version(article_id, _VERSION)
+
+    assert (await article.get_summary(article_id)).status == "ready"
+
+
 async def test_mark_exported_requires_a_ready_article(article: Article, plan: Plan) -> None:
     plan_id, item_id = await _create_plan_item(plan)
     article_id = await article.create(plan_id, item_id, "Topic A", "zen")

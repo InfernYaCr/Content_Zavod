@@ -510,8 +510,35 @@ async def test_regenerate_article_prompts_for_a_comment_on_first_press(f: Fixtur
 async def test_approve_marks_article_exported(f: Fixtures) -> None:
     answer = await dispatch(f, SimpleAction("approve", "article-1"))
 
-    assert answer.calls == [(None, None)]
+    assert answer.calls == [("Отмечено как готовое", None)]
     assert f.article.mark_exported_calls == [ArticleId("article-1")]
+
+
+async def test_approve_redraws_the_card_keyboard_with_the_done_state(f: Fixtures) -> None:
+    """#86: the card itself shows the Статья was accepted - ✅ becomes «✅ Готово»."""
+    await dispatch(f, SimpleAction("approve", "article-1"))
+
+    chat_id, message_id, _, keyboard = f.bot.edited_messages[-1]
+    assert (chat_id, message_id) == (1, 2)
+    labels = [button.text for row in keyboard.inline_keyboard for button in row]
+    assert "✅ Готово" in labels
+    assert "✅" not in labels
+
+
+async def test_approve_refusal_is_the_only_answer(f: Fixtures) -> None:
+    """A Статья that isn't ready gets one alerting answer, and the card isn't redrawn."""
+    from content_zavod.domain import ArticleNotReady
+
+    async def not_ready(article_id: ArticleId) -> None:
+        raise ArticleNotReady(article_id)
+
+    f.article.mark_exported = not_ready  # type: ignore[method-assign]
+
+    answer = await dispatch(f, SimpleAction("approve", "article-1"))
+
+    assert len(answer.calls) == 1
+    assert answer.calls[0][1] is True
+    assert f.bot.edited_messages == []
 
 
 async def test_request_cover_requests_the_cover(f: Fixtures) -> None:

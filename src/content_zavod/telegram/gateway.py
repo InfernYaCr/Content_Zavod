@@ -483,7 +483,11 @@ def build_members_keyboard(members: list[tuple[int, str]]) -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_article_keyboard(article_id: str, plan_item_id: str) -> InlineKeyboardMarkup:
+def build_article_keyboard(
+    article_id: str, plan_item_id: str, *, exported: bool = False
+) -> InlineKeyboardMarkup:
+    """`exported` swaps ✅ for «✅ Готово» so the card shows it was accepted (#86); the button
+    keeps the same `approve` callback, which is idempotent."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             _export_button_row(article_id, docx_label="📄 .docx", md_label="📝 .md"),
@@ -495,7 +499,7 @@ def build_article_keyboard(article_id: str, plan_item_id: str) -> InlineKeyboard
                     ),
                 ),
                 InlineKeyboardButton(
-                    text="✅",
+                    text="✅ Готово" if exported else "✅",
                     callback_data=encode_callback_data(SimpleAction("approve", article_id)),
                 ),
             ],
@@ -681,6 +685,16 @@ class TelegramGateway:
         text = f"📄 {article.title} ({article.platform})\nВыберите формат для скачивания:"
         await self._bot.send_message(
             chat_id, text, reply_markup=build_article_keyboard(article.id, article.plan_item_id)
+        )
+
+    async def mark_article_card_exported(
+        self, chat_id: int, message_id: int, article: ArticleView
+    ) -> None:
+        """Redraws an Article card's buttons in place after ✅, text untouched (#86)."""
+        await self._bot.edit_message_reply_markup(
+            chat_id,
+            message_id,
+            reply_markup=build_article_keyboard(article.id, article.plan_item_id, exported=True),
         )
 
     async def send_article_document(

@@ -289,9 +289,13 @@ class CallbackDispatcher:
             case SimpleAction(action="approve", id_=id_):
                 if not await self._authorized("approve", role, deny_text, answer):
                     return
-                await answer()
                 # Accepting a ready Статья: no comment-wait, just the transition to "exported".
+                # Transition first, so a refusal is the callback's only (alerting) answer; then
+                # confirm it and redraw the card's ✅ as «✅ Готово» (#86).
                 await self._article.mark_exported(ArticleId(id_))
+                await answer("Отмечено как готовое")
+                view = await self._article.get(ArticleId(id_))
+                await self._gateway.mark_article_card_exported(chat_id, message_id, view)
             case SimpleAction(action="request_cover", id_=id_):
                 if not await self._authorized("request_cover", role, deny_text, answer):
                     return
