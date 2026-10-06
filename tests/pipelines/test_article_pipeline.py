@@ -554,11 +554,27 @@ async def test_project_cta_line_is_appended_when_the_model_drops_the_url() -> No
 
 @pytest.mark.asyncio
 async def test_project_cta_line_is_appended_when_the_model_mangles_the_url() -> None:
-    mangled = "Подписывайтесь: t.me/marketing_daily или https://t.me/marketing_dailyy"
+    mangled = "Подписывайтесь: https://t.me/marketing_dailyy или https://t.me/marketing_daily/2"
 
     content, _ = await _generate_with_project(f"Текст.\n\n{mangled}")
 
     assert content == f"Текст.\n\n{mangled}\n\n{_PROJECT_CTA}"
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "t.me/marketing_daily",
+        "@marketing_daily",
+        "http://t.me/marketing_daily",
+        "T.me/Marketing_Daily",
+    ],
+)
+@pytest.mark.asyncio
+async def test_project_link_spelled_differently_is_fixed_in_place_not_duplicated(spelling) -> None:
+    content, _ = await _generate_with_project(f"Текст.\n\nБольше разборов — в {spelling}.")
+
+    assert content == f"Текст.\n\nБольше разборов — в {_PROJECT_URL}."
 
 
 @pytest.mark.asyncio

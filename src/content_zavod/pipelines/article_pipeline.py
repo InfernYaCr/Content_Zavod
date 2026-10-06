@@ -250,18 +250,37 @@ def _assemble_content(body: str, urls: list[str]) -> str:
     return f"{body}\n\nИсточники:\n{sources}"
 
 
+# The occurrence must end where the URL ends - `https://t.me/name_2` or `.../name/12` is a
+# different link, not a copy of `https://t.me/name`.
+_URL_END = r"(?![\w/?#=&%~+@-]|[.:]\w)"
+
+
 def _ensure_project_link(body: str, project: Project | None) -> str:
     """Exactly one exact `project.url` in the body (#98). Repeats are cut down to the last
-    occurrence - the closing CTA - keeping a Markdown link's text; a missing or mangled URL
-    (a near-miss doesn't count: the occurrence must end where the URL ends) gets a plain
-    CTA line appended."""
+    occurrence - the closing CTA - keeping a Markdown link's text. Without an exact copy, the
+    last recognizable spelling of the same link (`t.me/name`, `@name`, `http://...`) is
+    rewritten into the exact URL in place, so the model's own CTA sentence stays the only CTA;
+    a missing or truly mangled URL (a typo) gets a plain CTA line appended."""
     if project is None:
         return body
     url = re.escape(project.url)
-    occurrence = re.compile(rf"\[([^\]\n]*)\]\({url}\)|[ \t]*{url}(?![\w/?#=&%~+@-]|[.:]\w)")
+    occurrence = re.compile(rf"\[([^\]\n]*)\]\({url}\)|[ \t]*{url}{_URL_END}")
     matches = list(occurrence.finditer(body))
     if not matches:
+        variant = _last_project_link_variant(body, project.url)
+        if variant is not None:
+            return body[: variant.start()] + project.url + body[variant.end() :]
         return f"{body.rstrip()}\n\n{project.description.rstrip(' .!?…')}: {project.url}"
     for match in reversed(matches[:-1]):
         body = body[: match.start()] + (match.group(1) or "") + body[match.end() :]
     return body
+
+
+def _last_project_link_variant(body: str, project_url: str) -> re.Match[str] | None:
+    bare = project_url.removeprefix("https://")
+    spellings = [rf"(?:https?://)?(?:www\.)?{re.escape(bare)}"]
+    if bare.startswith("t.me/") and re.fullmatch(r"[A-Za-z]\w{4,31}", bare[5:]):
+        spellings.append(rf"@{re.escape(bare[5:])}")
+    variant = re.compile(rf"(?<![\w@/.])(?:{'|'.join(spellings)}){_URL_END}", re.IGNORECASE)
+    matches = list(variant.finditer(body))
+    return matches[-1] if matches else None
