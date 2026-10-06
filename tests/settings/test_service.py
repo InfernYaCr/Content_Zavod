@@ -221,3 +221,11 @@ async def test_set_project_requires_both_link_and_description(value) -> None:
 
     assert excinfo.value.field == "project"
     assert (await SettingsService(store).read()).project is None
+
+
+async def test_set_project_dash_removes_the_project() -> None:
+    settings = SettingsService(InMemoryStore())
+    await settings.set_project("@marketing_daily Разборы кейсов")
+
+    assert await settings.set_project(" - ") is None
+    assert (await settings.read()).project is None

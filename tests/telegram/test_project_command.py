@@ -85,4 +85,22 @@ async def test_set_project_without_link_or_description_replies_with_usage(args) 
     await handle_set_project_command(SettingsService(store), gateway, chat_id=1, args=args)
 
     assert store.set_calls == []
-    assert gateway.sent_errors == [(1, "Использование: /set_project <ссылка> <описание>")]
+    assert gateway.sent_errors == [
+        (1, "Использование: /set_project <ссылка> <описание>\nУбрать Проект: /set_project -")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_set_project_dash_removes_the_project() -> None:
+    store = FakeOwnerSettingsStore({"project": "https://t.me/marketing_daily Разборы"})
+    gateway = FakeGateway()
+    settings = SettingsService(store)
+
+    await handle_set_project_command(settings, gateway, chat_id=1, args="-")
+    await handle_project_command(settings, gateway, chat_id=1)
+
+    assert gateway.sent_notices == [
+        (1, "Проект убран: Статьи будут без CTA."),
+        (1, "Текущий Проект: не задан"),
+    ]
+    assert gateway.sent_errors == []

@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 PROJECT_KEY = "project"
+# `/set_project -` removes the Проект; stored as an empty value, which reads back as `None`.
+CLEAR_PROJECT = "-"
 
 _TELEGRAM_USERNAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")
 

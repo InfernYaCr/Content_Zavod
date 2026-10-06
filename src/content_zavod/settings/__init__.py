@@ -15,7 +15,7 @@ from .persona import (
     resolve_persona,
     serialize_custom_persona,
 )
-from .project import PROJECT_KEY, Project, normalize_project_url, project_detail_text
+from .project import CLEAR_PROJECT, PROJECT_KEY, Project, normalize_project_url, project_detail_text
 from .service import (
     DEFAULT_DIRECTIONS,
     DEFAULT_NICHE,
@@ -28,6 +28,7 @@ from .service import (
 from .values import OwnerSettings
 
 __all__ = [
+    "CLEAR_PROJECT",
     "DEFAULT_DIRECTIONS",
     "DEFAULT_NICHE",
     "DEFAULT_PERSONA_KEY",

@@ -15,7 +15,8 @@ Preset marker as-is (from a template button); any other input is parsed as
 missing Роль raises `InvalidSettingValue` without writing anything. `set_project` (#98) takes
 `<ссылка> <описание>`, normalizes the link via `normalize_project_url` and
 raises `InvalidSettingValue("project_url")` for a link it can't accept, or
-`InvalidSettingValue("project")` when the link or description is missing.
+`InvalidSettingValue("project")` when the link or description is missing; a lone
+`CLEAR_PROJECT` (`-`) removes the Проект, so Статьи go back to having no CTA.
 
 `plan_pipeline` re-exports the constants and `parse_directions` below as
 aliases so existing importers (`/settings`, `/set_niche`, `/set_directions`)
@@ -35,6 +36,7 @@ from .persona import (
     serialize_custom_persona,
 )
 from .project import (
+    CLEAR_PROJECT,
     PROJECT_KEY,
     Project,
     normalize_project_url,
@@ -122,7 +124,10 @@ class SettingsService:
         await self._store.set(PERSONA_KEY, serialized)
         return serialized
 
-    async def set_project(self, value: str) -> Project:
+    async def set_project(self, value: str) -> Project | None:
+        if value.strip() == CLEAR_PROJECT:
+            await self._store.set(PROJECT_KEY, "")
+            return None
         parts = value.split(maxsplit=1)
         if len(parts) < 2:
             raise InvalidSettingValue("project")
