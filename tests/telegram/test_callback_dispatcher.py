@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
 
+from content_zavod.access import MemberNotFound
 from content_zavod.access.membership import MemberView, Role
 from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.telegram import (
@@ -84,8 +85,10 @@ class FakeMembership:
         return self._roles.get(telegram_id)
 
     async def remove_member(self, telegram_id: int, *, removed_by: int) -> None:
+        if telegram_id not in self._roles:
+            raise MemberNotFound(telegram_id)
         self.removed.append(telegram_id)
-        self._roles.pop(telegram_id, None)
+        del self._roles[telegram_id]
 
     async def list_all(self) -> list[MemberView]:
         return [
@@ -391,6 +394,17 @@ async def test_repeated_request_access_says_already_sent_and_does_not_rebroadcas
     assert f.bot.edited_messages[-1][2] == "Заявка уже отправлена. Ожидайте одобрения владельца."
 
 
+async def test_request_access_by_an_existing_member_creates_no_request(f: Fixtures) -> None:
+    """#90: approving a member's own заявка would demote them to content_manager - possibly
+    the last Владелец - so a member's tap creates nothing."""
+    answer = await dispatch(f, SimpleAction("request_access", "ignored"), user_id=OWNER_ID)
+
+    assert answer.calls == [("У вас уже есть доступ.", None)]
+    assert f.join_requests._requests == {}
+    assert f.bot.sent_messages == []
+    assert f.bot.edited_messages == []
+
+
 # --- unregistered caller denied on every other Action ---
 
 
@@ -499,6 +513,16 @@ async def test_confirm_remove_member_refusal_is_the_only_answer(f: Fixtures) -> 
 
     assert answer.calls == [("Нельзя удалить последнего Владельца.", True)]
     assert f.bot.edited_messages == []
+
+
+async def test_confirm_remove_member_already_removed_alerts_and_redraws(f: Fixtures) -> None:
+    """#90: a stale «Да» (another Owner removed them first) alerts and replaces the stale
+    confirmation row with the current list."""
+    answer = await dispatch(f, SimpleAction("confirm_remove_member", "42"), user_id=OWNER_ID)
+
+    assert answer.calls == [(str(MemberNotFound(42)), True)]
+    _, _, _, keyboard = f.bot.edited_messages[-1]
+    assert _button_labels(keyboard) == ["❌ Удалить @user1", "❌ Удалить @user2"]
 
 
 async def test_cancel_remove_member_redraws_the_plain_list(f: Fixtures) -> None:

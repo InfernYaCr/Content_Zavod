@@ -258,6 +258,22 @@ async def test_mark_exported_is_idempotent(article: Article, plan: Plan) -> None
     await article.mark_exported(article_id)  # no-op, must not raise
 
 
+async def test_mark_exported_does_not_overwrite_a_pending_regeneration(
+    article: Article, plan: Plan
+) -> None:
+    """#86: a stale ✅ must not flip a `regenerating` Статья to `exported` - from there a
+    second 🔄 would enqueue another job on top of the running one."""
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.create(plan_id, item_id, "Topic A", "zen")
+    await article.record_version(article_id, _VERSION)
+    await article.request_regeneration(article_id, comment=None)
+
+    with pytest.raises(ArticleNotReady):
+        await article.mark_exported(article_id)
+
+    assert (await article.get_summary(article_id)).status == "regenerating"
+
+
 async def test_create_is_idempotent_on_plan_item_and_platform(article: Article, plan: Plan) -> None:
     plan_id, item_id = await _create_plan_item(plan)
     first_id = await article.create(plan_id, item_id, "Topic A", "zen")

@@ -57,8 +57,8 @@ async def test_remove_member_refuses_to_remove_yourself(membership: Membership) 
 
 
 async def test_remove_member_refuses_to_remove_the_last_owner(membership: Membership) -> None:
-    """#90: the bot is never left without a Владелец - e.g. two Owners removing each other at
-    once: the second removal finds only its own target left."""
+    """#90: the bot is never left without a Владелец - the sole Owner can't be removed, even
+    by someone who isn't (or no longer is) a member themselves."""
     await membership.add_member(1, "owner")
 
     with pytest.raises(LastOwnerRemoval):

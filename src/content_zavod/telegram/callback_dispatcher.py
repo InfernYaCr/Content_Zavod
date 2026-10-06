@@ -22,7 +22,7 @@ from typing import Protocol, assert_never
 
 from aiogram.types import CallbackQuery
 
-from ..access import AccessError, CannotRemoveSelf, Membership, Role, require_role
+from ..access import AccessError, CannotRemoveSelf, MemberNotFound, Membership, Role, require_role
 from ..domain import PLATFORMS, Article, DomainError, Plan
 from ..job_queue import JobId, JobQueue
 from ..settings import SettingsService
@@ -158,6 +158,11 @@ class CallbackDispatcher:
     async def dispatch(self, callback_input: CallbackInput, answer: CallbackAnswerer) -> None:
         payload = callback_input.payload
         if isinstance(payload, SimpleAction) and payload.action == "request_access":
+            # An existing member's заявка would demote them on approval (`add_member` overwrites
+            # the Role) - possibly the last Владелец (#90).
+            if await self._membership.role_for(callback_input.user_id) is not None:
+                await answer("У вас уже есть доступ.")
+                return
             await answer()
             sent = await self._join_request_flow.request_access(
                 callback_input.user_id, callback_input.username
@@ -232,7 +237,13 @@ class CallbackDispatcher:
                 if not await self._authorized("confirm_remove_member", role, deny_text, answer):
                     return
                 # Remove first, so a refusal (self / last Владелец) is the only, alerting answer.
-                await self._membership.remove_member(int(id_), removed_by=user_id)
+                try:
+                    await self._membership.remove_member(int(id_), removed_by=user_id)
+                except MemberNotFound:
+                    # Another Owner already removed them: replace the stale «Да / Отмена» row,
+                    # then let the generic handler alert as usual.
+                    await redraw_members(self._membership, self._bot_client, chat_id, message_id)
+                    raise
                 await answer("Участник удалён.")
                 await redraw_members(self._membership, self._bot_client, chat_id, message_id)
             case SimpleAction(action="cancel_remove_member"):
