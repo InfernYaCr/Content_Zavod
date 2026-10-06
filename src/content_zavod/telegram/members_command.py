@@ -13,8 +13,7 @@ from aiogram.types import InlineKeyboardMarkup
 
 from ..access import MemberView
 from .gateway import TelegramGateway, build_members_keyboard
-
-_ROLE_TITLES = {"owner": "Владелец", "content_manager": "Контент-менеджер"}
+from .texts import role_name
 
 
 class MembersOperations(Protocol):
@@ -38,9 +37,7 @@ def _member_label(member: MemberView) -> str:
 def _render_members(
     members: list[MemberView], *, confirm_id: int | None = None
 ) -> tuple[str, InlineKeyboardMarkup]:
-    lines = ["👥 Участники:"] + [
-        f"{_member_label(m)} — {_ROLE_TITLES.get(m.role, m.role)}" for m in members
-    ]
+    lines = ["👥 Участники:"] + [f"{_member_label(m)} — {role_name(m.role)}" for m in members]
     keyboard = build_members_keyboard(
         [(m.telegram_id, _member_label(m)) for m in members], confirm_id=confirm_id
     )

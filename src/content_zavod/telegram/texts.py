@@ -9,7 +9,12 @@ have no raw-key fallback: their technical text goes to the log, never to the cha
 
 from __future__ import annotations
 
-from ..access.errors import JoinRequestNotFound, MemberNotFound
+from ..access.errors import (
+    CannotRemoveSelf,
+    JoinRequestNotFound,
+    LastOwnerRemoval,
+    MemberNotFound,
+)
 from ..domain.errors import (
     ArticleNotFound,
     ArticleNotReady,
@@ -35,6 +40,8 @@ PLAN_STATUSES = {
     "approved": "утверждён",
     "archived": "в архиве",
 }
+
+ROLES = {"owner": "Владелец", "content_manager": "Контент-менеджер"}
 
 PLATFORMS = {"zen": "Дзен", "vc": "VC.ru"}
 # «Статья для …»: Дзен declines, VC.ru doesn't.
@@ -79,6 +86,8 @@ ERROR_ALERTS: dict[type[Exception], str] = {
     InvalidSettingValue: "Значение не может быть пустым.",
     MemberNotFound: "Участник не найден.",
     JoinRequestNotFound: "Заявка не найдена.",
+    CannotRemoveSelf: "Нельзя удалить самого себя.",
+    LastOwnerRemoval: "Нельзя удалить последнего Владельца.",
 }
 ERROR_ALERT_FALLBACK = "Не получилось, попробуйте ещё раз"
 
@@ -89,6 +98,10 @@ def article_status(status: str) -> str:
 
 def plan_status(status: str) -> str:
     return PLAN_STATUSES.get(status, status)
+
+
+def role_name(role: str) -> str:
+    return ROLES.get(role, role)
 
 
 def platform_name(platform: str) -> str:

@@ -520,7 +520,7 @@ async def test_confirm_remove_member_already_removed_alerts_and_redraws(f: Fixtu
     confirmation row with the current list."""
     answer = await dispatch(f, SimpleAction("confirm_remove_member", "42"), user_id=OWNER_ID)
 
-    assert answer.calls == [(str(MemberNotFound(42)), True)]
+    assert answer.calls == [("Участник не найден.", True)]
     _, _, _, keyboard = f.bot.edited_messages[-1]
     assert _button_labels(keyboard) == ["❌ Удалить @user1", "❌ Удалить @user2"]
 
@@ -744,16 +744,3 @@ async def test_known_domain_error_is_alerted_in_russian_not_its_english_text(
     answer = await dispatch(f, SimpleAction("delete", "item-1"))
 
     assert answer.calls[-1] == ("Эту Тему уже нельзя изменить.", True)
-
-
-async def test_access_error_is_alerted_in_russian(f: Fixtures) -> None:
-    from content_zavod.access.errors import MemberNotFound
-
-    async def boom(telegram_id: int) -> None:
-        raise MemberNotFound(telegram_id)
-
-    f.membership.remove_member = boom  # type: ignore[method-assign]
-
-    answer = await dispatch(f, SimpleAction("remove_member", "77"), user_id=OWNER_ID)
-
-    assert answer.calls[-1] == ("Участник не найден.", True)
