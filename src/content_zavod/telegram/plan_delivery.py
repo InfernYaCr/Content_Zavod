@@ -47,10 +47,14 @@ class PlanMessageRefs(Protocol):
 
 async def deliver_plan_message(
     plan: PlanMessageRefs, gateway: TelegramGateway, chat_id: int, view: PlanView
-) -> None:
+) -> bool:
+    """Returns whether a new message was sent - `False` means an earlier, possibly long
+    scrolled-away message was edited in place, which an interactive caller may want to
+    point the user at."""
     ref = await plan.get_message_ref(view.id)
     if ref is not None:
         await gateway.edit_plan(ref.chat_id, ref.message_id, view)
-        return
+        return False
     message_id = await gateway.send_plan(chat_id, view)
     await plan.record_message_ref(view.id, chat_id, message_id)
+    return True

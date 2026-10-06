@@ -27,6 +27,7 @@ from content_zavod.telegram import (
     PlanId,
     PlanItemId,
     PlanItemView,
+    PlanMessageRef,
     PlanReview,
     PlanSummary,
     PlanView,
@@ -112,6 +113,7 @@ class FakePlan:
         self.started_batches: list[tuple[PlanId, int]] = []
         self.recorded_progress_refs: list[tuple[PlanId, int, int]] = []
         self._start_generation_batch_returns = start_generation_batch_returns
+        self.message_ref: PlanMessageRef | None = None
         self._view = PlanView(
             id=PlanId("plan-1"),
             week_label="2026-W33",
@@ -126,6 +128,12 @@ class FakePlan:
 
     async def get(self, plan_id: PlanId) -> PlanView:
         return self._view
+
+    async def get_plan_id_for_item(self, plan_item_id: PlanItemId) -> PlanId:
+        return self._view.id
+
+    async def get_message_ref(self, plan_id: PlanId) -> PlanMessageRef | None:
+        return self.message_ref
 
     async def get_summary(self, plan_id: PlanId) -> PlanSummary:
         return self._summary
@@ -704,12 +712,78 @@ async def test_approve_all_replay_does_not_resend_progress_message() -> None:
     assert f.plan.recorded_progress_refs == []
 
 
-async def test_delete_deletes_and_sends_notice(f: Fixtures) -> None:
+async def test_approve_all_re_renders_the_plan_without_edit_buttons(f: Fixtures) -> None:
+    """#81: after approving, the pressed Plan message is redrawn from the DB - approved Темы
+    leave no 🔄/🗑/"Утвердить всё" behind."""
+    f.plan._view = PlanView(
+        id=PlanId("plan-1"),
+        week_label="2026-W33",
+        items=[PlanItemView(id=PlanItemId("item-1"), title="Тема", status="approved")],
+    )
+
+    await dispatch(f, SimpleAction("approve_all", "plan-1"))
+
+    chat_id, message_id, text, keyboard = f.bot.edited_messages[-1]
+    assert (chat_id, message_id) == (1, 2)
+    assert "Тема — утверждена" in text
+    assert keyboard is None
+
+
+async def test_delete_deletes_and_re_renders_the_plan(f: Fixtures) -> None:
+    """#81: no separate "Тема удалена." - the pressed Plan message is redrawn from the DB."""
+    f.plan._view = PlanView(
+        id=PlanId("plan-1"),
+        week_label="2026-W33",
+        items=[PlanItemView(id=PlanItemId("item-1"), title="Тема", status="rejected")],
+    )
+
     answer = await dispatch(f, SimpleAction("delete", "item-1"))
 
     assert answer.calls == [(None, None)]
     assert f.plan_ops.deleted == [PlanItemId("item-1")]
-    assert f.bot.sent_messages[-1][1] == "Тема удалена."
+    assert f.bot.sent_messages == []
+    chat_id, message_id, text, keyboard = f.bot.edited_messages[-1]
+    assert (chat_id, message_id) == (1, 2)
+    assert "Тема — убрана" in text
+    assert keyboard is None
+
+
+async def test_delete_on_a_later_page_redraws_that_page(f: Fixtures) -> None:
+    """Deleting Тема 9 (page 2 of 8-per-page) must not throw the reader back to page 1."""
+    items = [
+        PlanItemView(id=PlanItemId(f"item-{n}"), title=f"Тема {n}", status="pending_review")
+        for n in range(1, 10)
+    ]
+    f.plan._view = PlanView(id=PlanId("plan-1"), week_label="2026-W33", items=items)
+
+    await dispatch(f, SimpleAction("delete", "item-9"))
+
+    _, _, text, _ = f.bot.edited_messages[-1]
+    assert "Страница 2/2" in text
+    assert "9. Тема 9" in text
+
+
+async def test_regenerate_second_press_on_the_plan_message_keeps_the_plan(f: Fixtures) -> None:
+    """A second 🔄 on the Plan message (instead of the comment prompt's "Пропустить") enqueues
+    without a comment but must not overwrite the Plan with "⏳ Генерирую..." - nothing would
+    redraw it if the Job then failed."""
+    f.plan.message_ref = PlanMessageRef(chat_id=1, message_id=2)
+    await dispatch(f, SimpleAction("regenerate", "item-1"))
+
+    answer = await dispatch(f, SimpleAction("regenerate", "item-1"))
+
+    assert answer.calls == [("Принято, генерирую...", None)]
+    assert f.plan_ops.regenerated == [(PlanItemId("item-1"), None)]
+    assert all("Генерирую" not in text for _, _, text, _ in f.bot.edited_messages)
+
+
+async def test_regenerate_skip_on_the_comment_prompt_shows_progress(f: Fixtures) -> None:
+    f.plan.message_ref = PlanMessageRef(chat_id=1, message_id=99)
+    await dispatch(f, SimpleAction("regenerate", "item-1"))
+
+    await dispatch(f, SimpleAction("regenerate", "item-1"))
+
+    assert f.bot.edited_messages[-1][:3] == (1, 2, "⏳ Генерирую...")
 
 
 # --- a DomainError/AccessError raised mid-branch is answered as a show_alert, not raised ---

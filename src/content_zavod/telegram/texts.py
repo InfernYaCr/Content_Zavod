@@ -41,6 +41,14 @@ PLAN_STATUSES = {
     "archived": "в архиве",
 }
 
+# Тема (PlanItem) statuses, feminine to agree with «Тема».
+TOPIC_STATUSES = {
+    "pending_review": "на согласовании",
+    "approved": "утверждена",
+    "rejected": "убрана",
+    "archived": "в архиве",
+}
+
 ROLES = {"owner": "Владелец", "content_manager": "Контент-менеджер"}
 
 PLATFORMS = {"zen": "Дзен", "vc": "VC.ru"}
@@ -98,6 +106,10 @@ def article_status(status: str) -> str:
 
 def plan_status(status: str) -> str:
     return PLAN_STATUSES.get(status, status)
+
+
+def topic_status(status: str) -> str:
+    return TOPIC_STATUSES.get(status, status)
 
 
 def role_name(role: str) -> str:

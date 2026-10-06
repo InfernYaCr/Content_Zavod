@@ -72,7 +72,7 @@ class FakeBot:
 
 def make_plan(item_count: int = 2) -> PlanView:
     items = [
-        PlanItemView(id=PlanItemId(f"item-{i}"), title=f"Тема {i}", status="draft")
+        PlanItemView(id=PlanItemId(f"item-{i}"), title=f"Тема {i}", status="pending_review")
         for i in range(item_count)
     ]
     return PlanView(id=PlanId("plan-1"), week_label="2026-W32", items=items)
@@ -176,6 +176,77 @@ def test_render_plan_text_shows_date_range_not_week_label() -> None:
 
     assert "2026-W32" not in text
     assert "3–9 августа 2026" in text
+
+
+def test_render_plan_text_shows_item_statuses_in_russian() -> None:
+    """#81: no raw `pending_review`/`approved`/... keys in the Plan message."""
+    statuses = ("pending_review", "approved", "rejected", "archived")
+    plan = PlanView(
+        id=PlanId("plan-1"),
+        week_label="2026-W32",
+        items=[
+            PlanItemView(id=PlanItemId(f"item-{i}"), title=f"Тема {i}", status=status)
+            for i, status in enumerate(statuses)
+        ],
+    )
+
+    text = render_plan_text(plan)
+
+    assert "1. Тема 0 — на согласовании" in text
+    assert "2. Тема 1 — утверждена" in text
+    assert "3. Тема 2 — убрана" in text
+    assert "4. Тема 3 — в архиве" in text
+    assert not any(status in text for status in statuses)
+
+
+def test_build_plan_keyboard_labels_buttons_with_the_item_number() -> None:
+    """#81: the number on 🔄/🗑 matches the item's number in the Plan text, across pages."""
+    plan = make_plan(item_count=ITEMS_PER_PAGE + 1)
+
+    first_page = build_plan_keyboard(plan, page=0)
+    second_page = build_plan_keyboard(plan, page=1)
+
+    assert [b.text for b in first_page.inline_keyboard[0]] == ["🔄 1", "🗑 1"]
+    last = ITEMS_PER_PAGE + 1
+    assert [b.text for b in second_page.inline_keyboard[0]] == [f"🔄 {last}", f"🗑 {last}"]
+
+
+def test_build_plan_keyboard_has_no_buttons_for_a_removed_topic() -> None:
+    plan = PlanView(
+        id=PlanId("plan-1"),
+        week_label="2026-W32",
+        items=[
+            PlanItemView(id=PlanItemId("item-0"), title="Тема 0", status="rejected"),
+            PlanItemView(id=PlanItemId("item-1"), title="Тема 1", status="pending_review"),
+        ],
+    )
+
+    keyboard = build_plan_keyboard(plan)
+
+    item_row, approve_row = keyboard.inline_keyboard
+    assert decode_callback_data(item_row[1].callback_data) == SimpleAction("delete", "item-1")
+    assert [b.text for b in item_row] == ["🔄 2", "🗑 2"]
+    assert decode_callback_data(approve_row[0].callback_data) == SimpleAction(
+        "approve_all", "plan-1"
+    )
+
+
+def test_build_plan_keyboard_is_none_once_nothing_is_left_to_review() -> None:
+    """#81/#84: an approved Plan (or one with every Тема removed) has no 🔄/🗑 and no
+    "Утвердить всё" - pressing it would start nothing."""
+    plan = PlanView(
+        id=PlanId("plan-1"),
+        week_label="2026-W32",
+        items=[
+            PlanItemView(id=PlanItemId("item-0"), title="Тема 0", status="approved"),
+            PlanItemView(id=PlanItemId("item-1"), title="Тема 1", status="rejected"),
+        ],
+    )
+
+    assert build_plan_keyboard(plan) is None
+    assert (
+        build_plan_keyboard(PlanView(id=PlanId("plan-1"), week_label="2026-W32", items=[])) is None
+    )
 
 
 def test_render_generation_progress_text_shows_the_running_count() -> None:

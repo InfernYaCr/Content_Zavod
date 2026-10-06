@@ -159,6 +159,43 @@ async def test_handler_skips_a_topic_whose_title_was_already_used_recently() -> 
     output = await handler({"week_label": "Week 1"})
 
     assert output["topics"] == []
+    assert output["empty_reason"] == "all_recently_used"
+
+
+@pytest.mark.asyncio
+async def test_handler_succeeds_empty_when_no_direction_grows() -> None:
+    """#84: "nothing grows" is a successful run with nothing to propose, not an error."""
+    keyword_stats = FakeKeywordStats({"declining kw": _growing(500, 100)})
+    handler = make_generate_plan_handler(
+        keyword_stats,
+        FakeTextGenerator({}),
+        _no_recent_titles,
+        SettingsService(FakeOwnerSettingsStore()),
+        seed_keywords=("declining kw", "broken kw"),
+        now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
+    )
+
+    output = await handler({"week_label": "Week 1"})
+
+    assert output["topics"] == []
+    assert output["empty_reason"] == "no_growing_directions"
+
+
+@pytest.mark.asyncio
+async def test_handler_fails_when_every_wordstat_request_fails() -> None:
+    """#84: Wordstat down for every Направление fails the Job (so "Повторить" makes sense)
+    instead of passing off the outage as an empty Plan."""
+    handler = make_generate_plan_handler(
+        FakeKeywordStats({}),
+        FakeTextGenerator({}),
+        _no_recent_titles,
+        SettingsService(FakeOwnerSettingsStore()),
+        seed_keywords=("broken kw", "another broken kw"),
+        now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
+    )
+
+    with pytest.raises(RuntimeError, match="Wordstat недоступен"):
+        await handler({"week_label": "Week 1"})
 
 
 @pytest.mark.asyncio
@@ -192,7 +229,8 @@ async def test_handler_requests_a_six_month_monthly_dynamics_window() -> None:
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
-    await handler({"week_label": "Week 1"})
+    with pytest.raises(RuntimeError, match="Wordstat"):
+        await handler({"week_label": "Week 1"})
 
     assert keyword_stats.calls == ["missing kw"]
     # Wordstat rejects `toDate` unless it's a month's last day (#see
@@ -279,7 +317,8 @@ async def test_handler_uses_default_directions_when_seed_keywords_and_store_are_
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
-    await handler({"week_label": "Week 1"})
+    with pytest.raises(RuntimeError, match="Wordstat"):
+        await handler({"week_label": "Week 1"})
 
     assert keyword_stats.calls == list(DEFAULT_DIRECTIONS)
 

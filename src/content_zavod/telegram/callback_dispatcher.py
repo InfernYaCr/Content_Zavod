@@ -41,7 +41,7 @@ from .callback_codec import (
 )
 from .commands import sync_commands
 from .comment_gated_regeneration import CommentGatedRegeneration
-from .gateway import BotClient, TelegramGateway
+from .gateway import ITEMS_PER_PAGE, BotClient, TelegramGateway
 from .generate_plan_command import handle_cancel_regenerate_plan, handle_confirm_regenerate_plan
 from .history_command import (
     handle_history_page,
@@ -352,7 +352,12 @@ class CallbackDispatcher:
                     chat_id, user_id, plan_item_id
                 )
                 await answer("Принято, генерирую..." if will_enqueue else None)
-                if will_enqueue:
+                if will_enqueue and not await self._is_plan_message(
+                    plan_item_id, chat_id, message_id
+                ):
+                    # The comment prompt's "Пропустить" turns into a progress line. A second
+                    # 🔄 on the Plan message itself must not: that would wipe the Plan until
+                    # the result redraws it - and forever if the Job fails (#81).
                     await self._gateway.edit_notice(chat_id, message_id, "⏳ Генерирую...")
                 await self._plan_review.handle_action(chat_id, user_id, plan_item_id, "regenerate")
             case SimpleAction(action="approve_all", id_=id_):
@@ -365,14 +370,32 @@ class CallbackDispatcher:
                 await _generate_articles_for_approved_plan(
                     self._plan, self._article, self._gateway, chat_id, PlanId(id_)
                 )
+                # #81: re-rendered from the DB only once the fan-out is through, so a crash
+                # mid-fan-out still leaves "Утвердить всё" there to replay it.
+                view = await self._plan.get(PlanId(id_))
+                await self._gateway.edit_plan(chat_id, message_id, view)
             case SimpleAction(action="delete", id_=id_):
                 if not await self._authorized("delete", role, deny_text, answer):
                     return
                 await answer()
                 await self._plan_review.handle_action(chat_id, user_id, PlanItemId(id_), "delete")
-                await self._gateway.send_notice(chat_id, "Тема удалена.")
+                # #81: the Plan message itself shows the Тема as removed, no separate notice -
+                # redrawn on the page that holds the Тема, so a press on page 2 stays there.
+                plan_id = await self._plan.get_plan_id_for_item(PlanItemId(id_))
+                view = await self._plan.get(plan_id)
+                index = next((i for i, item in enumerate(view.items) if item.id == id_), 0)
+                await self._gateway.edit_plan(
+                    chat_id, message_id, view, page=index // ITEMS_PER_PAGE
+                )
             case SimpleAction(action=unreachable):
                 assert_never(unreachable)
+
+    async def _is_plan_message(
+        self, plan_item_id: PlanItemId, chat_id: int, message_id: int
+    ) -> bool:
+        """Whether this callback came from the Тема's canonical Plan message (#73)."""
+        ref = await self._plan.get_message_ref(await self._plan.get_plan_id_for_item(plan_item_id))
+        return ref is not None and (ref.chat_id, ref.message_id) == (chat_id, message_id)
 
     @staticmethod
     def _resolver_name(callback_input: CallbackInput) -> str:
