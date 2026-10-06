@@ -4,6 +4,9 @@ import asyncpg
 import pytest
 
 from content_zavod.domain import (
+    PLATFORMS,
+    Article,
+    GeneratedVersion,
     Plan,
     PlanId,
     PlanItemCoverView,
@@ -523,20 +526,22 @@ async def test_apply_cover_persists_image_and_mime_type(plan: Plan, pool: asyncp
     assert row["cover_generated_at"] is not None
 
 
-async def test_list_covers_for_plan_returns_only_items_with_a_stored_cover(plan: Plan) -> None:
-    plan_id, view = await _create_plan(plan, titles=("Topic A", "Topic B"))
+async def test_get_cover_returns_the_stored_cover(plan: Plan) -> None:
+    _, view = await _create_plan(plan, titles=("Topic A", "Topic B"))
     await plan.apply_cover(view.items[0].id, b"fake-image-bytes", "image/jpeg")
 
-    covers = await plan.list_covers_for_plan(plan_id)
+    assert await plan.get_cover(view.items[0].id) == PlanItemCoverView(
+        plan_item_id=view.items[0].id,
+        title="Topic A",
+        image=b"fake-image-bytes",
+        mime_type="image/jpeg",
+    )
+    assert await plan.get_cover(view.items[1].id) is None
 
-    assert covers == [
-        PlanItemCoverView(
-            plan_item_id=view.items[0].id,
-            title="Topic A",
-            image=b"fake-image-bytes",
-            mime_type="image/jpeg",
-        )
-    ]
+
+async def test_get_cover_raises_for_unknown_item(plan: Plan) -> None:
+    with pytest.raises(PlanItemNotFound):
+        await plan.get_cover("missing")
 
 
 async def test_mark_cover_generation_failed_resolves_the_owning_item(
@@ -602,79 +607,153 @@ async def test_record_message_ref_is_first_writer_wins(plan: Plan) -> None:
     assert await plan.get_message_ref(plan_id) == PlanMessageRef(chat_id=42, message_id=100)
 
 
-async def test_start_generation_batch_returns_true_on_first_call(plan: Plan) -> None:
-    plan_id, _ = await _create_plan(plan)
-
-    assert await plan.start_generation_batch(plan_id, total=9) is True
-
-
-async def test_start_generation_batch_returns_false_on_replay(plan: Plan) -> None:
-    """#91: a retried approve_all callback (or a crash between approving and enqueueing)
-    replays the whole fan-out, including this call - it must not reset an in-progress
-    batch's total/done back to a fresh count."""
-    plan_id, _ = await _create_plan(plan)
-
-    await plan.start_generation_batch(plan_id, total=9)
-
-    assert await plan.start_generation_batch(plan_id, total=9) is False
-
-
-async def test_record_generation_progress_returns_none_when_no_batch_open(plan: Plan) -> None:
-    """No batch tracked (legacy Plan, or one whose batch already closed) - the caller falls
-    back to per-Job delivery rather than editing a progress message that doesn't exist."""
-    plan_id, _ = await _create_plan(plan)
-
-    assert await plan.record_generation_progress(plan_id) is None
+async def _approved_with_fan_out(
+    plan: Plan, article: Article, *, titles: tuple[str, ...] = ("Topic A", "Topic B")
+) -> tuple[PlanId, list[PlanItemDetail]]:
+    """What `approve_all` + its fan-out leave behind: covers and Статьи requested per Тема."""
+    plan_id, _ = await _create_plan(plan, titles=titles)
+    await plan.approve_all(plan_id)
+    items = await plan.approved_items(plan_id)
+    for item in items:
+        await plan.request_cover(item.id)
+        for platform in PLATFORMS:
+            await article.request_generation(
+                plan_id, item.id, item.title, item.summary, item.keywords, platform
+            )
+    return plan_id, items
 
 
-async def test_record_generation_progress_increments_and_returns_done_total(plan: Plan) -> None:
-    plan_id, _ = await _create_plan(plan)
-    await plan.start_generation_batch(plan_id, total=3)
-
-    assert await plan.record_generation_progress(plan_id) == (1, 3)
-    assert await plan.record_generation_progress(plan_id) == (2, 3)
+async def _fail_job(pool: asyncpg.Pool, job_id: int) -> None:
+    """The worker's end state for a Job that exhausted its attempts."""
+    await pool.execute("UPDATE jobs SET status = 'failed', error = 'boom' WHERE id = $1", job_id)
 
 
-async def test_record_generation_progress_closes_the_batch_once_done_reaches_total(
-    plan: Plan,
+async def test_get_hub_right_after_fan_out_is_all_pending(plan: Plan, article: Article) -> None:
+    plan_id, items = await _approved_with_fan_out(plan, article)
+
+    hub = await plan.get_hub(plan_id)
+
+    assert hub.status == "approved"
+    assert [(t.number, t.title) for t in hub.topics] == [(1, "Topic A"), (2, "Topic B")]
+    assert all(t.cover == "pending" for t in hub.topics)
+    assert [[c.platform for c in t.articles] for t in hub.topics] == [list(PLATFORMS)] * 2
+    assert set(hub.cells) == {"pending"}
+    assert hub.open_item_id is None
+
+
+async def test_get_hub_leaves_out_rejected_topics_and_renumbers(
+    plan: Plan, article: Article
 ) -> None:
-    """Once the last Job of the batch reports in, the batch closes (`generation_total` resets
-    to NULL) so a later replay of the fan-out can open a fresh batch instead of finding one
-    already at capacity - observed here through `start_generation_batch` accepting a new batch
-    afterwards, the only public way to see that the count was reset."""
-    plan_id, _ = await _create_plan(plan)
-    await plan.start_generation_batch(plan_id, total=1)
+    plan_id, view = await _create_plan(plan, titles=("Topic A", "Topic B", "Topic C"))
+    await plan.delete_item(view.items[0].id)
+    await plan.approve_all(plan_id)
 
-    assert await plan.record_generation_progress(plan_id) == (1, 1)
+    hub = await plan.get_hub(plan_id)
 
-    assert await plan.start_generation_batch(plan_id, total=5) is True
+    assert [(t.number, t.title) for t in hub.topics] == [(1, "Topic B"), (2, "Topic C")]
 
 
-async def test_get_progress_message_ref_returns_none_before_any_delivery(plan: Plan) -> None:
-    plan_id, _ = await _create_plan(plan)
+async def test_get_hub_derives_ready_from_applied_results(
+    plan: Plan, article: Article, queue: JobQueue
+) -> None:
+    plan_id, items = await _approved_with_fan_out(plan, article, titles=("Topic A",))
+    item = items[0]
+    hub = await plan.get_hub(plan_id)
+    zen = hub.topics[0].articles[0]
 
-    assert await plan.get_progress_message_ref(plan_id) is None
-
-
-async def test_record_progress_message_ref_round_trips_through_get(plan: Plan) -> None:
-    plan_id, _ = await _create_plan(plan)
-
-    await plan.record_progress_message_ref(plan_id, chat_id=42, message_id=100)
-
-    assert await plan.get_progress_message_ref(plan_id) == PlanMessageRef(
-        chat_id=42, message_id=100
+    await plan.apply_cover(item.id, b"img", "image/png")
+    await article.record_version(
+        zen.article_id,
+        GeneratedVersion(
+            content="body", prompt="p", model="m", tokens=1, cost=0.0, source_job_id=zen.job_id
+        ),
     )
 
+    topic = (await plan.get_hub(plan_id)).topics[0]
+    assert topic.cover == "ready" and topic.has_cover
+    assert topic.articles[0].state == "ready" and topic.articles[0].has_content
+    assert topic.articles[1].state == "pending" and not topic.articles[1].has_content
+    assert not topic.finished
 
-async def test_record_progress_message_ref_is_first_writer_wins(plan: Plan) -> None:
-    plan_id, _ = await _create_plan(plan)
 
-    await plan.record_progress_message_ref(plan_id, chat_id=42, message_id=100)
-    await plan.record_progress_message_ref(plan_id, chat_id=42, message_id=999)
-
-    assert await plan.get_progress_message_ref(plan_id) == PlanMessageRef(
-        chat_id=42, message_id=100
+async def test_get_hub_shows_a_failed_job_as_failed_and_a_retried_one_as_pending(
+    plan: Plan, article: Article, queue: JobQueue, pool: asyncpg.Pool
+) -> None:
+    """Derived from the owning Job, not a counter (#91): a «Повторить» flips ❌ back to ⏳ at
+    once, with nothing to double-count."""
+    plan_id, items = await _approved_with_fan_out(plan, article, titles=("Topic A",))
+    cover_job_id = await pool.fetchval(
+        "SELECT active_cover_job_id FROM plan_items WHERE id = $1", items[0].id
     )
+    await _fail_job(pool, cover_job_id)
+    assert await plan.mark_cover_generation_failed(cover_job_id) is not None
+
+    topic = (await plan.get_hub(plan_id)).topics[0]
+    assert topic.cover == "failed" and topic.has_failures
+
+    await queue.retry(cover_job_id)
+
+    assert (await plan.get_hub(plan_id)).topics[0].cover == "pending"
+
+
+async def test_mark_cover_generation_failed_keeps_the_job_so_a_retried_failure_resolves(
+    plan: Plan, queue: JobQueue
+) -> None:
+    """A «Повторить»ed cover Job that fails again must still resolve to its Тема (#91)."""
+    _, view = await _create_plan(plan)
+    item_id = view.items[0].id
+    await plan.request_cover(item_id)
+    claimed = await queue.claim_next()
+    assert claimed is not None
+
+    assert await plan.mark_cover_generation_failed(claimed.id) == item_id
+    assert await plan.mark_cover_generation_failed(claimed.id) == item_id
+
+
+async def test_failed_article_is_failed_in_the_hub(
+    plan: Plan, article: Article, pool: asyncpg.Pool
+) -> None:
+    plan_id, _ = await _approved_with_fan_out(plan, article, titles=("Topic A",))
+    hub = await plan.get_hub(plan_id)
+    zen_job = hub.topics[0].articles[0].job_id
+    assert zen_job is not None
+    await _fail_job(pool, zen_job)
+    await article.mark_generation_failed(zen_job)
+
+    zen = (await plan.get_hub(plan_id)).topics[0].articles[0]
+    assert zen.state == "failed"
+    assert zen.job_id == zen_job
+
+
+async def test_set_hub_view_round_trips(plan: Plan, article: Article) -> None:
+    plan_id, items = await _approved_with_fan_out(plan, article, titles=("Topic A",))
+
+    await plan.set_hub_view(plan_id, items[0].id)
+    hub = await plan.get_hub(plan_id)
+    assert hub.open_item_id == items[0].id
+    assert hub.open_topic is not None and hub.open_topic.title == "Topic A"
+
+    await plan.set_hub_view(plan_id, None)
+    assert (await plan.get_hub(plan_id)).open_topic is None
+
+
+async def test_get_hub_raises_for_unknown_plan(plan: Plan) -> None:
+    with pytest.raises(PlanNotFound):
+        await plan.get_hub("missing")
+
+
+async def test_request_cover_manual_is_recorded_on_the_job(plan: Plan, queue: JobQueue) -> None:
+    _, view = await _create_plan(plan)
+    await plan.request_cover(view.items[0].id, manual=True)
+    manual = await queue.claim_next()
+    assert manual is not None
+    await plan.apply_cover(view.items[0].id, b"img", "image/png")
+    await plan.request_cover(view.items[0].id)
+    automatic = await queue.claim_next()
+    assert automatic is not None
+
+    assert await plan.is_manual_cover_job(manual.id) is True
+    assert await plan.is_manual_cover_job(automatic.id) is False
 
 
 async def test_get_plan_id_for_item_resolves_the_owning_plan(plan: Plan) -> None:

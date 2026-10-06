@@ -18,13 +18,14 @@ for command handlers in `entrypoints/bot.py`.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, assert_never
 
 from aiogram.types import CallbackQuery
 
 from ..access import AccessError, CannotRemoveSelf, MemberNotFound, Membership, Role, require_role
-from ..domain import PLATFORMS, Article, DomainError, Plan
+from ..domain import PLATFORMS, Article, DomainError, HubTopic, Plan
 from ..job_queue import JobId, JobQueue
 from ..settings import SettingsService
 from .callback_codec import (
@@ -53,7 +54,13 @@ from .join_request_flow import JoinRequestFlow
 from .members_command import redraw_members
 from .persona_command import handle_persona_template_callback
 from .plan_review import PlanReview
-from .texts import error_alert_text
+from .texts import (
+    COVER_REQUESTED,
+    HUB_ALERT_NO_COVER,
+    HUB_ALERT_NOTHING_TO_RETRY,
+    HUB_ALERT_RETRYING,
+    error_alert_text,
+)
 from .types import ArticleId, PlanId, PlanItemId
 
 logger = logging.getLogger(__name__)
@@ -81,7 +88,7 @@ class CallbackAnswerer(Protocol):
 
 
 async def _generate_articles_for_approved_plan(
-    plan: Plan, article: Article, gateway: TelegramGateway, chat_id: int, plan_id: PlanId
+    plan: Plan, article: Article, plan_id: PlanId
 ) -> None:
     """Fan out each approved Тема into one Статья per Площадка and enqueue its `generate_article`
     Job (#14), plus one `generate_cover` Job per Тема (#15 - the whole week's content, including
@@ -92,17 +99,8 @@ async def _generate_articles_for_approved_plan(
     or a crash between approving and enqueueing) creates neither duplicate Статьи/обложки nor
     duplicate Jobs.
 
-    Opens a progress batch sized for every Job this fan-out is about to enqueue (#91) and sends
-    the one live-edited progress message the notification handler updates as each Job finishes,
-    instead of one Telegram message per finished Job. `start_generation_batch` only returns
-    `True` the one time it actually opens the batch, so a replay of this same fan-out (which
-    creates no duplicate Jobs either, per above) doesn't send a second progress message."""
-    items = await plan.approved_items(plan_id)
-    total = len(items) * (1 + len(PLATFORMS))
-    if total > 0 and await plan.start_generation_batch(plan_id, total):
-        message_id = await gateway.send_generation_progress(chat_id, done=0, total=total)
-        await plan.record_progress_message_ref(plan_id, chat_id, message_id)
-    for item in items:
+    Nothing here tracks progress (#91): the Хаб derives it from the rows these calls create."""
+    for item in await plan.approved_items(plan_id):
         await plan.request_cover(item.id)
         for platform in PLATFORMS:
             await article.request_generation(
@@ -268,6 +266,11 @@ class CallbackDispatcher:
                 if not await self._authorized("page", role, deny_text, answer):
                     return
                 await answer()
+                # A stale page button pressed after approval redraws the Хаб, not the review list.
+                if (await self._plan.get_summary(PlanId(plan_id))).status == "approved":
+                    hub = await self._plan.get_hub(PlanId(plan_id))
+                    await self._gateway.edit_hub(chat_id, message_id, hub)
+                    return
                 view = await self._plan.get(PlanId(plan_id))
                 await self._gateway.edit_plan(chat_id, message_id, view, page=page)
             case SimpleAction(action="history_page", id_=id_):
@@ -335,8 +338,9 @@ class CallbackDispatcher:
             case SimpleAction(action="request_cover", id_=id_):
                 if not await self._authorized("request_cover", role, deny_text, answer):
                     return
-                await answer("Генерирую обложку...")
-                await self._plan.request_cover(PlanItemId(id_))
+                await answer(COVER_REQUESTED)
+                # By hand, from a Статья card: the result comes back here as a photo (#91).
+                await self._plan.request_cover(PlanItemId(id_), manual=True)
             case ExportArticle(article_id=article_id, article_format=article_format):
                 if not await self._authorized("export_article", role, deny_text, answer):
                     return
@@ -369,13 +373,55 @@ class CallbackDispatcher:
                 await self._plan_review.handle_action(
                     chat_id, user_id, PlanItemId(id_), "approve_all"
                 )
-                await _generate_articles_for_approved_plan(
-                    self._plan, self._article, self._gateway, chat_id, PlanId(id_)
-                )
-                # #81: re-rendered from the DB only once the fan-out is through, so a crash
-                # mid-fan-out still leaves "Утвердить всё" there to replay it.
-                view = await self._plan.get(PlanId(id_))
-                await self._gateway.edit_plan(chat_id, message_id, view)
+                await _generate_articles_for_approved_plan(self._plan, self._article, PlanId(id_))
+                # #81/#91: redrawn from the DB only once the fan-out is through, so a crash
+                # mid-fan-out still leaves "Утвердить всё" there to replay it - and from now on
+                # the Plan message is the Хаб.
+                hub = await self._plan.get_hub(PlanId(id_))
+                await self._gateway.edit_hub(chat_id, message_id, hub)
+            case SimpleAction(action="hub_topic", id_=id_):
+                if not await self._authorized("hub_topic", role, deny_text, answer):
+                    return
+                await answer()
+                plan_id = await self._plan.get_plan_id_for_item(PlanItemId(id_))
+                await self._plan.set_hub_view(plan_id, PlanItemId(id_))
+                await self._redraw_hub(chat_id, message_id, plan_id)
+            case SimpleAction(action="hub_back", id_=id_):
+                if not await self._authorized("hub_back", role, deny_text, answer):
+                    return
+                await answer()
+                await self._plan.set_hub_view(PlanId(id_), None)
+                await self._redraw_hub(chat_id, message_id, PlanId(id_))
+            case SimpleAction(action="hub_cover", id_=id_):
+                if not await self._authorized("hub_cover", role, deny_text, answer):
+                    return
+                cover = await self._plan.get_cover(PlanItemId(id_))
+                if cover is None:
+                    await answer(HUB_ALERT_NO_COVER)
+                    return
+                await answer()
+                await self._gateway.send_cover(chat_id, cover.image, cover.mime_type, cover.title)
+            case SimpleAction(action="hub_article", id_=id_):
+                if not await self._authorized("hub_article", role, deny_text, answer):
+                    return
+                view = await self._article.get(ArticleId(id_))
+                await answer()
+                # The usual Статья card, as its own message: its ✏️/✅/.docx/.md keep working
+                # exactly as before, and the Хаб stays put above it.
+                await self._gateway.send_article_ready(chat_id, view)
+            case SimpleAction(action="hub_retry", id_=id_):
+                if not await self._authorized("hub_retry", role, deny_text, answer):
+                    return
+                hub = await self._plan.get_hub(PlanId(id_))
+                await self._retry_failed(hub.topics, answer)
+                await self._redraw_hub(chat_id, message_id, hub.id)
+            case SimpleAction(action="hub_retry_topic", id_=id_):
+                if not await self._authorized("hub_retry_topic", role, deny_text, answer):
+                    return
+                plan_id = await self._plan.get_plan_id_for_item(PlanItemId(id_))
+                hub = await self._plan.get_hub(plan_id)
+                await self._retry_failed([t for t in hub.topics if t.id == id_], answer)
+                await self._redraw_hub(chat_id, message_id, plan_id)
             case SimpleAction(action="delete", id_=id_):
                 if not await self._authorized("delete", role, deny_text, answer):
                     return
@@ -391,6 +437,25 @@ class CallbackDispatcher:
                 )
             case SimpleAction(action=unreachable):
                 assert_never(unreachable)
+
+    async def _redraw_hub(self, chat_id: int, message_id: int, plan_id: PlanId) -> None:
+        hub = await self._plan.get_hub(plan_id)
+        await self._gateway.edit_hub(chat_id, message_id, hub)
+
+    async def _retry_failed(self, topics: Sequence[HubTopic], answer: CallbackAnswerer) -> None:
+        """Re-runs every ❌ cell of `topics` (#91): a failed cover is requested afresh, a failed
+        Статья's own Job is re-queued (the same thing the old «🔁 Повторить» message did). The
+        Хаб then shows them ⏳ straight away - its state is read from those Jobs."""
+        retried = 0
+        for topic in topics:
+            if topic.cover == "failed":
+                await self._plan.request_cover(topic.id)
+                retried += 1
+            for cell in topic.articles:
+                if cell.state == "failed" and cell.job_id is not None:
+                    if await self._queue.retry(JobId(cell.job_id)):
+                        retried += 1
+        await answer(HUB_ALERT_RETRYING if retried else HUB_ALERT_NOTHING_TO_RETRY)
 
     @staticmethod
     def _resolver_name(callback_input: CallbackInput) -> str:

@@ -9,6 +9,8 @@ have no raw-key fallback: their technical text goes to the log, never to the cha
 
 from __future__ import annotations
 
+from datetime import date
+
 from ..access.errors import (
     CannotRemoveSelf,
     JoinRequestNotFound,
@@ -83,6 +85,35 @@ _ARTICLE_JOB_FAILURES = {
 }
 _COVER_JOB_FAILURE = "Не удалось сгенерировать обложку для Темы «{title}»"
 
+# The Хаб (#91): the approved Plan message as a checklist of each Тема's cover and Статьи,
+# then a table of contents into each Тема's result card.
+HUB_MARKS = {"pending": "⏳", "ready": "✅", "failed": "❌"}
+HUB_ARTICLE_STATES = {"pending": "пишется", "ready": "готова", "failed": "не получилась"}
+HUB_COVER_STATES = {"pending": "рисуется", "ready": "готова", "failed": "не получилась"}
+HUB_COVER_SHORT = "🖼"
+HUB_PROGRESS = "⏳ Готовлю обложки и Статьи: готово {done} из {total}"
+HUB_PROGRESS_HINT = "Готовые Темы уже можно открыть кнопками ниже."
+HUB_DONE = "✅ Всё готово. Откройте Тему кнопкой ниже."
+HUB_DONE_WITH_FAILURES = "⚠️ Готово, но не всё получилось ({failed} из {total}). Можно повторить."
+HUB_EMPTY = "В Плане не осталось Тем."
+HUB_TOPIC_HEADER = "📂 Тема {number} из {total}"
+HUB_TOPIC_COVER_LINE = "🖼 Обложка — {mark} {state}"
+HUB_TOPIC_ARTICLE_LINE = "📄 {platform} — {mark} {state}"
+HUB_TOPIC_HINT = (
+    "Нажмите на Площадку — Статья придёт отдельным сообщением: превью, "
+    "скачать .docx/.md, доработать или отметить готовой."
+)
+HUB_BUTTON_COVER = "🖼 Обложка"
+HUB_BUTTON_ARTICLE = "📄 {platform}"
+HUB_BUTTON_RETRY_TOPIC = "🔁 Повторить"
+HUB_BUTTON_RETRY_ALL = "🔁 Повторить неудавшееся"
+HUB_BUTTON_BACK = "◀ К Плану"
+HUB_ALERT_NO_COVER = "Обложки пока нет."
+HUB_ALERT_RETRYING = "Повторяю..."
+HUB_ALERT_NOTHING_TO_RETRY = "Повторять нечего."
+COVER_CAPTION = "🖼 Обложка: {title}"
+COVER_REQUESTED = "Генерирую обложку — пришлю её сюда."
+
 ERROR_ALERTS: dict[type[Exception], str] = {
     PlanNotFound: "План не найден.",
     PlanItemNotFound: "Тема не найдена.",
@@ -98,6 +129,39 @@ ERROR_ALERTS: dict[type[Exception], str] = {
     LastOwnerRemoval: "Нельзя удалить последнего Владельца.",
 }
 ERROR_ALERT_FALLBACK = "Не получилось, попробуйте ещё раз"
+
+
+_MONTHS_RU_GENITIVE = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+
+
+def format_week_range(week_label: str) -> str:
+    """Render an ISO week_label (e.g. "2026-W33") as a human date range, e.g.
+    "10–16 августа 2026". `week_label` itself stays the Plan's idempotency
+    key (see `week_label_for` in scheduling/weekly_plan_trigger.py) and is
+    never shown to the Контент-менеджер directly."""
+    year_part, _, week_part = week_label.partition("-W")
+    monday = date.fromisocalendar(int(year_part), int(week_part), 1)
+    sunday = date.fromisocalendar(int(year_part), int(week_part), 7)
+    start_month = _MONTHS_RU_GENITIVE[monday.month - 1]
+    end_month = _MONTHS_RU_GENITIVE[sunday.month - 1]
+    if monday.year != sunday.year:
+        return f"{monday.day} {start_month} {monday.year} – {sunday.day} {end_month} {sunday.year}"
+    if monday.month != sunday.month:
+        return f"{monday.day} {start_month} – {sunday.day} {end_month} {sunday.year}"
+    return f"{monday.day}–{sunday.day} {end_month} {sunday.year}"
 
 
 def article_status(status: str) -> str:
@@ -148,6 +212,18 @@ def job_failure_text(
         if job_type == "generate_cover":
             return _COVER_JOB_FAILURE.format(title=title)
     return JOB_FAILURES.get(job_type, JOB_FAILURE_FALLBACK)
+
+
+def hub_mark(state: str) -> str:
+    return HUB_MARKS.get(state, state)
+
+
+def hub_article_state(state: str) -> str:
+    return HUB_ARTICLE_STATES.get(state, state)
+
+
+def hub_cover_state(state: str) -> str:
+    return HUB_COVER_STATES.get(state, state)
 
 
 def error_alert_text(exc: Exception) -> str:
