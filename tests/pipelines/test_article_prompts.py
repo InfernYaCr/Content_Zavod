@@ -69,6 +69,7 @@ def test_target_length_of_the_platform_is_in_outline_and_draft_rules() -> None:
     draft = draft_messages(
         title="Тема",
         outline="аутлайн",
+        comment=None,
         persona=None,
         custom_persona=None,
         profile=profile,
@@ -82,6 +83,7 @@ def test_target_length_of_the_platform_is_in_outline_and_draft_rules() -> None:
 def test_vc_profile_and_persona_are_present_in_rewrite_rules() -> None:
     messages = rewrite_messages(
         draft="Черновик",
+        comment=None,
         persona=PERSONAS["founder_operator"],
         custom_persona=None,
         profile=platform_profile("vc"),
