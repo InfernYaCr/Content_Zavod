@@ -28,6 +28,8 @@ from ..access import AccessError, CannotRemoveSelf, MemberNotFound, Membership, 
 from ..domain import PLATFORMS, Article, DomainError, HubTopic, Plan
 from ..job_queue import JobId, JobQueue
 from ..settings import SettingsService
+from ..telegraph import page_url
+from .article_card import ArticlePagePublisher, send_article_card
 from .callback_codec import (
     ACTION_ROLE,
     Action,
@@ -145,6 +147,8 @@ class CallbackDispatcher:
         join_request_flow: JoinRequestFlow,
         owner_settings_service: SettingsService,
         queue: JobQueue,
+        *,
+        publisher: ArticlePagePublisher | None = None,
     ) -> None:
         self._membership = membership
         self._plan = plan
@@ -156,6 +160,7 @@ class CallbackDispatcher:
         self._join_request_flow = join_request_flow
         self._owner_settings_service = owner_settings_service
         self._queue = queue
+        self._publisher = publisher
 
     async def dispatch(self, callback_input: CallbackInput, answer: CallbackAnswerer) -> None:
         payload = callback_input.payload
@@ -334,7 +339,11 @@ class CallbackDispatcher:
                 await self._article.mark_exported(ArticleId(id_))
                 await answer("Отмечено как готовое")
                 view = await self._article.get(ArticleId(id_))
-                await self._gateway.mark_article_card_exported(chat_id, message_id, view)
+                # Keep «📖 Читать» on the redrawn card (#92).
+                path = await self._article.get_telegraph_path(ArticleId(id_))
+                await self._gateway.mark_article_card_exported(
+                    chat_id, message_id, view, read_url=page_url(path) if path else None
+                )
             case SimpleAction(action="request_cover", id_=id_):
                 if not await self._authorized("request_cover", role, deny_text, answer):
                     return
@@ -407,8 +416,13 @@ class CallbackDispatcher:
                 view = await self._article.get(ArticleId(id_))
                 await answer()
                 # The usual Статья card, as its own message: its ✏️/✅/.docx/.md keep working
-                # exactly as before, and the Хаб stays put above it.
-                await self._gateway.send_article_ready(chat_id, view)
+                # exactly as before, and the Хаб stays put above it. The page was published
+                # when the Статья became ready; only a missing one is published now (#92).
+                path = await self._article.get_telegraph_path(ArticleId(id_))
+                if path is not None:
+                    await self._gateway.send_article_ready(chat_id, view, read_url=page_url(path))
+                else:
+                    await send_article_card(self._gateway, chat_id, view, self._publisher)
             case SimpleAction(action="hub_retry", id_=id_):
                 if not await self._authorized("hub_retry", role, deny_text, answer):
                     return

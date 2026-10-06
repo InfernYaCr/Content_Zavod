@@ -68,6 +68,11 @@ WEEKDAYS = {
     "sun": ("вс", "воскресенье"),
 }
 
+# The ready-Статья card (#92).
+ARTICLE_CARD_PLATFORM = "Площадка: {platform}"
+READ_BUTTON = "📖 Читать"
+REFINE_BUTTON = "✏️ Доработать"
+
 JOB_FAILURES = {
     "generate_plan": "Не удалось составить План.",
     "regenerate_topic": "Не удалось перегенерировать Тему.",
@@ -100,11 +105,13 @@ HUB_TOPIC_HEADER = "📂 Тема {number} из {total}"
 HUB_TOPIC_COVER_LINE = "🖼 Обложка — {mark} {state}"
 HUB_TOPIC_ARTICLE_LINE = "📄 {platform} — {mark} {state}"
 HUB_TOPIC_HINT = (
-    "Нажмите на Площадку — Статья придёт отдельным сообщением: превью, "
-    "скачать .docx/.md, доработать или отметить готовой."
+    "📖 — прочитать Статью прямо в Telegram.\n"
+    "📄 — карточка Статьи отдельным сообщением: скачать .docx/.md, доработать, "
+    "отметить готовой."
 )
 HUB_BUTTON_COVER = "🖼 Обложка"
 HUB_BUTTON_ARTICLE = "📄 {platform}"
+HUB_BUTTON_READ = "📖 {platform}"
 HUB_BUTTON_RETRY_TOPIC = "🔁 Повторить"
 HUB_BUTTON_RETRY_ALL = "🔁 Повторить неудавшееся"
 HUB_BUTTON_BACK = "◀ К Плану"

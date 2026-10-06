@@ -62,6 +62,7 @@ from .persona_command import (
 )
 from .plan_delivery import PlanHubSource, PlanMessageRefs, deliver_plan_hub, deliver_plan_message
 from .plan_review import PlanOperations, PlanReview
+from .project_command import handle_project_command, handle_set_project_command
 from .schedule_command import handle_schedule_command, handle_set_schedule_command
 from .settings_command import handle_settings_command
 from .topic_command import PlanProposal, handle_topic_command
@@ -147,10 +148,12 @@ __all__ = [
     "handle_niche_command",
     "handle_persona_command",
     "handle_persona_template_callback",
+    "handle_project_command",
     "handle_schedule_command",
     "handle_set_directions_command",
     "handle_set_niche_command",
     "handle_set_persona_command",
+    "handle_set_project_command",
     "handle_set_schedule_command",
     "handle_settings_command",
     "handle_topic_command",

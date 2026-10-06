@@ -105,3 +105,9 @@ def test_load_settings_raises_for_non_numeric_pricing() -> None:
 
     with pytest.raises(ConfigError):
         load_settings(env)
+
+
+def test_telegraph_access_token_is_optional() -> None:
+    assert load_settings(_BASE_ENV).telegraph_access_token is None
+    env = {**_BASE_ENV, "TELEGRAPH_ACCESS_TOKEN": "tg-token"}
+    assert load_settings(env).telegraph_access_token == "tg-token"

@@ -78,10 +78,12 @@ from ..telegram import (
     handle_members_command,
     handle_niche_command,
     handle_persona_command,
+    handle_project_command,
     handle_schedule_command,
     handle_set_directions_command,
     handle_set_niche_command,
     handle_set_persona_command,
+    handle_set_project_command,
     handle_set_schedule_command,
     handle_settings_command,
     handle_topic_command,
@@ -89,9 +91,11 @@ from ..telegram import (
     sync_commands,
     unpack_callback_query,
 )
+from ..telegram.article_card import ArticlePagePublisher, send_article_card
 from ..telegram.gateway import format_week_range
 from ..telegram.pending_inputs import PendingInputs
 from ..telegram.texts import job_failure_text
+from ..telegraph import HttpxTelegraphClient, TelegraphPublisher, project_footer
 from ._process import register_shutdown
 
 logger = logging.getLogger(__name__)
@@ -178,6 +182,8 @@ def _build_router(
     queue: JobQueue,
     scheduler: AsyncIOScheduler,
     settings: Settings,
+    *,
+    publisher: ArticlePagePublisher | None = None,
 ) -> Router:
     router = Router()
 
@@ -319,6 +325,18 @@ def _build_router(
             owner_settings_service, gateway, message.chat.id, command.args or ""
         )
 
+    @router.message(Command("project"))
+    @gated(COMMAND_ROLE["project"])
+    async def on_project(message: Message) -> None:
+        await handle_project_command(owner_settings_service, gateway, message.chat.id)
+
+    @router.message(Command("set_project"))
+    @gated(COMMAND_ROLE["set_project"])
+    async def on_set_project(message: Message, command: CommandObject) -> None:
+        await handle_set_project_command(
+            owner_settings_service, gateway, message.chat.id, command.args or ""
+        )
+
     @router.message(Command("settings"))
     @gated(COMMAND_ROLE["settings"])
     async def on_settings(message: Message) -> None:
@@ -335,6 +353,7 @@ def _build_router(
         join_request_flow,
         owner_settings_service,
         queue,
+        publisher=publisher,
     )
 
     @router.callback_query()
@@ -412,6 +431,14 @@ class _ArticleDelivery:
 
 
 @dataclass(frozen=True)
+class _PagePublishDelivery:
+    """Publish a fan-out Статья's Страница для чтения (#92) as soon as it's ready, without a
+    message: the Хаб's result card then links it straight away as «📖» (#91)."""
+
+    article_id: ArticleId
+
+
+@dataclass(frozen=True)
 class _CoverDelivery:
     """A cover photo, sent only for a by-hand «🖼 Обложка» re-request - same reasoning as
     `_ArticleDelivery`."""
@@ -432,6 +459,7 @@ _Delivery = (
     | _HubDelivery
     | _NoticeDelivery
     | _ArticleDelivery
+    | _PagePublishDelivery
     | _CoverDelivery
     | _ErrorDelivery
 )
@@ -536,7 +564,7 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> list
             return []
         hub = _HubDelivery(plan_id=await article.get_plan_id(article_id))
         if result.job_type == "generate_article":
-            return [hub]
+            return [_PagePublishDelivery(article_id=article_id), hub]
         return [_ArticleDelivery(article_id=article_id), hub]
     if result.job_type == "generate_cover":
         plan_item_id = PlanItemId(output["plan_item_id"])
@@ -560,6 +588,7 @@ async def _deliver(
     gateway: TelegramGateway,
     notify_chat_id: int,
     delivery: _Delivery,
+    publisher: ArticlePagePublisher | None = None,
 ) -> None:
     """The Telegram half of notification handling (#73): turns an `_apply_result` outcome
     into the actual message. A Plan delivery goes through `deliver_plan_message`, a Хаб one
@@ -574,7 +603,10 @@ async def _deliver(
         await gateway.send_notice(notify_chat_id, delivery.text)
     elif isinstance(delivery, _ArticleDelivery):
         view = await article.get(delivery.article_id)
-        await gateway.send_article_ready(notify_chat_id, view)
+        await send_article_card(gateway, notify_chat_id, view, publisher)
+    elif isinstance(delivery, _PagePublishDelivery):
+        if publisher is not None:
+            await publisher.publish(await article.get(delivery.article_id))
     elif isinstance(delivery, _CoverDelivery):
         item = await plan.get_item(delivery.plan_item_id)
         await gateway.send_cover(notify_chat_id, delivery.image, delivery.mime_type, item.title)
@@ -583,11 +615,16 @@ async def _deliver(
 
 
 def _make_notification_handler(
-    plan: Plan, article: Article, gateway: TelegramGateway, notify_chat_id: int
+    plan: Plan,
+    article: Article,
+    gateway: TelegramGateway,
+    notify_chat_id: int,
+    *,
+    publisher: ArticlePagePublisher | None = None,
 ):
     async def handle(result: JobResult) -> None:
         for delivery in await _apply_result(plan, article, result):
-            await _deliver(plan, article, gateway, notify_chat_id, delivery)
+            await _deliver(plan, article, gateway, notify_chat_id, delivery, publisher)
 
     return handle
 
@@ -650,6 +687,14 @@ async def main(settings: Settings | None = None) -> None:
         )
         scheduler.start()
 
+        telegraph_client = HttpxTelegraphClient()
+        publisher = TelegraphPublisher(
+            telegraph_client,
+            article,
+            owner_settings,
+            access_token=settings.telegraph_access_token,
+            footer_link=project_footer(owner_settings_service),
+        )
         dispatcher = Dispatcher()
         dispatcher.include_router(
             _build_router(
@@ -666,6 +711,7 @@ async def main(settings: Settings | None = None) -> None:
                 queue,
                 scheduler,
                 settings,
+                publisher=publisher,
             )
         )
 
@@ -673,7 +719,7 @@ async def main(settings: Settings | None = None) -> None:
         register_shutdown(stop)
 
         notify_handler = _make_notification_handler(
-            plan, article, gateway, settings.telegram_notify_chat_id
+            plan, article, gateway, settings.telegram_notify_chat_id, publisher=publisher
         )
         polling_task = asyncio.create_task(dispatcher.start_polling(bot, handle_signals=False))
         notifications_task = asyncio.create_task(
@@ -688,6 +734,7 @@ async def main(settings: Settings | None = None) -> None:
             await polling_task
             await notifications_task
             scheduler.shutdown(wait=False)
+            await telegraph_client.aclose()
             await bot.session.close()
     finally:
         await pool.close()

@@ -13,6 +13,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 
+from .article_card import render_article_card_text
 from .callback_codec import (
     Action,
     ExportArticle,
@@ -27,6 +28,8 @@ from .pending_inputs import PendingInput
 from .plan_hub import render_hub_screen
 from .texts import (
     COVER_CAPTION,
+    READ_BUTTON,
+    REFINE_BUTTON,
     article_status,
     format_week_range,
     plan_status,
@@ -496,26 +499,34 @@ def build_members_keyboard(
 
 
 def build_article_keyboard(
-    article_id: str, plan_item_id: str, *, exported: bool = False
+    article_id: str,
+    plan_item_id: str,
+    *,
+    read_url: str | None = None,
+    exported: bool = False,
 ) -> InlineKeyboardMarkup:
-    """`exported` swaps ✅ for «✅ Готово» so the card shows it was accepted (#86); the button
-    keeps the same `approve` callback, which is idempotent."""
+    """«📖 Читать» opens the Статья's Страница для чтения (#92) and is left out when it
+    couldn't be published; «✏️ Доработать» is the comment-gated Перегенерация. `exported`
+    swaps ✅ for «✅ Готово» so the card shows it was accepted (#86); the button keeps the
+    same `approve` callback, which is idempotent."""
+    read = [InlineKeyboardButton(text=READ_BUTTON, url=read_url)] if read_url else []
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            _export_button_row(article_id, docx_label="📄 .docx", md_label="📝 .md"),
             [
+                *read,
                 InlineKeyboardButton(
-                    text="🔄 Перегенерировать",
+                    text=REFINE_BUTTON,
                     callback_data=encode_callback_data(
                         SimpleAction("regenerate_article", article_id)
                     ),
                 ),
+            ],
+            _export_button_row(article_id, docx_label="⬇️ .docx", md_label="⬇️ .md"),
+            [
                 InlineKeyboardButton(
                     text="✅ Готово" if exported else "✅",
                     callback_data=encode_callback_data(SimpleAction("approve", article_id)),
                 ),
-            ],
-            [
                 InlineKeyboardButton(
                     text="🖼 Обложка",
                     callback_data=encode_callback_data(SimpleAction("request_cover", plan_item_id)),
@@ -699,22 +710,23 @@ class TelegramGateway:
     async def edit_notice(self, chat_id: int, message_id: int, text: str) -> None:
         await self._bot.edit_message_text(chat_id, message_id, text)
 
-    async def send_article_ready(self, chat_id: int, article: ArticleView) -> None:
-        platform = platform_name(article.platform)
-        text = f"📄 {article.title} ({platform})\nВыберите формат для скачивания:"
+    async def send_article_ready(
+        self, chat_id: int, article: ArticleView, *, read_url: str | None = None
+    ) -> None:
+        keyboard = build_article_keyboard(article.id, article.plan_item_id, read_url=read_url)
         await self._bot.send_message(
-            chat_id, text, reply_markup=build_article_keyboard(article.id, article.plan_item_id)
+            chat_id, render_article_card_text(article), reply_markup=keyboard
         )
 
     async def mark_article_card_exported(
-        self, chat_id: int, message_id: int, article: ArticleView
+        self, chat_id: int, message_id: int, article: ArticleView, *, read_url: str | None = None
     ) -> None:
-        """Redraws an Article card's buttons in place after ✅, text untouched (#86)."""
-        await self._bot.edit_message_reply_markup(
-            chat_id,
-            message_id,
-            reply_markup=build_article_keyboard(article.id, article.plan_item_id, exported=True),
+        """Redraws an Article card's buttons in place after ✅, text untouched (#86);
+        `read_url` keeps «📖 Читать» on the redrawn card (#92)."""
+        keyboard = build_article_keyboard(
+            article.id, article.plan_item_id, read_url=read_url, exported=True
         )
+        await self._bot.edit_message_reply_markup(chat_id, message_id, reply_markup=keyboard)
 
     async def send_article_document(
         self, chat_id: int, article: ArticleView, article_format: ArticleFormat

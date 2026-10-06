@@ -9,8 +9,8 @@ notification redraws the screen the team is actually looking at.
 The Хаб is always a text message, never a photo: a text message can't be edited into a photo
 message (or back), and a photo caption is capped at 1024 characters against a text message's
 4096. So the cover and the Статьи are sent on demand as their own messages - the cover as a
-photo, each Статья as its usual card with .docx/.md, ✏️ and ✅ - instead of a burst of
-messages when generation ends.
+photo, each Статья as its usual card with .docx/.md, ✏️ and ✅ (#92's «📖» page link sits
+right in the result card) - instead of a burst of messages when generation ends.
 """
 
 from __future__ import annotations
@@ -18,11 +18,13 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from ..domain import HubTopic, PlanHubView
+from ..telegraph import page_url
 from .callback_codec import SimpleAction, encode_callback_data
 from .texts import (
     HUB_BUTTON_ARTICLE,
     HUB_BUTTON_BACK,
     HUB_BUTTON_COVER,
+    HUB_BUTTON_READ,
     HUB_BUTTON_RETRY_ALL,
     HUB_BUTTON_RETRY_TOPIC,
     HUB_COVER_SHORT,
@@ -138,16 +140,27 @@ def build_hub_topic_keyboard(hub: PlanHubView, topic: HubTopic) -> InlineKeyboar
                 )
             ]
         )
-    article_row = [
-        InlineKeyboardButton(
-            text=HUB_BUTTON_ARTICLE.format(platform=platform_name(cell.platform)),
-            callback_data=encode_callback_data(SimpleAction("hub_article", cell.article_id)),
+    # One row per Площадка with a Версия: «📖» opens its Страница для чтения (#92) right in
+    # Telegram, «📄» sends its usual card (downloads, ✏️ Доработать, ✅ Готово) below.
+    for cell in topic.articles:
+        if not cell.has_content or cell.article_id is None:
+            continue
+        platform = platform_name(cell.platform)
+        row: list[InlineKeyboardButton] = []
+        if cell.telegraph_path:
+            row.append(
+                InlineKeyboardButton(
+                    text=HUB_BUTTON_READ.format(platform=platform),
+                    url=page_url(cell.telegraph_path),
+                )
+            )
+        row.append(
+            InlineKeyboardButton(
+                text=HUB_BUTTON_ARTICLE.format(platform=platform),
+                callback_data=encode_callback_data(SimpleAction("hub_article", cell.article_id)),
+            )
         )
-        for cell in topic.articles
-        if cell.has_content and cell.article_id is not None
-    ]
-    if article_row:
-        rows.append(article_row)
+        rows.append(row)
     if topic.has_failures:
         rows.append(
             [

@@ -167,7 +167,7 @@ class Plan:
         article_rows = await self._pool.fetch(
             """
             SELECT a.id, a.plan_item_id, a.platform, a.status, a.active_generation_job_id,
-                   j.status AS job_status,
+                   a.telegraph_path, j.status AS job_status,
                    EXISTS (SELECT 1 FROM article_versions v WHERE v.article_id = a.id)
                        AS has_content
             FROM articles a
@@ -184,6 +184,7 @@ class Plan:
                 article_id=ArticleId(row["id"]),
                 has_content=row["has_content"],
                 job_id=row["active_generation_job_id"],
+                telegraph_path=row["telegraph_path"],
             )
         topics = []
         for number, row in enumerate(item_rows, start=1):

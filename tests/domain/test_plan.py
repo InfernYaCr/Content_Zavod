@@ -629,7 +629,7 @@ async def _fail_job(pool: asyncpg.Pool, job_id: int) -> None:
 
 
 async def test_get_hub_right_after_fan_out_is_all_pending(plan: Plan, article: Article) -> None:
-    plan_id, items = await _approved_with_fan_out(plan, article)
+    plan_id, _ = await _approved_with_fan_out(plan, article)
 
     hub = await plan.get_hub(plan_id)
 

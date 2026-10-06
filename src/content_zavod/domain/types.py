@@ -97,13 +97,15 @@ class HubArticleCell:
     """One Площадка's Статья for a Тема in the Хаб. `article_id` is `None` only in the crash
     window between approving and the fan-out creating the row (shown as ⏳). `has_content`
     says whether a Версия exists to open - an `error` after a successful earlier Версия still
-    has one. `job_id` is the Job currently owning its generation, what «🔁 Повторить» retries."""
+    has one. `job_id` is the Job currently owning its generation, what «🔁 Повторить» retries.
+    `telegraph_path` is its Страница для чтения (#92), if published."""
 
     platform: str
     state: HubCellState
     article_id: ArticleId | None = None
     has_content: bool = False
     job_id: int | None = None
+    telegraph_path: str | None = None
 
 
 @dataclass(frozen=True)

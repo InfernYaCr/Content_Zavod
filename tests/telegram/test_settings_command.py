@@ -38,6 +38,7 @@ async def test_settings_reports_all_defaults_when_unset() -> None:
     assert "Персона (аутлайн/черновик Статьи):" in text
     assert "Маркетолог-практик" in text
     assert "Направления:" in text and "(Wordstat-подбор растущих запросов)" in text
+    assert "Проект: не задан (CTA в конце Статьи)" in text
 
 
 @pytest.mark.asyncio
@@ -47,6 +48,7 @@ async def test_settings_reports_persisted_overrides() -> None:
             "niche": "b2b saas",
             "voice": "preset:evidence_analyst",
             "directions": "seo, контент-маркетинг",
+            "project": "https://t.me/marketing_daily Разборы кейсов",
         }
     )
     settings, gateway = SettingsService(store), FakeGateway()
@@ -58,6 +60,7 @@ async def test_settings_reports_persisted_overrides() -> None:
     assert "Персона (аутлайн/черновик Статьи):" in text
     assert "Доказательный аналитик" in text
     assert "Направления: seo, контент-маркетинг (Wordstat-подбор растущих запросов)" in text
+    assert "Проект: https://t.me/marketing_daily — Разборы кейсов (CTA в конце Статьи)" in text
 
 
 @pytest.mark.asyncio
