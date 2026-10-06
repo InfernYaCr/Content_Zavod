@@ -67,11 +67,13 @@ async def handle_set_schedule_command(
     day = parse_weekday(day_text)
     if day is None:
         valid = ", ".join(short for short, _ in WEEKDAYS.values())
-        await gateway.send_error(chat_id, f"Неизвестный день {day_text!r}. Допустимые: {valid}")
+        await gateway.send_error(chat_id, f"Неизвестный день «{day_text}». Допустимые: {valid}")
         return
     match = _TIME_RE.match(time_text)
     if not match:
-        await gateway.send_error(chat_id, f"Неверный формат времени {time_text!r}. Ожидается ЧЧ:ММ")
+        await gateway.send_error(
+            chat_id, f"Неверный формат времени «{time_text}». Нужно ЧЧ:ММ, например 09:00"
+        )
         return
     hour, minute = int(match.group(1)), int(match.group(2))
 

@@ -32,7 +32,7 @@ ARTICLE_STATUSES = {
 
 PLAN_STATUSES = {
     "pending_review": "на согласовании",
-    "approved": "согласован",
+    "approved": "утверждён",
     "archived": "в архиве",
 }
 

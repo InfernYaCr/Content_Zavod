@@ -106,7 +106,7 @@ async def test_invalid_day_error_lists_russian_days() -> None:
     )
 
     assert gateway.sent_errors == [
-        (1, "Неизвестный день 'funday'. Допустимые: пн, вт, ср, чт, пт, сб, вс")
+        (1, "Неизвестный день «funday». Допустимые: пн, вт, ср, чт, пт, сб, вс")
     ]
 
 

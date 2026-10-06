@@ -430,7 +430,7 @@ def test_render_history_articles_text_shows_statuses_and_platforms_in_russian() 
 
     text = render_history_articles_text(plan_summary, articles)
 
-    assert "📄 Статьи: 3–9 августа 2026 (согласован)" in text
+    assert "📄 Статьи: 3–9 августа 2026 (утверждён)" in text
     assert "Topic A (Дзен) — в очереди" in text
     assert "Topic A (VC.ru) — готова" in text
     for key in [*statuses, "approved", "zen", "(vc)"]:
