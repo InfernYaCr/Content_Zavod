@@ -584,12 +584,41 @@ async def test_domain_error_from_a_branch_is_answered_not_raised(f: Fixtures) ->
     from content_zavod.domain import DomainError
 
     async def boom(plan_item_id: PlanItemId) -> None:
-        raise DomainError("Тема не найдена")
+        raise DomainError("some technical detail")
 
     f.plan_ops.delete_item = boom  # type: ignore[method-assign]
 
     answer = await dispatch(f, SimpleAction("delete", "item-1"))
 
     # The branch already answered() before calling the collaborator that raised (same
-    # ordering as before this refactor); the DomainError produces a second, alerting answer.
-    assert answer.calls[-1] == ("Тема не найдена", True)
+    # ordering as before this refactor); the DomainError produces a second, alerting answer -
+    # an unmapped error class gets the generic Russian fallback, never its own text (#89).
+    assert answer.calls[-1] == ("Не получилось, попробуйте ещё раз", True)
+
+
+async def test_known_domain_error_is_alerted_in_russian_not_its_english_text(
+    f: Fixtures,
+) -> None:
+    from content_zavod.domain.errors import PlanItemNotEditable
+
+    async def boom(plan_item_id: PlanItemId) -> None:
+        raise PlanItemNotEditable(plan_item_id, "approved")
+
+    f.plan_ops.delete_item = boom  # type: ignore[method-assign]
+
+    answer = await dispatch(f, SimpleAction("delete", "item-1"))
+
+    assert answer.calls[-1] == ("Эту Тему уже нельзя изменить.", True)
+
+
+async def test_access_error_is_alerted_in_russian(f: Fixtures) -> None:
+    from content_zavod.access.errors import MemberNotFound
+
+    async def boom(telegram_id: int) -> None:
+        raise MemberNotFound(telegram_id)
+
+    f.membership.remove_member = boom  # type: ignore[method-assign]
+
+    answer = await dispatch(f, SimpleAction("remove_member", "77"), user_id=OWNER_ID)
+
+    assert answer.calls[-1] == ("Участник не найден.", True)

@@ -5,6 +5,10 @@ day or time gets a plain error reply and no side effects, rather than a
 partially-applied change. On success the override is persisted (so it
 survives a process restart, see `main()`'s startup read) and the live
 APScheduler job is rescheduled immediately via its stable `JOB_ID`.
+
+The day is shown in Russian and accepted either as the stored English code
+(`mon`) or in Russian (`пн`, `понедельник`) - it's always persisted as the
+code, which is what CronTrigger expects (#89).
 """
 
 from __future__ import annotations
@@ -17,8 +21,8 @@ from apscheduler.triggers.cron import CronTrigger
 
 from ..scheduling import DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE, JOB_ID, ScheduleConfig
 from .gateway import TelegramGateway
+from .texts import WEEKDAYS, parse_weekday, weekday_name
 
-_VALID_DAYS = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
 _TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 
 
@@ -39,7 +43,9 @@ async def handle_schedule_command(
     day = config.day_of_week if config else DEFAULT_DAY_OF_WEEK
     hour = config.hour if config else DEFAULT_HOUR
     minute = config.minute if config else DEFAULT_MINUTE
-    await gateway.send_notice(chat_id, f"Текущее расписание: {day} {hour:02d}:{minute:02d}")
+    await gateway.send_notice(
+        chat_id, f"Текущее расписание: {weekday_name(day)} {hour:02d}:{minute:02d}"
+    )
 
 
 async def handle_set_schedule_command(
@@ -54,15 +60,14 @@ async def handle_set_schedule_command(
     parts = args.split()
     if len(parts) != 2:
         await gateway.send_error(
-            chat_id, "Использование: /set_schedule <день> <ЧЧ:ММ>, например: mon 09:00"
+            chat_id, "Использование: /set_schedule <день> <ЧЧ:ММ>, например: пн 09:00"
         )
         return
-    day, time_text = parts
-    day = day.lower()
-    if day not in _VALID_DAYS:
-        await gateway.send_error(
-            chat_id, f"Неизвестный день {day!r}. Допустимые: {', '.join(sorted(_VALID_DAYS))}"
-        )
+    day_text, time_text = parts
+    day = parse_weekday(day_text)
+    if day is None:
+        valid = ", ".join(short for short, _ in WEEKDAYS.values())
+        await gateway.send_error(chat_id, f"Неизвестный день {day_text!r}. Допустимые: {valid}")
         return
     match = _TIME_RE.match(time_text)
     if not match:
@@ -74,4 +79,6 @@ async def handle_set_schedule_command(
     scheduler.reschedule_job(
         JOB_ID, trigger=CronTrigger(day_of_week=day, hour=hour, minute=minute, timezone=tz)
     )
-    await gateway.send_notice(chat_id, f"Расписание изменено: {day} {hour:02d}:{minute:02d}")
+    await gateway.send_notice(
+        chat_id, f"Расписание изменено: {weekday_name(day)} {hour:02d}:{minute:02d}"
+    )

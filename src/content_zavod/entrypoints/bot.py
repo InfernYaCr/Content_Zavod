@@ -87,6 +87,7 @@ from ..telegram import (
     sync_commands,
     unpack_callback_query,
 )
+from ..telegram.texts import job_failure_text
 from ._process import register_shutdown
 
 logger = logging.getLogger(__name__)
@@ -432,8 +433,10 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
             batch_delivery = await _advance_batch(
                 plan, await plan.get_plan_id_for_item(plan_item_id)
             )
+        # The chat gets a plain Russian «Не удалось …» (#89); the technical error stays in the log.
+        logger.warning("Job %s (%s) failed: %s", result.job_id, result.job_type, result.error)
         return _ErrorDelivery(
-            text=f"Задача {result.job_type} завершилась ошибкой: {result.error}",
+            text=job_failure_text(result.job_type),
             job_id=result.job_id,
             batch_progress=batch_delivery,
         )

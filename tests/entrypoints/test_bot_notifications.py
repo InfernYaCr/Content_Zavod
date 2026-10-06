@@ -8,6 +8,10 @@ render) worth a fast unit test.
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from content_zavod.domain import (
     ArticleView,
     GeneratedVersion,
@@ -166,9 +170,34 @@ async def test_failed_job_sends_error_with_retry_button() -> None:
 
     await handle(JobResult(job_id=1, job_type="generate_plan", status="failed", error="boom"))
 
-    assert gateway.sent_errors_with_retry == [
-        (42, "Задача generate_plan завершилась ошибкой: boom", 1)
-    ]
+    assert gateway.sent_errors_with_retry == [(42, "Не удалось составить План.", 1)]
+
+
+@pytest.mark.parametrize(
+    ("job_type", "text"),
+    [
+        ("regenerate_topic", "Не удалось перегенерировать Тему."),
+        ("generate_article", "Не удалось написать Статью."),
+        ("regenerate_article", "Не удалось переписать Статью."),
+        ("generate_cover", "Не удалось сгенерировать обложку."),
+        ("some_future_job", "Не удалось выполнить задачу."),
+    ],
+)
+async def test_failed_job_text_is_russian_and_keeps_job_type_and_error_out_of_chat(
+    job_type: str, text: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#89: the chat gets «Не удалось …» by job type; `job_type` and the exception text
+    only go to the log."""
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    with caplog.at_level(logging.WARNING):
+        await handle(
+            JobResult(job_id=5, job_type=job_type, status="failed", error="RuntimeError: boom")
+        )
+
+    assert gateway.sent_errors_with_retry == [(42, text, 5)]
+    assert "RuntimeError: boom" in caplog.text
 
 
 async def test_failed_article_job_marks_article_error_before_notifying() -> None:
@@ -466,9 +495,7 @@ async def test_failed_generate_cover_within_open_batch_still_advances_progress()
     assert plan.cover_failures_marked == [3]
     assert plan.recorded_generation_progress_calls == ["plan-1"]
     assert gateway.edited_generation_progress == [(42, 7, 9, 9)]
-    assert gateway.sent_errors_with_retry == [
-        (42, "Задача generate_cover завершилась ошибкой: boom", 3)
-    ]
+    assert gateway.sent_errors_with_retry == [(42, "Не удалось сгенерировать обложку.", 3)]
 
 
 async def test_stale_failed_generate_cover_job_is_ignored() -> None:

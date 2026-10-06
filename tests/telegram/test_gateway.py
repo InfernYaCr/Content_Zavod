@@ -292,8 +292,8 @@ async def test_send_article_ready_sends_no_document_only_format_choice() -> None
     assert len(bot.sent_messages) == 1
     chat_id, text, _ = bot.sent_messages[0]
     assert chat_id == 42
-    assert "Best Niche Guide" in text
-    assert "zen" in text
+    assert "Best Niche Guide (Дзен)" in text
+    assert "zen" not in text
 
 
 @pytest.mark.asyncio
@@ -352,8 +352,7 @@ async def test_send_article_document_sends_docx_with_built_filename_and_caption(
     assert chat_id == 42
     assert isinstance(document, BufferedInputFile)
     assert document.filename == "best-niche-guide-zen.docx"
-    assert "Best Niche Guide" in caption
-    assert "zen" in caption
+    assert caption == "📄 Best Niche Guide (Дзен)"
 
 
 @pytest.mark.asyncio
@@ -393,7 +392,7 @@ def make_plan_summaries(count: int) -> list[PlanSummary]:
 def test_render_history_weeks_text_lists_week_range_and_status() -> None:
     text = render_history_weeks_text(make_plan_summaries(1), page=0, page_count=1)
 
-    assert "3–9 августа 2026 — pending_review" in text
+    assert "3–9 августа 2026 — на согласовании" in text
 
 
 def test_render_history_weeks_text_empty_page() -> None:
@@ -406,6 +405,7 @@ def test_build_history_weeks_keyboard_one_button_per_week() -> None:
     keyboard = build_history_weeks_keyboard(make_plan_summaries(2), page=0, page_count=1)
 
     assert len(keyboard.inline_keyboard) == 2
+    assert keyboard.inline_keyboard[0][0].text == "3–9 августа 2026 — на согласовании"
     payload = decode_callback_data(keyboard.inline_keyboard[0][0].callback_data)
     assert payload == HistoryWeek("plan-0", 0)
 
@@ -418,17 +418,23 @@ def test_build_history_weeks_keyboard_paginates() -> None:
     assert decode_callback_data(nav_row[0].callback_data) == SimpleAction("history_page", "1")
 
 
-def test_render_history_articles_text_shows_every_status_untranslated() -> None:
+def test_render_history_articles_text_shows_statuses_and_platforms_in_russian() -> None:
+    """No raw status or Площадка key reaches the chat (#89)."""
     plan_summary = PlanSummary(id=PlanId("plan-1"), week_label="2026-W32", status="approved")
+    statuses = ["queued", "generating", "error", "ready", "regenerating", "exported"]
     articles = [
-        ArticleSummary(id=ArticleId("a-1"), title="Topic A", platform="zen", status="queued"),
-        ArticleSummary(id=ArticleId("a-2"), title="Topic A", platform="vc", status="ready"),
+        ArticleSummary(id=ArticleId(f"a-{i}"), title="Topic A", platform=platform, status=status)
+        for i, status in enumerate(statuses)
+        for platform in ("zen", "vc")
     ]
 
     text = render_history_articles_text(plan_summary, articles)
 
-    assert "Topic A (zen) — queued" in text
-    assert "Topic A (vc) — ready" in text
+    assert "📄 Статьи: 3–9 августа 2026 (согласован)" in text
+    assert "Topic A (Дзен) — в очереди" in text
+    assert "Topic A (VC.ru) — готова" in text
+    for key in [*statuses, "approved", "zen", "(vc)"]:
+        assert key not in text
 
 
 def test_build_history_articles_keyboard_back_button_returns_to_the_given_page() -> None:
@@ -500,7 +506,7 @@ async def test_send_history_weeks_sends_a_single_message_with_keyboard() -> None
     assert len(bot.sent_messages) == 1
     chat_id, text, keyboard = bot.sent_messages[0]
     assert chat_id == 1
-    assert "pending_review" in text
+    assert "на согласовании" in text
     assert keyboard is not None
 
 
@@ -534,7 +540,7 @@ async def test_edit_history_articles_edits_the_message_with_a_back_button() -> N
 
     chat_id, message_id, text, keyboard = bot.edited_messages[0]
     assert (chat_id, message_id) == (1, 9)
-    assert "Topic A (zen) — queued" in text
+    assert "Topic A (Дзен) — в очереди" in text
     (back_button,) = keyboard.inline_keyboard[0]
     assert decode_callback_data(back_button.callback_data) == SimpleAction("history_page", "2")
 
@@ -631,7 +637,7 @@ def test_render_history_versions_text_lists_every_version_newest_first() -> None
         [make_version_summary(id_=2, model="yandexgpt-2"), make_version_summary(id_=1)],
     )
 
-    assert "Topic A (zen)" in text
+    assert "Topic A (Дзен)" in text
     assert "1. 11.08.2026 14:03 — yandexgpt-2, 42 ток." in text
     assert "2. 11.08.2026 14:03 — yandexgpt, 42 ток." in text
 
@@ -674,7 +680,7 @@ def test_build_history_versions_keyboard_one_button_per_version_and_a_back_butto
 def test_render_history_version_text_shows_header_and_content() -> None:
     text = render_history_version_text(make_article_summary(), make_version_view())
 
-    assert "Topic A (zen)" in text
+    assert "Topic A (Дзен)" in text
     assert "11.08.2026 14:03 — yandexgpt, 42 ток." in text
     assert text.endswith("Hello, world.")
 
@@ -712,7 +718,7 @@ async def test_edit_history_versions_edits_the_message_with_version_buttons() ->
 
     chat_id, message_id, text, keyboard = bot.edited_messages[0]
     assert (chat_id, message_id) == (1, 9)
-    assert "Topic A (zen)" in text
+    assert "Topic A (Дзен)" in text
     payload = decode_callback_data(keyboard.inline_keyboard[0][0].callback_data)
     assert payload == HistoryVersion("a-1", 2, 2)
     (back_button,) = keyboard.inline_keyboard[1]
