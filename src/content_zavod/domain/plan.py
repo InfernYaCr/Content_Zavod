@@ -31,6 +31,10 @@ recorded yet and edits otherwise, so a crash between a successful Telegram
 send and the caller's own delivered-mark no longer produces a second
 message on retry - `record_message_ref` runs, and is durable, before that
 mark is ever attempted.
+
+`get_hub` reads an approved Plan as its Хаб (#91, ADR-0014): each Тема's cover and
+per-Площадка Статья state, derived from current rows and the Jobs that own their
+generation rather than counted, so no notification replay or retry can skew it.
 """
 
 from __future__ import annotations
