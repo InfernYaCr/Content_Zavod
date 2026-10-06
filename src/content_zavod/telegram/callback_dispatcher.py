@@ -26,6 +26,7 @@ from aiogram.types import CallbackQuery
 from ..access import AccessError, CannotRemoveSelf, MemberNotFound, Membership, Role, require_role
 from ..domain import PLATFORMS, Article, DomainError, Plan
 from ..job_queue import JobId, JobQueue
+from ..telegraph import page_url
 from .callback_codec import (
     ACTION_ROLE,
     Action,
@@ -416,7 +417,11 @@ class CallbackDispatcher:
                 await self._article.mark_exported(ArticleId(id_))
                 await answer("Отмечено как готовое")
                 view = await self._article.get(ArticleId(id_))
-                await self._gateway.mark_article_card_exported(chat_id, message_id, view)
+                # Keep «📖 Читать» on the redrawn card (#92).
+                path = await self._article.get_telegraph_path(ArticleId(id_))
+                await self._gateway.mark_article_card_exported(
+                    chat_id, message_id, view, read_url=page_url(path) if path else None
+                )
             case SimpleAction(action="request_cover", id_=id_):
                 if not await self._authorized("request_cover", role, deny_text, answer):
                     return

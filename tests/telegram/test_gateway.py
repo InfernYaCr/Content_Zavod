@@ -358,7 +358,7 @@ def make_article() -> ArticleView:
 
 
 @pytest.mark.asyncio
-async def test_send_article_ready_sends_no_document_only_format_choice() -> None:
+async def test_send_article_ready_sends_a_preview_card_not_a_document() -> None:
     bot = FakeBot()
     gateway = TelegramGateway(bot)
 
@@ -368,34 +368,53 @@ async def test_send_article_ready_sends_no_document_only_format_choice() -> None
     assert len(bot.sent_messages) == 1
     chat_id, text, _ = bot.sent_messages[0]
     assert chat_id == 42
-    assert "Best Niche Guide (Дзен)" in text
-    assert "zen" not in text
+    assert text == "📄 Best Niche Guide\nПлощадка: Дзен\n\nHello, world."
+    assert "Выберите формат" not in text
 
 
 @pytest.mark.asyncio
-async def test_send_article_ready_attaches_export_regenerate_and_approve_keyboard() -> None:
+async def test_send_article_ready_with_read_url_puts_read_button_first() -> None:
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    await gateway.send_article_ready(
+        chat_id=42, article=make_article(), read_url="https://telegra.ph/Best-10-07"
+    )
+
+    _, _, keyboard = bot.sent_messages[0]
+    (read_button, refine_button) = keyboard.inline_keyboard[0]
+    assert read_button.text == "📖 Читать"
+    assert read_button.url == "https://telegra.ph/Best-10-07"
+    assert read_button.callback_data is None
+    assert refine_button.text == "✏️ Доработать"
+    assert decode_callback_data(refine_button.callback_data) == SimpleAction(
+        "regenerate_article", "article-1"
+    )
+    (docx_button, md_button) = keyboard.inline_keyboard[1]
+    assert (docx_button.text, md_button.text) == ("⬇️ .docx", "⬇️ .md")
+    assert decode_callback_data(docx_button.callback_data) == ExportArticle("article-1", "docx")
+    assert decode_callback_data(md_button.callback_data) == ExportArticle("article-1", "md")
+    (approve_button, cover_button) = keyboard.inline_keyboard[2]
+    assert approve_button.text == "✅"  # «✅ Готово» once accepted (#86)
+    assert decode_callback_data(approve_button.callback_data) == SimpleAction(
+        "approve", "article-1"
+    )
+    assert decode_callback_data(cover_button.callback_data) == SimpleAction(
+        "request_cover", "item-1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_article_ready_without_read_url_has_no_read_button() -> None:
     bot = FakeBot()
     gateway = TelegramGateway(bot)
 
     await gateway.send_article_ready(chat_id=42, article=make_article())
 
-    assert len(bot.sent_messages) == 1
-    chat_id, _, keyboard = bot.sent_messages[0]
-    assert chat_id == 42
-    (docx_button, md_button) = keyboard.inline_keyboard[0]
-    (regenerate_button, approve_button) = keyboard.inline_keyboard[1]
-    assert decode_callback_data(docx_button.callback_data) == ExportArticle("article-1", "docx")
-    assert decode_callback_data(md_button.callback_data) == ExportArticle("article-1", "md")
-    assert decode_callback_data(regenerate_button.callback_data) == SimpleAction(
-        "regenerate_article", "article-1"
-    )
-    assert decode_callback_data(approve_button.callback_data) == SimpleAction(
-        "approve", "article-1"
-    )
-    (cover_button,) = keyboard.inline_keyboard[2]
-    assert decode_callback_data(cover_button.callback_data) == SimpleAction(
-        "request_cover", "item-1"
-    )
+    _, _, keyboard = bot.sent_messages[0]
+    buttons = [button for row in keyboard.inline_keyboard for button in row]
+    assert all(button.url is None for button in buttons)
+    assert [button.text for button in keyboard.inline_keyboard[0]] == ["✏️ Доработать"]
 
 
 @pytest.mark.asyncio
