@@ -114,7 +114,7 @@ async def test_history_command_sends_first_page_of_weeks() -> None:
     assert len(gateway._bot.sent_messages) == 1
     chat_id, text, keyboard = gateway._bot.sent_messages[0]
     assert chat_id == 1
-    assert "pending_review" in text
+    assert "на согласовании" in text
     assert len(keyboard.inline_keyboard) == 1
 
 
@@ -126,7 +126,7 @@ async def test_history_command_includes_current_unfinished_week_like_any_other()
     await handle_history_command(plans, gateway, chat_id=1)
 
     _, text, keyboard = gateway._bot.sent_messages[0]
-    assert "pending_review" in text and "archived" in text
+    assert "на согласовании" in text and "в архиве" in text
     assert len(keyboard.inline_keyboard) == 2
 
 
@@ -182,8 +182,8 @@ async def test_history_week_edits_the_message_with_that_weeks_articles() -> None
 
     chat_id, message_id, text, keyboard = gateway._bot.edited_messages[0]
     assert (chat_id, message_id) == (1, 5)
-    assert "Topic A (zen) — queued" in text
-    assert "Topic A (vc) — generating" in text
+    assert "Topic A (Дзен) — в очереди" in text
+    assert "Topic A (VC.ru) — пишется" in text
     # A single "Назад" button, returning to the week list's page 0.
     assert len(keyboard.inline_keyboard) == 1
     back_button = keyboard.inline_keyboard[0][0]
@@ -232,7 +232,7 @@ async def test_history_versions_edits_the_message_with_that_articles_versions() 
 
     chat_id, message_id, text, keyboard = gateway._bot.edited_messages[0]
     assert (chat_id, message_id) == (1, 5)
-    assert "Topic A (zen)" in text
+    assert "Topic A (Дзен)" in text
     payload = decode_callback_data(keyboard.inline_keyboard[-1][0].callback_data)
     assert payload == HistoryWeek("plan-1", 0)
 

@@ -43,6 +43,7 @@ def _platform_block(profile: PlatformProfile) -> str:
             f"Аудитория: {profile.audience}",
             f"Открытие: {profile.opening}",
             f"Структура: {profile.structure}",
+            f"Объём готовой статьи: {profile.target_length}",
             f"Evidence: {profile.evidence_policy}",
             f"Терминология: {profile.terminology}",
             f"CTA: {profile.cta}",
@@ -67,6 +68,18 @@ def _input_data(**values: object) -> str:
     return "INPUT_DATA\n" + json.dumps(values, ensure_ascii=False, indent=2) + "\nEND_INPUT_DATA"
 
 
+def _with_comment_rule(task: str, comment: str | None) -> str:
+    """The editor's regeneration comment stays delimited INPUT_DATA, but every step - not
+    only outline - is told to apply it, or the requested edit is lost by the final text (#85)."""
+    if not comment:
+        return task
+    return (
+        f"{task} Поле editor_comment в INPUT_DATA — обязательные правки редактора к "
+        "содержанию и форме статьи: выполни их, не нарушая остальных правил этого "
+        "system-сообщения, включая PERSONA и PLATFORM_PROFILE."
+    )
+
+
 def outline_messages(
     *,
     title: str,
@@ -83,7 +96,9 @@ def outline_messages(
         "списком. Для фактических разделов укажи необходимое evidence."
     )
     return [
-        Message("system", _system(task, persona, custom_persona, profile)),
+        Message(
+            "system", _system(_with_comment_rule(task, comment), persona, custom_persona, profile)
+        ),
         Message(
             "user",
             _input_data(
@@ -101,6 +116,7 @@ def draft_messages(
     *,
     title: str,
     outline: str,
+    comment: str | None,
     persona: Persona | None,
     custom_persona: CustomPersona | None,
     profile: PlatformProfile,
@@ -110,14 +126,17 @@ def draft_messages(
         "умеренные **акценты**. Не заполняй пробелы выдуманными фактами."
     )
     return [
-        Message("system", _system(task, persona, custom_persona, profile)),
-        Message("user", _input_data(title=title, approved_outline=outline)),
+        Message(
+            "system", _system(_with_comment_rule(task, comment), persona, custom_persona, profile)
+        ),
+        Message("user", _input_data(title=title, approved_outline=outline, editor_comment=comment)),
     ]
 
 
 def rewrite_messages(
     *,
     draft: str,
+    comment: str | None,
     persona: Persona | None,
     custom_persona: CustomPersona | None,
     profile: PlatformProfile,
@@ -127,6 +146,8 @@ def rewrite_messages(
         "и не меняй числа. Верни только итоговую статью в Markdown."
     )
     return [
-        Message("system", _system(task, persona, custom_persona, profile)),
-        Message("user", _input_data(draft=draft)),
+        Message(
+            "system", _system(_with_comment_rule(task, comment), persona, custom_persona, profile)
+        ),
+        Message("user", _input_data(draft=draft, editor_comment=comment)),
     ]

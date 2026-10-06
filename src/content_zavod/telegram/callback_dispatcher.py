@@ -17,6 +17,7 @@ for command handlers in `entrypoints/bot.py`.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Protocol, assert_never
 
@@ -52,7 +53,10 @@ from .join_request_flow import JoinRequestFlow
 from .members_command import redraw_members
 from .persona_command import handle_persona_template_callback
 from .plan_review import PlanReview
+from .texts import error_alert_text
 from .types import ArticleId, PlanId, PlanItemId
+
+logger = logging.getLogger(__name__)
 
 ACCESS_DENIED_TEXT = "Доступ запрещён. Обратитесь к владельцу бота, чтобы получить роль."
 OWNER_ONLY_TEXT = "Эта команда доступна только владельцу."
@@ -182,7 +186,9 @@ class CallbackDispatcher:
         try:
             await self._dispatch_gated(callback_input, payload, role, deny_text, answer)
         except (DomainError, AccessError) as exc:
-            await answer(str(exc), show_alert=True)
+            # Russian alert by error class (#89); the English technical text only goes to the log.
+            logger.info("Callback %r refused: %s", payload, exc)
+            await answer(error_alert_text(exc), show_alert=True)
 
     async def _authorized(
         self, action: Action, role: Role | None, deny_text: str, answer: CallbackAnswerer

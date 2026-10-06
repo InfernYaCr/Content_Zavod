@@ -22,6 +22,7 @@ from .callback_codec import (
     SimpleAction,
     encode_callback_data,
 )
+from .texts import article_status, plan_status, platform_name
 from .types import (
     ArticleFormat,
     ArticleSummary,
@@ -175,7 +176,7 @@ def render_history_weeks_text(
         lines.append("Планов пока нет.")
         return "\n".join(lines)
     for item in plans_page:
-        lines.append(f"{format_week_range(item.week_label)} — {item.status}")
+        lines.append(f"{format_week_range(item.week_label)} — {plan_status(item.status)}")
     return "\n".join(lines)
 
 
@@ -185,7 +186,7 @@ def build_history_weeks_keyboard(
     rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(
-                text=f"{format_week_range(item.week_label)} — {item.status}",
+                text=f"{format_week_range(item.week_label)} — {plan_status(item.status)}",
                 callback_data=encode_callback_data(HistoryWeek(item.id, page)),
             )
         ]
@@ -243,12 +244,14 @@ def _export_button_row(
 def render_history_articles_text(
     plan_summary: PlanSummary, articles: Sequence[ArticleSummary]
 ) -> str:
-    lines = [f"📄 Статьи: {format_week_range(plan_summary.week_label)} ({plan_summary.status})", ""]
+    week = format_week_range(plan_summary.week_label)
+    lines = [f"📄 Статьи: {week} ({plan_status(plan_summary.status)})", ""]
     if not articles:
         lines.append("Статей пока нет.")
         return "\n".join(lines)
     for index, item in enumerate(articles, start=1):
-        lines.append(f"{index}. {item.title} ({item.platform}) — {item.status}")
+        platform = platform_name(item.platform)
+        lines.append(f"{index}. {item.title} ({platform}) — {article_status(item.status)}")
     return "\n".join(lines)
 
 
@@ -300,7 +303,7 @@ def _format_usage(tokens: int | None, cost: float | None) -> str:
 def render_history_versions_text(
     article: ArticleSummary, versions: Sequence[ArticleVersionSummary]
 ) -> str:
-    lines = [f"🕓 Версии: {article.title} ({article.platform})", ""]
+    lines = [f"🕓 Версии: {article.title} ({platform_name(article.platform)})", ""]
     if not versions:
         lines.append("Версий пока нет.")
         return "\n".join(lines)
@@ -346,7 +349,7 @@ _TRUNCATION_NOTICE = "\n\n[…обрезано, версия длиннее ли
 
 def render_history_version_text(article: ArticleSummary, version: ArticleVersionView) -> str:
     header = (
-        f"🕓 {article.title} ({article.platform})\n"
+        f"🕓 {article.title} ({platform_name(article.platform)})\n"
         f"{version.created_at:%d.%m.%Y %H:%M} — {version.model}, "
         f"{_format_usage(version.tokens, version.cost)}\n\n"
     )
@@ -706,7 +709,8 @@ class TelegramGateway:
         await self._bot.edit_message_text(chat_id, message_id, text)
 
     async def send_article_ready(self, chat_id: int, article: ArticleView) -> None:
-        text = f"📄 {article.title} ({article.platform})\nВыберите формат для скачивания:"
+        platform = platform_name(article.platform)
+        text = f"📄 {article.title} ({platform})\nВыберите формат для скачивания:"
         await self._bot.send_message(
             chat_id, text, reply_markup=build_article_keyboard(article.id, article.plan_item_id)
         )
@@ -727,7 +731,7 @@ class TelegramGateway:
         filename = build_export_filename(article.title, article.platform, article_format)
         content = build_export_document(article, article_format)
         document = BufferedInputFile(content, filename=filename)
-        caption = f"📄 {article.title} ({article.platform})"
+        caption = f"📄 {article.title} ({platform_name(article.platform)})"
         await self._bot.send_document(chat_id, document, caption=caption)
 
     async def send_cover(self, chat_id: int, image: bytes, mime_type: str, title: str) -> None:
