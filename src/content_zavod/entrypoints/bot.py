@@ -218,12 +218,26 @@ def _build_router(
     async def on_topic(message: Message) -> None:
         parts = (message.text or "").split(maxsplit=1)
         text = parts[1] if len(parts) > 1 else ""
-        await handle_topic_command(plan, gateway, message.chat.id, text, tz=settings.timezone)
+        await handle_topic_command(
+            plan,
+            gateway,
+            message.chat.id,
+            text,
+            team_chat_id=settings.telegram_notify_chat_id,
+            tz=settings.timezone,
+        )
 
     @router.message(Command("generate_plan"))
     @gated(COMMAND_ROLE["generate_plan"])
     async def on_generate_plan(message: Message) -> None:
-        await handle_generate_plan_command(plan, gateway, message.chat.id, tz=settings.timezone)
+        await handle_generate_plan_command(
+            plan,
+            gateway,
+            message.chat.id,
+            queue=queue,
+            team_chat_id=settings.telegram_notify_chat_id,
+            tz=settings.timezone,
+        )
 
     @router.message(Command("history"))
     @gated(COMMAND_ROLE["history"])
