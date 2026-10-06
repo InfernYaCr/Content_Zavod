@@ -41,11 +41,13 @@ class FakeKeywordStats:
     def __init__(self, dynamics: dict[str, list[KeywordDynamicsPoint]]) -> None:
         self._dynamics = dynamics
         self.calls: list[str] = []
+        self.windows: list[tuple[str, str]] = []
 
     async def keyword_dynamics(
         self, keyword: str, *, period: str, from_date: str, to_date: str
     ) -> list[KeywordDynamicsPoint]:
         self.calls.append(keyword)
+        self.windows.append((from_date, to_date))
         if keyword not in self._dynamics:
             raise RuntimeError(f"no dynamics for {keyword!r}")
         return self._dynamics[keyword]
@@ -193,6 +195,10 @@ async def test_handler_requests_a_six_month_monthly_dynamics_window() -> None:
     await handler({"week_label": "Week 1"})
 
     assert keyword_stats.calls == ["missing kw"]
+    # Wordstat rejects `toDate` unless it's a month's last day (#see
+    # docs/integrations/yandex-search-api.md), so the window must end at the last
+    # complete month (2026-07-31), not the first day of the current one (2026-08-01).
+    assert keyword_stats.windows == [("2026-02-01T00:00:00Z", "2026-07-31T00:00:00Z")]
 
 
 @pytest.mark.asyncio

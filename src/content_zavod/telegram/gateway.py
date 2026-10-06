@@ -106,6 +106,17 @@ def render_plan_text(plan: PlanView, *, page: int = 0) -> str:
     return "\n".join(lines)
 
 
+def render_generation_progress_text(done: int, total: int) -> str:
+    """One live-edited message tracking an approve_all batch's generate_cover/generate_article
+    Jobs (#91), replacing the old one-Telegram-message-per-Job trickle. Points at /history
+    once done - covers and article-ready messages themselves still arrive individually, just
+    all together right after this text reaches total/total, not scattered across the whole
+    generation window."""
+    if done >= total:
+        return f"✅ Материалы готовы: {total}/{total}. Статьи — в /history."
+    return f"🔄 Готовлю материалы: {done}/{total}"
+
+
 def build_plan_keyboard(plan: PlanView, *, page: int = 0) -> InlineKeyboardMarkup:
     page_count = total_pages(len(plan.items))
     start = page * ITEMS_PER_PAGE
@@ -649,6 +660,18 @@ class TelegramGateway:
             message_id,
             render_history_version_text(article, version),
             reply_markup=build_history_version_keyboard(article.id, back_page=back_page),
+        )
+
+    async def send_generation_progress(self, chat_id: int, done: int, total: int) -> int:
+        """Sends the batch's progress message, returning its id so the caller can record it
+        as the batch's canonical Telegram identity (#91, mirrors `send_plan`/#73)."""
+        return await self._bot.send_message(chat_id, render_generation_progress_text(done, total))
+
+    async def edit_generation_progress(
+        self, chat_id: int, message_id: int, done: int, total: int
+    ) -> None:
+        await self._bot.edit_message_text(
+            chat_id, message_id, render_generation_progress_text(done, total)
         )
 
     async def edit_notice(self, chat_id: int, message_id: int, text: str) -> None:

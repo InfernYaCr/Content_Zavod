@@ -95,9 +95,12 @@ class FakeMembership:
 
 
 class FakePlan:
-    def __init__(self) -> None:
+    def __init__(self, *, start_generation_batch_returns: bool = True) -> None:
         self.cover_requests: list[PlanItemId] = []
         self.replacement_requests: list[PlanId] = []
+        self.started_batches: list[tuple[PlanId, int]] = []
+        self.recorded_progress_refs: list[tuple[PlanId, int, int]] = []
+        self._start_generation_batch_returns = start_generation_batch_returns
         self._view = PlanView(
             id=PlanId("plan-1"),
             week_label="2026-W33",
@@ -127,6 +130,15 @@ class FakePlan:
 
     async def request_replacement(self, plan_id: PlanId) -> None:
         self.replacement_requests.append(plan_id)
+
+    async def start_generation_batch(self, plan_id: PlanId, total: int) -> bool:
+        self.started_batches.append((plan_id, total))
+        return self._start_generation_batch_returns
+
+    async def record_progress_message_ref(
+        self, plan_id: PlanId, chat_id: int, message_id: int
+    ) -> None:
+        self.recorded_progress_refs.append((plan_id, chat_id, message_id))
 
 
 class FakeArticle:
@@ -295,11 +307,11 @@ class FakeAnswerer:
 
 
 class Fixtures:
-    def __init__(self) -> None:
+    def __init__(self, *, plan: FakePlan | None = None) -> None:
         self.bot = FakeBot()
         self.gateway = TelegramGateway(self.bot)
         self.membership = FakeMembership({OWNER_ID: "owner", CM_ID: "content_manager"})
-        self.plan = FakePlan()
+        self.plan = plan if plan is not None else FakePlan()
         self.article = FakeArticle()
         self.plan_ops = FakePlanOps()
         self.plan_review = PlanReview(self.plan_ops, FakePrompt())
@@ -530,6 +542,31 @@ async def test_approve_all_approves_and_fans_out_generation(f: Fixtures) -> None
     assert f.plan_ops.approved == [PlanItemId("plan-1")]
     assert f.plan.cover_requests == [PlanItemId("item-1")]
     assert len(f.article.requested_generations) > 0
+
+
+async def test_approve_all_starts_a_batch_sized_for_covers_and_articles(f: Fixtures) -> None:
+    """#91: one Тема is 1 generate_cover + one generate_article per Площадка (2)."""
+    await dispatch(f, SimpleAction("approve_all", "plan-1"))
+
+    assert f.plan.started_batches == [(PlanId("plan-1"), 3)]
+
+
+async def test_approve_all_sends_and_records_the_initial_progress_message(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("approve_all", "plan-1"))
+
+    assert f.bot.sent_messages[0] == (1, "🔄 Готовлю материалы: 0/3", None)
+    assert f.plan.recorded_progress_refs == [(PlanId("plan-1"), 1, 1)]
+
+
+async def test_approve_all_replay_does_not_resend_progress_message() -> None:
+    """A replayed fan-out (retried callback) finds the batch already started -
+    `start_generation_batch` returns False - so it must not send a second progress message."""
+    f = Fixtures(plan=FakePlan(start_generation_batch_returns=False))
+
+    await dispatch(f, SimpleAction("approve_all", "plan-1"))
+
+    assert f.bot.sent_messages == []
+    assert f.plan.recorded_progress_refs == []
 
 
 async def test_delete_deletes_and_sends_notice(f: Fixtures) -> None:

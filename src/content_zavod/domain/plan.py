@@ -47,6 +47,7 @@ from ..job_queue import JobId, JobQueue
 from .errors import PlanItemNotEditable, PlanItemNotFound, PlanNotFound
 from .types import (
     PlanId,
+    PlanItemCoverView,
     PlanItemId,
     PlanItemStatus,
     PlanItemView,
@@ -135,6 +136,77 @@ class Plan:
             message_id,
         )
 
+    async def start_generation_batch(self, plan_id: PlanId, total: int) -> bool:
+        """Opens progress tracking for one approve_all fan-out's generate_cover/generate_article
+        Jobs (#91). First-writer-wins (`generation_total IS NULL`), like `record_message_ref`,
+        so a replayed fan-out (retried callback, or a crash between approving and enqueueing)
+        can't reset an in-progress or already-closed batch's count. Returns whether this call
+        was the one that opened it, so the caller knows whether to send the first progress
+        message."""
+        result = await self._pool.execute(
+            "UPDATE plans SET generation_total = $2, generation_done = 0 "
+            "WHERE id = $1 AND generation_total IS NULL",
+            plan_id,
+            total,
+        )
+        return result == "UPDATE 1"
+
+    async def record_generation_progress(self, plan_id: PlanId) -> tuple[int, int] | None:
+        """Advances one open batch's done count by one finished Job (#91). `None` means no
+        batch is open for this Plan right now - the caller falls back to per-Job delivery.
+        Closes the batch (resets `generation_total`/`generation_done` back to NULL/0) in the
+        same transaction once `done` reaches `total`, so it can't be double-counted by a
+        notification replay and so a later fan-out replay can open a fresh batch instead of
+        finding one already at capacity."""
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "UPDATE plans SET generation_done = generation_done + 1, updated_at = now() "
+                    "WHERE id = $1 AND generation_total IS NOT NULL "
+                    "RETURNING generation_done, generation_total",
+                    plan_id,
+                )
+                if row is None:
+                    return None
+                done, total = row["generation_done"], row["generation_total"]
+                if done >= total:
+                    await conn.execute(
+                        "UPDATE plans SET generation_total = NULL, generation_done = 0 WHERE id = $1",
+                        plan_id,
+                    )
+        return done, total
+
+    async def get_progress_message_ref(self, plan_id: PlanId) -> PlanMessageRef | None:
+        """The open batch's progress message identity, if one has been sent yet (#91) - the
+        same send-once/edit-after shape as `get_message_ref`, on its own pair of columns since
+        it's a distinct message from the Plan's own canonical one."""
+        row = await self._pool.fetchrow(
+            "SELECT progress_telegram_chat_id, progress_telegram_message_id FROM plans WHERE id = $1",
+            plan_id,
+        )
+        if row is None:
+            raise PlanNotFound(plan_id)
+        if row["progress_telegram_chat_id"] is None or row["progress_telegram_message_id"] is None:
+            return None
+        return PlanMessageRef(
+            chat_id=row["progress_telegram_chat_id"],
+            message_id=row["progress_telegram_message_id"],
+        )
+
+    async def record_progress_message_ref(
+        self, plan_id: PlanId, chat_id: int, message_id: int
+    ) -> None:
+        """First-writer-wins, mirroring `record_message_ref`."""
+        await self._pool.execute(
+            """
+            UPDATE plans SET progress_telegram_chat_id = $2, progress_telegram_message_id = $3
+            WHERE id = $1 AND progress_telegram_message_id IS NULL
+            """,
+            plan_id,
+            chat_id,
+            message_id,
+        )
+
     async def get_summary(self, plan_id: PlanId) -> PlanSummary:
         """A Plan's header only (no items join) - what /history's week-select screen resolves
         a chosen week's `plan_id` to before listing its Статьи."""
@@ -173,6 +245,17 @@ class Plan:
             summary=row["summary"],
             keywords=json.loads(row["keywords"]),
         )
+
+    async def get_plan_id_for_item(self, plan_item_id: PlanItemId) -> PlanId:
+        """Resolves a Тема's owning Plan - `generate_cover`'s Job output only carries the
+        `plan_item_id`, unlike `generate_article`'s which already threads `plan_id` through
+        (see `Article.get_plan_id`)."""
+        row = await self._pool.fetchrow(
+            "SELECT plan_id FROM plan_items WHERE id = $1", plan_item_id
+        )
+        if row is None:
+            raise PlanItemNotFound(plan_item_id)
+        return PlanId(row["plan_id"])
 
     async def add_topics(self, week_label: str, topics: Sequence[TopicDraft]) -> PlanId:
         """Append Topics to the week's draft Plan, creating it if none exists yet.
@@ -348,6 +431,25 @@ class Plan:
             for row in rows
         ]
 
+    async def list_covers_for_plan(self, plan_id: PlanId) -> list[PlanItemCoverView]:
+        """Every approved Тема's generated cover for a batch-done burst (#91) - the individual
+        `generate_cover` Job result only has its own image in memory, so a delivery covering
+        the whole batch has to re-read every already-applied one back out."""
+        rows = await self._pool.fetch(
+            "SELECT id, title, cover_image, cover_mime_type FROM plan_items "
+            "WHERE plan_id = $1 AND cover_image IS NOT NULL ORDER BY position",
+            plan_id,
+        )
+        return [
+            PlanItemCoverView(
+                plan_item_id=PlanItemId(row["id"]),
+                title=row["title"],
+                image=bytes(row["cover_image"]),
+                mime_type=row["cover_mime_type"],
+            )
+            for row in rows
+        ]
+
     async def archive(self, plan_id: PlanId) -> None:
         """Soft-archive a Plan and its items so /generate_plan can regenerate the week without data loss.
 
@@ -402,28 +504,47 @@ class Plan:
         )
         if row is None:
             raise PlanItemNotFound(plan_item_id)
-        await self._queue.enqueue(
+        job_id = await self._queue.enqueue(
             "generate_cover",
             {"plan_item_id": plan_item_id, "title": row["title"], "summary": row["summary"]},
             # Keyed on the item's current updated_at so a retried callback (same item,
             # unchanged since) collapses into the same job instead of enqueuing a duplicate.
             idempotency_key=f"generate_cover:{plan_item_id}:{row['updated_at'].isoformat()}",
         )
+        await self._pool.execute(
+            "UPDATE plan_items SET active_cover_job_id = $2 WHERE id = $1", plan_item_id, job_id
+        )
 
     async def apply_cover(self, plan_item_id: PlanItemId, image: bytes, mime_type: str) -> None:
         """Bumps `updated_at` (like `apply_regeneration`) so a later `request_cover` call - e.g. the
         manual "🖼 Обложка" re-request button (#15) - derives a fresh idempotency key instead of
-        colliding with this now-completed Job's key and silently no-op'ing."""
+        colliding with this now-completed Job's key and silently no-op'ing. Clears
+        `active_cover_job_id` so a late failure notification for this now-completed Job can no
+        longer match it (see `mark_cover_generation_failed`)."""
         await self._pool.execute(
             """
             UPDATE plan_items
-            SET cover_image = $2, cover_mime_type = $3, cover_generated_at = now(), updated_at = now()
+            SET cover_image = $2, cover_mime_type = $3, cover_generated_at = now(),
+                active_cover_job_id = NULL, updated_at = now()
             WHERE id = $1
             """,
             plan_item_id,
             image,
             mime_type,
         )
+
+    async def mark_cover_generation_failed(self, source_job_id: int) -> PlanItemId | None:
+        """Resolves a failed `generate_cover` Job back to its Тема (#91) - unlike
+        `generate_article`'s output, a failure carries no `plan_item_id` of its own, so this
+        mirrors `Article.mark_generation_failed`'s active-job-id lookup instead. `None` means
+        this job_id isn't the item's current cover attempt (already superseded, e.g. by a later
+        re-request) - the caller drops the notification rather than reporting a stale failure."""
+        row = await self._pool.fetchrow(
+            "UPDATE plan_items SET active_cover_job_id = NULL, updated_at = now() "
+            "WHERE active_cover_job_id = $1 RETURNING id",
+            source_job_id,
+        )
+        return PlanItemId(row["id"]) if row is not None else None
 
     async def recent_topic_titles(self, since: datetime) -> list[str]:
         rows = await self._pool.fetch(

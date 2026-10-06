@@ -358,9 +358,55 @@ class _CoverDelivery:
 class _ErrorDelivery:
     text: str
     job_id: int
+    # Set when this failed Job was also part of an open batch (#91): a failure still has to
+    # advance the shared progress message (and, if it was the batch's last Job, still trigger
+    # the final burst for whatever else succeeded) - or a batch with any failed Job would never
+    # close and its already-succeeded Статьи would never reach the delivery.
+    batch_progress: _BatchProgressDelivery | _BatchDoneDelivery | None = None
 
 
-_Delivery = _PlanDelivery | _NoticeDelivery | _ArticleDelivery | _CoverDelivery | _ErrorDelivery
+@dataclass(frozen=True)
+class _BatchProgressDelivery:
+    """One Job of an open approve_all batch (#91) finished, but not the last one - the shared
+    progress message needs editing, not a per-Job message."""
+
+    plan_id: PlanId
+    done: int
+    total: int
+
+
+@dataclass(frozen=True)
+class _BatchDoneDelivery:
+    """The last Job of an open approve_all batch (#91) finished - the progress message becomes
+    the final "done" text, followed by every ready Статья and обложка together."""
+
+    plan_id: PlanId
+    total: int
+
+
+_Delivery = (
+    _PlanDelivery
+    | _NoticeDelivery
+    | _ArticleDelivery
+    | _CoverDelivery
+    | _ErrorDelivery
+    | _BatchProgressDelivery
+    | _BatchDoneDelivery
+)
+
+
+async def _advance_batch(
+    plan: Plan, plan_id: PlanId
+) -> _BatchProgressDelivery | _BatchDoneDelivery | None:
+    """Advances one open batch's progress by one finished Job (#91). `None` means no batch is
+    open for this Plan right now - the caller falls back to its own per-Job delivery."""
+    progress = await plan.record_generation_progress(plan_id)
+    if progress is None:
+        return None
+    done, total = progress
+    if done >= total:
+        return _BatchDoneDelivery(plan_id=plan_id, total=total)
+    return _BatchProgressDelivery(plan_id=plan_id, done=done, total=total)
 
 
 async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Delivery | None:
@@ -370,14 +416,26 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
     happens here, so retrying this half alone (as a redelivered notification does) is exactly
     as idempotent as the domain operations it calls."""
     if result.status == "failed":
+        batch_delivery: _BatchProgressDelivery | _BatchDoneDelivery | None = None
         if result.job_type in ("generate_article", "regenerate_article"):
             article_id = await article.mark_generation_failed(result.job_id)
             if article_id is None:
                 logger.info("Ignoring stale Article failure for job_id=%s", result.job_id)
                 return None
+            if result.job_type == "generate_article":
+                batch_delivery = await _advance_batch(plan, await article.get_plan_id(article_id))
+        elif result.job_type == "generate_cover":
+            plan_item_id = await plan.mark_cover_generation_failed(result.job_id)
+            if plan_item_id is None:
+                logger.info("Ignoring stale cover failure for job_id=%s", result.job_id)
+                return None
+            batch_delivery = await _advance_batch(
+                plan, await plan.get_plan_id_for_item(plan_item_id)
+            )
         return _ErrorDelivery(
             text=f"Задача {result.job_type} завершилась ошибкой: {result.error}",
             job_id=result.job_id,
+            batch_progress=batch_delivery,
         )
 
     output = result.output or {}
@@ -415,11 +473,18 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
         if application == "stale":
             logger.info("Ignoring stale Article result for job_id=%s", result.job_id)
             return None
+        if result.job_type == "generate_article" and application == "applied":
+            batch_delivery = await _advance_batch(plan, await article.get_plan_id(article_id))
+            if batch_delivery is not None:
+                return batch_delivery
         return _ArticleDelivery(article_id=article_id)
     if result.job_type == "generate_cover":
         plan_item_id = PlanItemId(output["plan_item_id"])
         image = base64.b64decode(output["image"])
         await plan.apply_cover(plan_item_id, image, output["mime_type"])
+        batch_delivery = await _advance_batch(plan, await plan.get_plan_id_for_item(plan_item_id))
+        if batch_delivery is not None:
+            return batch_delivery
         return _CoverDelivery(plan_item_id=plan_item_id, image=image, mime_type=output["mime_type"])
 
     logger.warning("No notification renderer for job_type=%r", result.job_type)
@@ -450,6 +515,35 @@ async def _deliver(
         await gateway.send_cover(notify_chat_id, delivery.image, delivery.mime_type, item.title)
     elif isinstance(delivery, _ErrorDelivery):
         await gateway.send_error_with_retry(notify_chat_id, delivery.text, delivery.job_id)
+        if delivery.batch_progress is not None:
+            await _deliver_batch(plan, article, gateway, notify_chat_id, delivery.batch_progress)
+    elif isinstance(delivery, _BatchProgressDelivery | _BatchDoneDelivery):
+        await _deliver_batch(plan, article, gateway, notify_chat_id, delivery)
+
+
+async def _deliver_batch(
+    plan: Plan,
+    article: Article,
+    gateway: TelegramGateway,
+    notify_chat_id: int,
+    delivery: _BatchProgressDelivery | _BatchDoneDelivery,
+) -> None:
+    """Shared by the dedicated batch deliveries and a failed Job that was also part of an open
+    batch (#91) - a failure still has to advance/finalize the shared progress message, and if
+    it happened to be the batch's last Job, still trigger the burst for whatever else in the
+    batch succeeded."""
+    done = delivery.total if isinstance(delivery, _BatchDoneDelivery) else delivery.done
+    ref = await plan.get_progress_message_ref(delivery.plan_id)
+    if ref is not None:
+        # `ref` is None only in the narrow crash window (#91, same class as #73's plan-message
+        # gap) between start_generation_batch opening the batch and its progress message
+        # actually being recorded - the done/total count itself is still correct either way.
+        await gateway.edit_generation_progress(ref.chat_id, ref.message_id, done, delivery.total)
+    if isinstance(delivery, _BatchDoneDelivery):
+        for view in await article.list_for_plan(delivery.plan_id):
+            await gateway.send_article_ready(notify_chat_id, view)
+        for cover in await plan.list_covers_for_plan(delivery.plan_id):
+            await gateway.send_cover(notify_chat_id, cover.image, cover.mime_type, cover.title)
 
 
 def _make_notification_handler(
