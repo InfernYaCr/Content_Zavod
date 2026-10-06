@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from dataclasses import asdict
 
 from ..personas import PlatformProfile
-from ..settings import CustomPersona, Persona, format_custom_persona
+from ..settings import CustomPersona, Persona, Project, format_custom_persona
 from ..yandex import Message
 
 IMMUTABLE_RULES = """Ты — редактор Content Zavod.
@@ -79,6 +80,29 @@ def _with_comment_rule(task: str, comment: str | None) -> str:
     )
 
 
+def _with_project_rule(task: str, project: Project | None) -> str:
+    """With a Проект set (#98), every step is told to close the Статья with one soft CTA to
+    it; the project itself stays delimited INPUT_DATA. The pipeline still checks the URL
+    after rewrite, so this rule only has to get the tone and placement right."""
+    if project is None:
+        return task
+    return (
+        f"{task} Поле project в INPUT_DATA — проект автора. Статья должна заканчиваться "
+        "одним коротким CTA в тоне площадки, без рекламного тона: зачем читателю перейти "
+        "(по project.description) и ссылка project.url ровно один раз, символ в символ. "
+        "В остальном тексте проект и ссылку не упоминай."
+    )
+
+
+def _rules(task: str, comment: str | None, project: Project | None) -> str:
+    return _with_project_rule(_with_comment_rule(task, comment), project)
+
+
+def _project_input(project: Project | None) -> dict[str, object]:
+    """Absent from INPUT_DATA altogether without a Проект, so prompts stay unchanged (#98)."""
+    return {} if project is None else {"project": asdict(project)}
+
+
 def outline_messages(
     *,
     title: str,
@@ -89,6 +113,7 @@ def outline_messages(
     persona: Persona | None,
     custom_persona: CustomPersona | None,
     profile: PlatformProfile,
+    project: Project | None = None,
 ) -> list[Message]:
     task = (
         "Составь подробный аутлайн статьи в Markdown. Разделы обозначай ##, подпункты — "
@@ -96,7 +121,7 @@ def outline_messages(
     )
     return [
         Message(
-            "system", _system(_with_comment_rule(task, comment), persona, custom_persona, profile)
+            "system", _system(_rules(task, comment, project), persona, custom_persona, profile)
         ),
         Message(
             "user",
@@ -106,6 +131,7 @@ def outline_messages(
                 keywords=list(keywords),
                 previous_content=previous_content,
                 editor_comment=comment,
+                **_project_input(project),
             ),
         ),
     ]
@@ -119,6 +145,7 @@ def draft_messages(
     persona: Persona | None,
     custom_persona: CustomPersona | None,
     profile: PlatformProfile,
+    project: Project | None = None,
 ) -> list[Message]:
     task = (
         "Напиши полезный черновик по аутлайну. Используй Markdown ##/###, списки и "
@@ -126,9 +153,17 @@ def draft_messages(
     )
     return [
         Message(
-            "system", _system(_with_comment_rule(task, comment), persona, custom_persona, profile)
+            "system", _system(_rules(task, comment, project), persona, custom_persona, profile)
         ),
-        Message("user", _input_data(title=title, approved_outline=outline, editor_comment=comment)),
+        Message(
+            "user",
+            _input_data(
+                title=title,
+                approved_outline=outline,
+                editor_comment=comment,
+                **_project_input(project),
+            ),
+        ),
     ]
 
 
@@ -139,6 +174,7 @@ def rewrite_messages(
     persona: Persona | None,
     custom_persona: CustomPersona | None,
     profile: PlatformProfile,
+    project: Project | None = None,
 ) -> list[Message]:
     task = (
         "Усиль ясность, структуру, Голос и соответствие площадке. Не добавляй новые факты "
@@ -146,7 +182,9 @@ def rewrite_messages(
     )
     return [
         Message(
-            "system", _system(_with_comment_rule(task, comment), persona, custom_persona, profile)
+            "system", _system(_rules(task, comment, project), persona, custom_persona, profile)
         ),
-        Message("user", _input_data(draft=draft, editor_comment=comment)),
+        Message(
+            "user", _input_data(draft=draft, editor_comment=comment, **_project_input(project))
+        ),
     ]

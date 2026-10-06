@@ -4,7 +4,7 @@ from content_zavod.pipelines.article_prompts import (
     outline_messages,
     rewrite_messages,
 )
-from content_zavod.settings import PERSONAS, CustomPersona
+from content_zavod.settings import PERSONAS, CustomPersona, Project
 
 
 def test_custom_persona_expands_into_the_system_block_not_input_data() -> None:
@@ -94,3 +94,40 @@ def test_vc_profile_and_persona_are_present_in_rewrite_rules() -> None:
     assert "VC.ru" in system
     assert "ограничения и риски" in system
     assert "не меняй числа" in system
+
+
+_PROJECT = Project(url="https://t.me/marketing_daily", description="Разборы кейсов по маркетингу")
+
+
+def _all_steps(**project_kwargs):
+    common = dict(comment=None, persona=None, custom_persona=None, profile=platform_profile("zen"))
+    return [
+        outline_messages(
+            title="Тема",
+            summary="",
+            keywords=[],
+            previous_content=None,
+            **common,
+            **project_kwargs,
+        ),
+        draft_messages(title="Тема", outline="аутлайн", **common, **project_kwargs),
+        rewrite_messages(draft="Черновик", **common, **project_kwargs),
+    ]
+
+
+def test_without_a_project_prompts_are_unchanged() -> None:
+    """#98: with no Проект set, neither the rules nor INPUT_DATA mention a project."""
+    for system, user in _all_steps(project=None):
+        assert "project" not in system.text
+        assert "project" not in user.text
+
+
+def test_project_is_input_data_with_a_single_cta_rule_in_every_step() -> None:
+    for system, user in _all_steps(project=_PROJECT):
+        assert "Поле project в INPUT_DATA" in system.text
+        assert "ровно один раз" in system.text
+        assert _PROJECT.url not in system.text
+        assert _PROJECT.description not in system.text
+        input_data = user.text.split("INPUT_DATA", 1)[1]
+        assert f'"url": "{_PROJECT.url}"' in input_data
+        assert _PROJECT.description in input_data

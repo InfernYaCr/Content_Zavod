@@ -16,6 +16,11 @@ steps don't reference an author persona); Персона is Owner-editable (#37,
 renamed from Голос in #50), read fresh from `SettingsReader` on every call
 so a `/set_persona` takes effect without a restart, shared across all
 Площадки - platform tone is layered on top of it, not instead of it.
+
+With a Проект set (#98), outline/draft/rewrite are asked for one closing CTA
+to it, but the link itself is the code's job: `_ensure_project_link` keeps
+exactly one exact copy of the URL in the body (appending a CTA line when the
+model dropped or mangled it), and the sources step never lists or filters it.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from typing import Any, Protocol
 from ..domain import ArticleId, ArticleView
 from ..job_queue import JobHandler
 from ..personas import platform_profile
-from ..settings import SettingsReader
+from ..settings import Project, SettingsReader
 from ..yandex import DEFAULT_TEMPERATURE, Completion, Message, TextGenerator
 from .article_prompts import draft_messages, outline_messages, rewrite_messages
 from .plan_pipeline import PlanItemReader
@@ -56,9 +61,9 @@ _SENSITIVE_KEYWORDS = frozenset(
 # Bumped whenever a step's prompt-building function changes shape, so a stored Версия's
 # provenance stays explainable without reading logs (#74).
 _PROMPT_VERSIONS = {
-    "outline": "outline-v2",
-    "draft": "draft-v2",
-    "rewrite": "rewrite-v2",
+    "outline": "outline-v3",
+    "draft": "draft-v3",
+    "rewrite": "rewrite-v3",
     "sources": "sources-v1",
 }
 
@@ -150,6 +155,7 @@ async def _run_pipeline(
     try:
         owner_settings = await settings.read()
         persona, custom_persona = owner_settings.persona, owner_settings.custom_persona
+        project = owner_settings.project
         profile = platform_profile(platform)
         outline = await run_step(
             "outline",
@@ -162,6 +168,7 @@ async def _run_pipeline(
                 persona=persona,
                 custom_persona=custom_persona,
                 profile=profile,
+                project=project,
             ),
         )
         draft = await run_step(
@@ -173,6 +180,7 @@ async def _run_pipeline(
                 persona=persona,
                 custom_persona=custom_persona,
                 profile=profile,
+                project=project,
             ),
         )
         rewrite = await run_step(
@@ -183,14 +191,15 @@ async def _run_pipeline(
                 persona=persona,
                 custom_persona=custom_persona,
                 profile=profile,
+                project=project,
             ),
         )
         sensitive = _is_money_or_legal(title, keywords)
         sources_text = await run_step("sources", _sources_messages(rewrite, sensitive=sensitive))
 
-        urls = _extract_urls(sources_text)
+        urls = [url for url in _extract_urls(sources_text) if project is None or url != project.url]
         reachable_urls = [url for url in urls if await url_checker.is_reachable(url)]
-        content = _assemble_content(rewrite, reachable_urls)
+        content = _assemble_content(_ensure_project_link(rewrite, project), reachable_urls)
     except Exception as exc:
         raise recorder.fail(exc, article_id=article_id) from exc
 
@@ -239,3 +248,20 @@ def _assemble_content(body: str, urls: list[str]) -> str:
         return body
     sources = "\n".join(f"- {url}" for url in urls)
     return f"{body}\n\nИсточники:\n{sources}"
+
+
+def _ensure_project_link(body: str, project: Project | None) -> str:
+    """Exactly one exact `project.url` in the body (#98). Repeats are cut down to the last
+    occurrence - the closing CTA - keeping a Markdown link's text; a missing or mangled URL
+    (a near-miss doesn't count: the occurrence must end where the URL ends) gets a plain
+    CTA line appended."""
+    if project is None:
+        return body
+    url = re.escape(project.url)
+    occurrence = re.compile(rf"\[([^\]\n]*)\]\({url}\)|[ \t]*{url}(?![\w/?#=&%~+@-]|[.:]\w)")
+    matches = list(occurrence.finditer(body))
+    if not matches:
+        return f"{body.rstrip()}\n\n{project.description.rstrip(' .!?…')}: {project.url}"
+    for match in reversed(matches[:-1]):
+        body = body[: match.start()] + (match.group(1) or "") + body[match.end() :]
+    return body

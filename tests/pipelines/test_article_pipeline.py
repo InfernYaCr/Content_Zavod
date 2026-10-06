@@ -66,11 +66,12 @@ class FakeOwnerSettingsStore:
     about - only `voice` (Персона) is ever overridden here, everything else falls
     back to `SettingsService`'s own defaults."""
 
-    def __init__(self, persona: str | None = None) -> None:
+    def __init__(self, persona: str | None = None, project: str | None = None) -> None:
         self._persona = persona
+        self._project = project
 
     async def get(self, key: str) -> str | None:
-        return self._persona if key == "voice" else None
+        return {"voice": self._persona, "project": self._project}.get(key)
 
     async def set(self, key: str, value: str) -> None:
         assert key == "voice"
@@ -507,3 +508,77 @@ async def test_generate_article_failure_partway_through_preserves_completed_step
     steps = excinfo.value.partial_output["steps"]
     assert [step["step_name"] for step in steps] == ["outline", "draft"]
     assert excinfo.value.partial_output["article_id"] == "a"
+
+
+_PROJECT_URL = "https://t.me/marketing_daily"
+_PROJECT_CTA = f"Разборы кейсов по маркетингу: {_PROJECT_URL}"
+
+
+async def _generate_with_project(rewrite: str, sources: str = "") -> tuple[str, list]:
+    text_generator = ScriptedTextGenerator(
+        [_completion("outline"), _completion("draft"), _completion(rewrite), _completion(sources)]
+    )
+    url_checker = FakeUrlReachabilityChecker({_PROJECT_URL, "https://good.example/a"})
+    store = FakeOwnerSettingsStore(project=f"{_PROJECT_URL} Разборы кейсов по маркетингу.")
+    handler = make_generate_article_handler(text_generator, url_checker, SettingsService(store))
+    output = await handler({"article_id": "a", "title": "T", "platform": "zen"})
+    return output["content"], text_generator.calls
+
+
+@pytest.mark.asyncio
+async def test_project_reaches_outline_draft_and_rewrite_as_input_data() -> None:
+    _content, calls = await _generate_with_project(f"Текст.\n\nПодписывайтесь: {_PROJECT_URL}")
+
+    for system, user in calls[:3]:
+        assert _PROJECT_URL in user.text.split("INPUT_DATA", 1)[1]
+        assert _PROJECT_URL not in system.text
+        assert "Поле project в INPUT_DATA" in system.text
+
+
+@pytest.mark.asyncio
+async def test_project_url_written_by_the_model_is_kept_as_is() -> None:
+    rewrite = f"Текст.\n\nБольше разборов — [в нашем канале]({_PROJECT_URL})."
+
+    content, _ = await _generate_with_project(rewrite)
+
+    assert content == rewrite
+
+
+@pytest.mark.asyncio
+async def test_project_cta_line_is_appended_when_the_model_drops_the_url() -> None:
+    content, _ = await _generate_with_project("Текст статьи.")
+
+    assert content == f"Текст статьи.\n\n{_PROJECT_CTA}"
+    assert content.count(_PROJECT_URL) == 1
+
+
+@pytest.mark.asyncio
+async def test_project_cta_line_is_appended_when_the_model_mangles_the_url() -> None:
+    mangled = "Подписывайтесь: t.me/marketing_daily или https://t.me/marketing_dailyy"
+
+    content, _ = await _generate_with_project(f"Текст.\n\n{mangled}")
+
+    assert content == f"Текст.\n\n{mangled}\n\n{_PROJECT_CTA}"
+
+
+@pytest.mark.asyncio
+async def test_project_url_repeated_by_the_model_is_kept_only_in_the_closing_cta() -> None:
+    rewrite = (
+        f"Вступление, см. [наш канал]({_PROJECT_URL}).\n\nЕщё раз {_PROJECT_URL} тут.\n\n"
+        f"Подписывайтесь: {_PROJECT_URL}"
+    )
+
+    content, _ = await _generate_with_project(rewrite)
+
+    assert (
+        content == f"Вступление, см. наш канал.\n\nЕщё раз тут.\n\nПодписывайтесь: {_PROJECT_URL}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sources_step_never_lists_or_filters_out_the_project_url() -> None:
+    content, _ = await _generate_with_project(
+        "Текст.", sources=f"- https://good.example/a\n- {_PROJECT_URL}"
+    )
+
+    assert content == f"Текст.\n\n{_PROJECT_CTA}\n\nИсточники:\n- https://good.example/a"
