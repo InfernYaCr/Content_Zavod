@@ -229,9 +229,13 @@ class FakeJoinRequests:
         self._requests: dict[int, object] = {}
         self._broadcasts: dict[int, list[object]] = {}
 
-    async def create(self, telegram_id: int, username: str | None) -> int:
+    async def create(self, telegram_id: int, username: str | None) -> int | None:
         from content_zavod.access import JoinRequestView
 
+        if any(
+            r.telegram_id == telegram_id and r.status == "pending" for r in self._requests.values()
+        ):
+            return None
         request_id = self._next_id
         self._next_id += 1
         self._requests[request_id] = JoinRequestView(
@@ -363,6 +367,20 @@ async def test_request_access_works_for_unregistered_caller(f: Fixtures) -> None
     assert answer.calls == [(None, None)]
     request = await f.join_requests.get(1)
     assert request.telegram_id == UNKNOWN_ID
+    assert f.bot.edited_messages[-1][2] == "Заявка отправлена. Ожидайте одобрения владельца."
+
+
+async def test_repeated_request_access_says_already_sent_and_does_not_rebroadcast(
+    f: Fixtures,
+) -> None:
+    """#90: the second tap while a заявка is pending isn't re-sent to the Owner."""
+    await dispatch(f, SimpleAction("request_access", "ignored"), user_id=UNKNOWN_ID)
+    sent_after_first = len(f.bot.sent_messages)
+
+    await dispatch(f, SimpleAction("request_access", "ignored"), user_id=UNKNOWN_ID)
+
+    assert len(f.bot.sent_messages) == sent_after_first
+    assert f.bot.edited_messages[-1][2] == "Заявка уже отправлена. Ожидайте одобрения владельца."
 
 
 # --- unregistered caller denied on every other Action ---

@@ -40,13 +40,25 @@ class JoinRequests:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
-    async def create(self, telegram_id: int, username: str | None) -> int:
+    async def create(self, telegram_id: int, username: str | None) -> int | None:
+        """New pending заявка's id, or `None` when this telegram_id already has one pending -
+        a repeated «Запросить доступ» must not re-broadcast to every Owner (#90)."""
+        # ponytail: no unique index (no migration here), so two truly concurrent taps can
+        # still both insert; a partial unique index on telegram_id WHERE status = 'pending'
+        # closes that if it ever matters.
         row = await self._pool.fetchrow(
-            "INSERT INTO join_requests (telegram_id, username) VALUES ($1, $2) RETURNING id",
+            """
+            INSERT INTO join_requests (telegram_id, username)
+            SELECT $1::bigint, $2::text
+            WHERE NOT EXISTS (
+                SELECT 1 FROM join_requests WHERE telegram_id = $1 AND status = 'pending'
+            )
+            RETURNING id
+            """,
             telegram_id,
             username,
         )
-        return row["id"]
+        return row["id"] if row is not None else None
 
     async def get(self, join_request_id: int) -> JoinRequestView:
         row = await self._pool.fetchrow(

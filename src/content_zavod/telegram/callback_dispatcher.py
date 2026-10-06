@@ -158,13 +158,15 @@ class CallbackDispatcher:
         payload = callback_input.payload
         if isinstance(payload, SimpleAction) and payload.action == "request_access":
             await answer()
-            await self._join_request_flow.request_access(
+            sent = await self._join_request_flow.request_access(
                 callback_input.user_id, callback_input.username
             )
             await self._gateway.edit_notice(
                 callback_input.chat_id,
                 callback_input.message_id,
-                "Заявка отправлена. Ожидайте одобрения владельца.",
+                "Заявка отправлена. Ожидайте одобрения владельца."
+                if sent
+                else "Заявка уже отправлена. Ожидайте одобрения владельца.",
             )
             return
 
