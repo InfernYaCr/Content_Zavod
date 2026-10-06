@@ -49,6 +49,7 @@ Action = Literal[
     "history_versions",
     "history_version",
     "persona_template",
+    "cancel_comment",
 ]
 
 _ACTION_CODES: dict[Action, str] = {
@@ -74,6 +75,7 @@ _ACTION_CODES: dict[Action, str] = {
     "history_versions": "hv",
     "history_version": "hd",
     "persona_template": "pt",
+    "cancel_comment": "cc",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
 
@@ -102,6 +104,7 @@ ACTION_ROLE: dict[Action, Role | None] = {
     "history_versions": None,
     "history_version": None,
     "persona_template": "owner",
+    "cancel_comment": None,
 }
 
 # The five composite Действия each get their own type below - see them out

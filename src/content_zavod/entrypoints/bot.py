@@ -29,6 +29,7 @@ from aiogram.types import (
     BotCommandScopeChat,
     BufferedInputFile,
     CallbackQuery,
+    ForceReply,
     InlineKeyboardMarkup,
     Message,
 )
@@ -88,6 +89,7 @@ from ..telegram import (
     unpack_callback_query,
 )
 from ..telegram.gateway import format_week_range
+from ..telegram.pending_inputs import PendingInputs
 from ..telegram.texts import job_failure_text
 from ._process import register_shutdown
 
@@ -101,9 +103,15 @@ class _AiogramBotClient:
         self._bot = bot
 
     async def send_message(
-        self, chat_id: int, text: str, reply_markup: InlineKeyboardMarkup | None = None
+        self,
+        chat_id: int,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | ForceReply | None = None,
+        parse_mode: str | None = None,
     ) -> int:
-        message = await self._bot.send_message(chat_id, text, reply_markup=reply_markup)
+        message = await self._bot.send_message(
+            chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode
+        )
         return message.message_id
 
     async def send_document(
@@ -141,6 +149,13 @@ class _AiogramBotClient:
         except TelegramBadRequest as exc:
             if "message is not modified" not in str(exc):
                 raise
+
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        try:
+            await self._bot.delete_message(chat_id, message_id)
+        except TelegramBadRequest as exc:
+            # Already deleted, or older than Telegram's 48h delete window: nothing to tidy.
+            logger.info("could not delete message %s in chat %s: %s", message_id, chat_id, exc)
 
     async def set_my_commands(
         self, commands: list[BotCommand], *, scope: BotCommandScopeChat
@@ -334,16 +349,35 @@ def _build_router(
 
     @router.message()
     async def on_message(message: Message) -> None:
+        """Any non-command message: a possible comment for a pending regeneration (#4/#9).
+
+        In a group only a reply can be one - it must answer the comment prompt (#88) - so
+        everything else is dropped before Membership is even looked up, and a non-member
+        writing in the group gets no "Доступ запрещён" back; that refusal is private-only."""
         if message.from_user is None:
+            return
+        private = message.chat.type == "private"
+        if private:
+            reply_to_message_id = None
+        elif message.reply_to_message is not None:
+            reply_to_message_id = message.reply_to_message.message_id
+        else:
             return
         actual = await membership.role_for(message.from_user.id)
         if not require_role(actual, None):
-            await gateway.send_error(message.chat.id, ACCESS_DENIED_TEXT)
+            if private:
+                await gateway.send_error(message.chat.id, ACCESS_DENIED_TEXT)
             return
-        chat_id, user_id, text = message.chat.id, message.from_user.id, message.text or ""
-        consumed = await plan_review.handle_comment_reply(chat_id, user_id, text)
+        if message.text is None:
+            return  # a sticker/photo/voice is not a comment - the wait stays open
+        chat_id, user_id, text = message.chat.id, message.from_user.id, message.text
+        consumed = await plan_review.handle_comment_reply(
+            chat_id, user_id, text, reply_to_message_id
+        )
         if not consumed:
-            await article_regeneration.handle_comment_reply(chat_id, user_id, text)
+            await article_regeneration.handle_comment_reply(
+                chat_id, user_id, text, reply_to_message_id
+            )
 
     return router
 
@@ -621,11 +655,15 @@ async def main(settings: Settings | None = None) -> None:
         bot = Bot(token=settings.telegram_bot_token)
         bot_client = _AiogramBotClient(bot)
         gateway = TelegramGateway(bot_client)
+        pending_inputs = PendingInputs(pool)
         comment_prompt = TelegramCommentPrompt(bot_client)
-        plan_review = PlanReview(plan, comment_prompt)
+        plan_review = PlanReview(plan, comment_prompt, pending_inputs)
         article_comment_prompt = TelegramCommentPrompt(bot_client, action="regenerate_article")
         article_regeneration = CommentGatedRegeneration[ArticleId](
-            article.request_regeneration, article_comment_prompt
+            article.request_regeneration,
+            article_comment_prompt,
+            pending_inputs,
+            kind="article_comment",
         )
         join_request_flow = JoinRequestFlow(join_requests, membership, gateway)
 

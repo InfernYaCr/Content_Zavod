@@ -35,6 +35,9 @@ from content_zavod.telegram import (
     TelegramGateway,
 )
 from content_zavod.telegram.callback_dispatcher import CallbackDispatcher, CallbackInput
+from content_zavod.telegram.pending_inputs import PendingInput
+
+from .fakes import FakePendingInputs
 
 OWNER_ID = 1
 CM_ID = 2
@@ -67,6 +70,9 @@ class FakeBot:
 
     async def edit_message_reply_markup(self, chat_id, message_id, reply_markup=None) -> None:
         self.edited_messages.append((chat_id, message_id, "", reply_markup))
+
+    async def delete_message(self, chat_id, message_id) -> None:
+        pass
 
     async def set_my_commands(self, commands, *, scope) -> None:
         pass
@@ -227,11 +233,24 @@ class FakePlanOps:
 
 
 class FakePrompt:
+    """Each prompt is two messages, ids 100 (with the buttons) and 101 (ForceReply)."""
+
     def __init__(self) -> None:
         self.prompted: list[tuple[int, object]] = []
+        self.generating: list[tuple[int, int]] = []
+        self.withdrawn: list[tuple[int, int]] = []
 
-    async def prompt_for_comment(self, chat_id: int, id_: object) -> None:
+    async def prompt_for_comment(
+        self, chat_id: int, user_id: int, id_: object
+    ) -> tuple[int, int | None]:
         self.prompted.append((chat_id, id_))
+        return 100, 101
+
+    async def mark_generating(self, chat_id: int, pending: PendingInput) -> None:
+        self.generating.append((chat_id, pending.prompt_message_id))
+
+    async def withdraw(self, chat_id: int, pending: PendingInput) -> None:
+        self.withdrawn.append((chat_id, pending.prompt_message_id))
 
 
 class FakeArticleRegen:
@@ -337,10 +356,13 @@ class Fixtures:
         self.plan = plan if plan is not None else FakePlan()
         self.article = FakeArticle()
         self.plan_ops = FakePlanOps()
-        self.plan_review = PlanReview(self.plan_ops, FakePrompt())
+        self.pending_inputs = FakePendingInputs()
+        self.plan_prompt = FakePrompt()
+        self.plan_review = PlanReview(self.plan_ops, self.plan_prompt, self.pending_inputs)
         self.article_regen_op = FakeArticleRegen()
+        self.article_prompt = FakePrompt()
         self.article_regeneration = CommentGatedRegeneration[ArticleId](
-            self.article_regen_op, FakePrompt()
+            self.article_regen_op, self.article_prompt, self.pending_inputs, kind="article_comment"
         )
         self.join_requests = FakeJoinRequests()
         self.join_request_flow = JoinRequestFlow(self.join_requests, self.membership, self.gateway)
@@ -623,6 +645,18 @@ async def test_regenerate_article_prompts_for_a_comment_on_first_press(f: Fixtur
     assert len(f.article_regen_op.regenerated) == 0
 
 
+async def test_second_regenerate_article_press_marks_the_prompt_not_the_card(f: Fixtures) -> None:
+    """#80: pressing 🔄 on the Статья card twice regenerates without a comment, but the
+    "generating" edit goes to the comment prompt - the card (message 2) keeps its buttons."""
+    await dispatch(f, SimpleAction("regenerate_article", "article-1"))
+    answer = await dispatch(f, SimpleAction("regenerate_article", "article-1"))
+
+    assert answer.calls == [("Принято, генерирую...", None)]
+    assert f.article_regen_op.regenerated == [(ArticleId("article-1"), None)]
+    assert f.bot.edited_messages == []
+    assert f.article_prompt.generating == [(1, 100)]
+
+
 async def test_approve_marks_article_exported(f: Fixtures) -> None:
     answer = await dispatch(f, SimpleAction("approve", "article-1"))
 
@@ -676,6 +710,54 @@ async def test_regenerate_prompts_for_a_comment_on_first_press(f: Fixtures) -> N
 
     assert answer.calls == [(None, None)]
     assert f.plan_ops.regenerated == []
+
+
+async def test_second_regenerate_press_marks_the_prompt_not_the_plan(f: Fixtures) -> None:
+    """#80: pressing 🔄 on the Тема twice regenerates without a comment, but the
+    "generating" edit goes to the comment prompt - the Plan (message 2) keeps its keyboard."""
+    await dispatch(f, SimpleAction("regenerate", "item-1"))
+    answer = await dispatch(f, SimpleAction("regenerate", "item-1"))
+
+    assert answer.calls == [("Принято, генерирую...", None)]
+    assert f.plan_ops.regenerated == [(PlanItemId("item-1"), None)]
+    assert f.bot.edited_messages == []
+    assert f.plan_prompt.generating == [(1, 100)]
+
+
+async def test_cancel_comment_drops_the_plan_wait_and_closes_the_prompt(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("regenerate", "item-1"))
+
+    answer = await dispatch(f, SimpleAction("cancel_comment", "item-1"))
+
+    assert answer.calls == [(None, None)]
+    # The flow deletes its prompt; the pressed message is not edited by the dispatcher.
+    assert f.plan_prompt.withdrawn == [(1, 100)]
+    assert f.bot.edited_messages == []
+    assert await f.plan_review.handle_comment_reply(1, CM_ID, "too late", None) is False
+    assert f.plan_ops.regenerated == []
+
+
+async def test_cancel_comment_drops_the_article_wait(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("regenerate_article", "article-1"))
+
+    await dispatch(f, SimpleAction("cancel_comment", "article-1"))
+
+    assert f.article_prompt.withdrawn == [(1, 100)]
+    assert f.plan_prompt.withdrawn == []
+    assert f.pending_inputs.rows == {}
+
+
+async def test_cancel_comment_without_a_matching_wait_leaves_the_message(f: Fixtures) -> None:
+    """A stale Отмена (or one pressed by another member) cancels nothing, so it must not
+    remove a prompt that is still waiting for its owner (#88)."""
+    await dispatch(f, SimpleAction("regenerate", "item-1"))
+
+    answer = await dispatch(f, SimpleAction("cancel_comment", "item-1"), user_id=OWNER_ID)
+
+    assert answer.calls == [(None, None)]
+    assert f.bot.edited_messages == []
+    assert f.plan_prompt.withdrawn == []
+    assert len(f.pending_inputs.rows) == 1
 
 
 async def test_approve_all_approves_and_fans_out_generation(f: Fixtures) -> None:
@@ -775,15 +857,6 @@ async def test_regenerate_second_press_on_the_plan_message_keeps_the_plan(f: Fix
     assert answer.calls == [("Принято, генерирую...", None)]
     assert f.plan_ops.regenerated == [(PlanItemId("item-1"), None)]
     assert all("Генерирую" not in text for _, _, text, _ in f.bot.edited_messages)
-
-
-async def test_regenerate_skip_on_the_comment_prompt_shows_progress(f: Fixtures) -> None:
-    f.plan.message_ref = PlanMessageRef(chat_id=1, message_id=99)
-    await dispatch(f, SimpleAction("regenerate", "item-1"))
-
-    await dispatch(f, SimpleAction("regenerate", "item-1"))
-
-    assert f.bot.edited_messages[-1][:3] == (1, 2, "⏳ Генерирую...")
 
 
 # --- a DomainError/AccessError raised mid-branch is answered as a show_alert, not raised ---

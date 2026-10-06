@@ -316,12 +316,11 @@ class CallbackDispatcher:
             case SimpleAction(action="regenerate_article", id_=id_):
                 if not await self._authorized("regenerate_article", role, deny_text, answer):
                     return
-                will_enqueue = self._article_regeneration.has_matching_pending(
+                will_enqueue = await self._article_regeneration.has_matching_pending(
                     chat_id, user_id, ArticleId(id_)
                 )
                 await answer("Принято, генерирую..." if will_enqueue else None)
-                if will_enqueue:
-                    await self._gateway.edit_notice(chat_id, message_id, "⏳ Генерирую...")
+                # The flow edits its own prompt message, never this card's (#80).
                 await self._article_regeneration.request(chat_id, user_id, ArticleId(id_))
             case SimpleAction(action="approve", id_=id_):
                 if not await self._authorized("approve", role, deny_text, answer):
@@ -348,18 +347,21 @@ class CallbackDispatcher:
                 if not await self._authorized("regenerate", role, deny_text, answer):
                     return
                 plan_item_id = PlanItemId(id_)
-                will_enqueue = self._plan_review.will_enqueue_regeneration(
+                will_enqueue = await self._plan_review.will_enqueue_regeneration(
                     chat_id, user_id, plan_item_id
                 )
                 await answer("Принято, генерирую..." if will_enqueue else None)
-                if will_enqueue and not await self._is_plan_message(
-                    plan_item_id, chat_id, message_id
-                ):
-                    # The comment prompt's "Пропустить" turns into a progress line. A second
-                    # 🔄 on the Plan message itself must not: that would wipe the Plan until
-                    # the result redraws it - and forever if the Job fails (#81).
-                    await self._gateway.edit_notice(chat_id, message_id, "⏳ Генерирую...")
+                # The flow edits its own prompt message, never the Plan's (#80).
                 await self._plan_review.handle_action(chat_id, user_id, plan_item_id, "regenerate")
+            case SimpleAction(action="cancel_comment", id_=id_):
+                if not await self._authorized("cancel_comment", role, deny_text, answer):
+                    return
+                await answer()
+                # The Отмена button sits on the prompt itself (#88); the flow deletes the prompt
+                # when it drops the wait. A stale one, or someone else's, drops nothing and
+                # leaves the message as is.
+                if not await self._plan_review.cancel_comment(chat_id, user_id, PlanItemId(id_)):
+                    await self._article_regeneration.cancel(chat_id, user_id, ArticleId(id_))
             case SimpleAction(action="approve_all", id_=id_):
                 if not await self._authorized("approve_all", role, deny_text, answer):
                     return
@@ -389,13 +391,6 @@ class CallbackDispatcher:
                 )
             case SimpleAction(action=unreachable):
                 assert_never(unreachable)
-
-    async def _is_plan_message(
-        self, plan_item_id: PlanItemId, chat_id: int, message_id: int
-    ) -> bool:
-        """Whether this callback came from the Тема's canonical Plan message (#73)."""
-        ref = await self._plan.get_message_ref(await self._plan.get_plan_id_for_item(plan_item_id))
-        return ref is not None and (ref.chat_id, ref.message_id) == (chat_id, message_id)
 
     @staticmethod
     def _resolver_name(callback_input: CallbackInput) -> str:
