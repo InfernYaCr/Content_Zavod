@@ -175,6 +175,8 @@ async def test_project_is_unset_by_default() -> None:
         ("t.me/marketing_daily", "https://t.me/marketing_daily"),
         ("https://t.me/marketing_daily", "https://t.me/marketing_daily"),
         ("https://example.ru/blog", "https://example.ru/blog"),
+        ("T.me/marketing_daily", "https://t.me/marketing_daily"),
+        ("Https://example.ru", "https://example.ru"),
     ],
 )
 async def test_set_project_normalizes_the_link_and_round_trips(link, expected_url) -> None:
@@ -188,7 +190,17 @@ async def test_set_project_normalizes_the_link_and_round_trips(link, expected_ur
 
 
 @pytest.mark.parametrize(
-    "link", ["http://example.ru", "example.ru", "www.example.ru", "@abc", "@1channel", "https://"]
+    "link",
+    [
+        "http://example.ru",
+        "example.ru",
+        "www.example.ru",
+        "@abc",
+        "@1channel",
+        "https://",
+        "t.me/",
+        "https://t.me",
+    ],
 )
 async def test_set_project_rejects_an_unusable_link_without_writing(link) -> None:
     store = InMemoryStore()

@@ -34,11 +34,17 @@ def normalize_project_url(value: str) -> str:
         if not _TELEGRAM_USERNAME_RE.fullmatch(value[1:]):
             raise ValueError(value)
         return f"https://t.me/{value[1:]}"
-    if value.startswith("t.me/"):
-        value = f"https://{value}"
-    host = urlsplit(value).hostname if value.startswith("https://") else None
+    # Phone keyboards capitalize the first letter: `T.me/name`, `Https://...` are the same link.
+    if value[:5].lower() == "t.me/":
+        value = f"https://t.me/{value[5:]}"
+    elif value[:8].lower() == "https://":
+        value = f"https://{value[8:]}"
+    parts = urlsplit(value) if value.startswith("https://") else None
+    host = parts.hostname if parts else None
     if not host or "." not in host or any(char.isspace() for char in value):
         raise ValueError(value)
+    if parts is not None and host == "t.me" and not parts.path.strip("/"):
+        raise ValueError(value)  # `t.me` alone leads nowhere - the channel name is missing
     return value
 
 
