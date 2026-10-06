@@ -3,9 +3,10 @@
 Payload is a union of six types: five immutable dataclasses for the composite
 Действия that pack more than one field into their id (`Page`, `HistoryWeek`,
 `HistoryVersions`, `HistoryVersion`, `ExportArticle`), plus `SimpleAction` for
-the remaining fifteen Действия that carry a single opaque id.
+the remaining Действия that carry a single opaque id (the Главное меню and
+Экран Настроек ones, #95, pack whatever they need into that id themselves).
 
-`ACTION_ROLE` says which of the twenty Действия need "owner" and which accept any
+`ACTION_ROLE` says which of the Действия need "owner" and which accept any
 registered Role - `request_access` is absent, same reasoning as `COMMAND_ROLE`
 omitting `start` (see ADR-0012). The callback dispatcher (`callback_dispatcher.py`)
 is what actually enforces it.
@@ -50,6 +51,20 @@ Action = Literal[
     "history_version",
     "persona_template",
     "cancel_comment",
+    "menu",
+    "menu_plan",
+    "menu_generate_plan",
+    "menu_topic",
+    "menu_history",
+    "menu_members",
+    "settings",
+    "edit_setting",
+    "ask_setting",
+    "pick_setting",
+    "schedule",
+    "schedule_day",
+    "schedule_time",
+    "cancel_input",
 ]
 
 _ACTION_CODES: dict[Action, str] = {
@@ -76,6 +91,21 @@ _ACTION_CODES: dict[Action, str] = {
     "history_version": "hd",
     "persona_template": "pt",
     "cancel_comment": "cc",
+    # Главное меню and Экран Настроек (#95): "m…" for the menu, "s…" for Настройки/Расписание.
+    "menu": "mn",
+    "menu_plan": "mp",
+    "menu_generate_plan": "mg",
+    "menu_topic": "mt",
+    "menu_history": "mh",
+    "menu_members": "mm",
+    "settings": "st",
+    "edit_setting": "se",
+    "ask_setting": "sa",
+    "pick_setting": "sp",
+    "schedule": "sc",
+    "schedule_day": "sd",
+    "schedule_time": "sk",
+    "cancel_input": "ci",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
 
@@ -105,6 +135,21 @@ ACTION_ROLE: dict[Action, Role | None] = {
     "history_version": None,
     "persona_template": "owner",
     "cancel_comment": None,
+    "menu": None,
+    "menu_plan": None,
+    "menu_generate_plan": None,
+    "menu_topic": None,
+    "menu_history": None,
+    "menu_members": "owner",
+    "settings": "owner",
+    "edit_setting": "owner",
+    "ask_setting": "owner",
+    "pick_setting": "owner",
+    "schedule": "owner",
+    "schedule_day": "owner",
+    "schedule_time": "owner",
+    # Drops only the presser's own wait (one per chat and user), so any Role may press it.
+    "cancel_input": None,
 }
 
 # The five composite Действия each get their own type below - see them out
@@ -164,8 +209,8 @@ class ExportArticle:
 
 @dataclass(frozen=True)
 class SimpleAction:
-    """Shared payload for the fifteen Действия with a single opaque id.
-    Carries `action` because one type covers fifteen different Действия -
+    """Shared payload for every Действие with a single opaque id.
+    Carries `action` because one type covers many different Действия -
     without this field they wouldn't be distinguishable."""
 
     action: Action

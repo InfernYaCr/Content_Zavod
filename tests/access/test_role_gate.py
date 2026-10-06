@@ -18,7 +18,7 @@ OWNER_COMMANDS = {
     "set_project",
     "settings",
 }
-ANY_ROLE_COMMANDS = {"help", "topic", "generate_plan", "history"}
+ANY_ROLE_COMMANDS = {"help", "menu", "topic", "generate_plan", "history"}
 
 
 @pytest.mark.parametrize(
@@ -39,7 +39,7 @@ def test_require_role(actual, required, expected) -> None:
     assert require_role(actual, required) is expected
 
 
-def test_command_role_covers_exactly_the_sixteen_gated_commands() -> None:
+def test_command_role_covers_exactly_the_gated_commands() -> None:
     assert set(COMMAND_ROLE) == OWNER_COMMANDS | ANY_ROLE_COMMANDS
 
 

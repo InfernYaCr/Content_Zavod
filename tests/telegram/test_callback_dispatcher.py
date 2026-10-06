@@ -4,6 +4,7 @@ through hand-built `CallbackInput` values and fakes, no aiogram `CallbackQuery` 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
@@ -11,6 +12,8 @@ from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
 from content_zavod.access import MemberNotFound
 from content_zavod.access.membership import MemberView, Role
 from content_zavod.domain.plan import PlanItemDetail
+from content_zavod.scheduling import ScheduleConfig
+from content_zavod.settings import SettingsService
 from content_zavod.telegram import (
     ArticleId,
     ArticleSummary,
@@ -35,7 +38,10 @@ from content_zavod.telegram import (
     TelegramGateway,
 )
 from content_zavod.telegram.callback_dispatcher import CallbackDispatcher, CallbackInput
+from content_zavod.telegram.input_prompt import InputPrompt
+from content_zavod.telegram.main_menu import MainMenu
 from content_zavod.telegram.pending_inputs import PendingInput
+from content_zavod.telegram.settings_screen import SETTING_INPUT_KIND, SettingsScreen
 
 from .fakes import FakePendingInputs
 
@@ -54,8 +60,9 @@ class FakeBot:
         self.sent_messages: list[tuple[int, str, InlineKeyboardMarkup | None]] = []
         self.sent_documents: list[tuple[int, BufferedInputFile, str | None]] = []
         self.edited_messages: list[tuple[int, int, str, InlineKeyboardMarkup | None]] = []
+        self.deleted_messages: list[tuple[int, int]] = []
 
-    async def send_message(self, chat_id, text, reply_markup=None) -> int:
+    async def send_message(self, chat_id, text, reply_markup=None, parse_mode=None) -> int:
         self.sent_messages.append((chat_id, text, reply_markup))
         return len(self.sent_messages)
 
@@ -72,7 +79,7 @@ class FakeBot:
         self.edited_messages.append((chat_id, message_id, "", reply_markup))
 
     async def delete_message(self, chat_id, message_id) -> None:
-        pass
+        self.deleted_messages.append((chat_id, message_id))
 
     async def set_my_commands(self, commands, *, scope) -> None:
         pass
@@ -120,6 +127,7 @@ class FakePlan:
         self.recorded_progress_refs: list[tuple[PlanId, int, int]] = []
         self._start_generation_batch_returns = start_generation_batch_returns
         self.message_ref: PlanMessageRef | None = None
+        self.requested_weeks: list[str] = []
         self._view = PlanView(
             id=PlanId("plan-1"),
             week_label="2026-W33",
@@ -134,6 +142,13 @@ class FakePlan:
 
     async def get(self, plan_id: PlanId) -> PlanView:
         return self._view
+
+    async def find_active(self, week_label: str) -> PlanView | None:
+        return None
+
+    async def request_new(self, week_label: str, *, generation_id: str | None = None) -> int:
+        self.requested_weeks.append(week_label)
+        return 1
 
     async def get_plan_id_for_item(self, plan_item_id: PlanItemId) -> PlanId:
         return self._view.id
@@ -319,21 +334,42 @@ class FakeJoinRequests:
         return updated
 
 
-class FakePersonaSettings:
+class FakeOwnerSettingsStore:
     def __init__(self) -> None:
-        self.set_calls: list[str] = []
+        self.values: dict[str, str] = {}
 
-    async def read(self):
-        raise NotImplementedError
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
 
-    async def set_persona(self, value: str) -> str:
-        self.set_calls.append(value)
-        return value
+    async def set(self, key: str, value: str) -> None:
+        self.values[key] = value
+
+
+class FakeSchedule:
+    def __init__(self) -> None:
+        self.config: ScheduleConfig | None = None
+
+    async def get(self) -> ScheduleConfig | None:
+        return self.config
+
+    async def set(self, day_of_week: str, hour: int, minute: int) -> None:
+        self.config = ScheduleConfig(day_of_week, hour, minute)
+
+
+class FakeScheduler:
+    def __init__(self) -> None:
+        self.rescheduled: list[str] = []
+
+    def reschedule_job(self, job_id, *, trigger) -> None:
+        self.rescheduled.append(job_id)
 
 
 class FakeQueue:
     def __init__(self) -> None:
         self.retried: list[int] = []
+
+    async def get_status(self, job_id: int) -> str:
+        return "queued"
 
     async def retry(self, job_id: int) -> bool:
         self.retried.append(job_id)
@@ -366,8 +402,29 @@ class Fixtures:
         )
         self.join_requests = FakeJoinRequests()
         self.join_request_flow = JoinRequestFlow(self.join_requests, self.membership, self.gateway)
-        self.persona_settings = FakePersonaSettings()
+        self.owner_settings = FakeOwnerSettingsStore()
+        self.schedule = FakeSchedule()
+        self.scheduler = FakeScheduler()
         self.queue = FakeQueue()
+        self.prompts = InputPrompt(self.bot, self.pending_inputs)
+        self.settings_screen = SettingsScreen(
+            SettingsService(self.owner_settings),
+            self.schedule,
+            self.scheduler,
+            self.bot,
+            self.prompts,
+            tz=ZoneInfo("Europe/Moscow"),
+        )
+        self.main_menu = MainMenu(
+            self.plan,
+            self.queue,
+            self.schedule,
+            self.bot,
+            self.gateway,
+            self.prompts,
+            team_chat_id=-100500,
+            tz=ZoneInfo("Europe/Moscow"),
+        )
         self.dispatcher = CallbackDispatcher(
             self.membership,
             self.plan,
@@ -377,8 +434,10 @@ class Fixtures:
             self.plan_review,
             self.article_regeneration,
             self.join_request_flow,
-            self.persona_settings,
+            self.settings_screen,
             self.queue,
+            self.main_menu,
+            self.prompts,
         )
 
 
@@ -473,7 +532,7 @@ async def test_persona_template_refuses_content_manager(f: Fixtures) -> None:
     answer = await dispatch(f, SimpleAction("persona_template", "0"))
 
     assert answer.calls == [(_OWNER_ONLY_TEXT, True)]
-    assert f.persona_settings.set_calls == []
+    assert f.owner_settings.values == {}
 
 
 # --- owner-only Действия succeed for owner ---
@@ -573,10 +632,15 @@ async def test_remove_member_confirmation_refuses_content_manager(f: Fixtures, a
 
 
 async def test_persona_template_sets_persona_for_owner(f: Fixtures) -> None:
-    answer = await dispatch(f, SimpleAction("persona_template", "0"), user_id=OWNER_ID)
+    """A Пресет button on a pre-#95 /persona message: saved, and that message becomes the
+    Экран Настроек."""
+    answer = await dispatch(f, SimpleAction("persona_template", "1"), user_id=OWNER_ID)
 
     assert answer.calls == [(None, None)]
-    assert len(f.persona_settings.set_calls) == 1
+    assert f.owner_settings.values == {"voice": "preset:evidence_analyst"}
+    _, message_id, text, _ = f.bot.edited_messages[0]
+    assert message_id == 2
+    assert text.startswith("✅ Персона изменена: Доказательный аналитик")
 
 
 # --- shared (any registered Role) Действия ---
@@ -891,3 +955,143 @@ async def test_known_domain_error_is_alerted_in_russian_not_its_english_text(
     answer = await dispatch(f, SimpleAction("delete", "item-1"))
 
     assert answer.calls[-1] == ("Эту Тему уже нельзя изменить.", True)
+
+
+# --- Главное меню and Экран Настроек (#95) ---
+
+_OWNER_ONLY_MENU_ACTIONS = [
+    SimpleAction("menu_members", ""),
+    SimpleAction("settings", ""),
+    SimpleAction("edit_setting", "niche"),
+    SimpleAction("ask_setting", "persona"),
+    SimpleAction("pick_setting", "persona:0"),
+    SimpleAction("schedule", "m"),
+    SimpleAction("schedule_day", "fri:m"),
+    SimpleAction("schedule_time", "m"),
+]
+
+
+@pytest.mark.parametrize("payload", _OWNER_ONLY_MENU_ACTIONS)
+async def test_owner_only_menu_actions_refuse_content_manager(f: Fixtures, payload) -> None:
+    answer = await dispatch(f, payload)
+
+    assert answer.calls == [(_OWNER_ONLY_TEXT, True)]
+    assert f.bot.edited_messages == [] and f.bot.sent_messages == []
+    assert f.owner_settings.values == {} and f.schedule.config is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        SimpleAction("menu", ""),
+        SimpleAction("menu_plan", ""),
+        SimpleAction("menu_generate_plan", ""),
+        SimpleAction("menu_topic", ""),
+        SimpleAction("menu_history", ""),
+        SimpleAction("cancel_input", "topic_input"),
+    ],
+)
+async def test_shared_menu_actions_refuse_unregistered_caller(f: Fixtures, payload) -> None:
+    answer = await dispatch(f, payload, user_id=UNKNOWN_ID)
+
+    assert answer.calls == [(_ACCESS_DENIED_TEXT, True)]
+    assert f.bot.edited_messages == [] and f.bot.sent_messages == []
+
+
+async def test_menu_redraws_the_main_menu_for_the_pressers_role(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("menu", ""))
+    await dispatch(f, SimpleAction("menu", ""), user_id=OWNER_ID)
+
+    cm_menu, owner_menu = (edit[3] for edit in f.bot.edited_messages)
+    assert len(cm_menu.inline_keyboard) == 3
+    assert len(owner_menu.inline_keyboard) == 6
+
+
+async def test_menu_plan_shows_the_plan_screen_in_place(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("menu_plan", ""))
+
+    ((_, message_id, text, _),) = f.bot.edited_messages
+    assert message_id == 2 and "пока нет" in text
+
+
+async def test_menu_generate_plan_requests_the_weeks_plan(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("menu_generate_plan", ""))
+
+    assert len(f.plan.requested_weeks) == 1
+
+
+async def test_menu_topic_asks_for_a_topic(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("menu_topic", ""))
+
+    assert f.pending_inputs.rows[(1, CM_ID)].kind == "topic_input"
+
+
+async def test_menu_history_sends_the_history(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("menu_history", ""))
+
+    assert f.bot.sent_messages[0][1].startswith("🗂 История")
+
+
+async def test_menu_members_sends_the_member_list(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("menu_members", ""), user_id=OWNER_ID)
+
+    assert f.bot.sent_messages[0][1].startswith("👥 Участники")
+
+
+async def test_settings_and_edit_setting_work_for_owner(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("settings", ""), user_id=OWNER_ID)
+    await dispatch(f, SimpleAction("edit_setting", "niche"), user_id=OWNER_ID)
+
+    assert f.bot.edited_messages[0][2].startswith("⚙️ Настройки")
+    pending = f.pending_inputs.rows[(1, OWNER_ID)]
+    assert (pending.kind, pending.target_id) == (SETTING_INPUT_KIND, "niche:2")
+
+
+async def test_pick_setting_saves_the_preset(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("pick_setting", "persona:2"), user_id=OWNER_ID)
+
+    assert f.owner_settings.values == {"voice": "preset:founder_operator"}
+
+
+async def test_schedule_day_reschedules(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("schedule_day", "fri:s"), user_id=OWNER_ID)
+
+    assert f.schedule.config == ScheduleConfig("fri", 9, 0)
+    assert f.scheduler.rescheduled == ["weekly_plan_trigger"]
+
+
+async def test_schedule_time_asks_for_the_time(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("schedule_time", "m"), user_id=OWNER_ID)
+
+    assert f.pending_inputs.rows[(1, OWNER_ID)].target_id == "time:2:m"
+
+
+async def test_cancel_input_drops_the_pressers_wait_and_its_prompt(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("menu_topic", ""))
+
+    answer = await dispatch(f, SimpleAction("cancel_input", "topic_input"))
+
+    assert answer.calls == [(None, None)]
+    assert f.pending_inputs.rows == {}
+    assert f.bot.deleted_messages == [(1, 1), (1, 2)]
+
+
+async def test_stale_cancel_in_a_group_leaves_the_message(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("cancel_input", "topic_input"))
+
+    assert f.bot.deleted_messages == []
+
+
+async def test_stale_cancel_in_a_private_chat_removes_the_prompt(f: Fixtures) -> None:
+    answer = FakeAnswerer()
+    callback_input = CallbackInput(
+        chat_id=CM_ID,
+        message_id=9,
+        user_id=CM_ID,
+        username="cm",
+        payload=SimpleAction("cancel_input", "topic_input"),
+    )
+
+    await f.dispatcher.dispatch(callback_input, answer)
+
+    assert f.bot.deleted_messages == [(CM_ID, 9)]

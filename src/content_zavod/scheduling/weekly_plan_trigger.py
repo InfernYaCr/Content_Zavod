@@ -38,7 +38,7 @@ JOB_ID = "weekly_plan_trigger"
 
 # Reconciliation re-derives the deadline manually rather than asking a CronTrigger for it
 # (no persistent jobstore to query at startup - see module docstring). This mirrors the
-# 3-letter day abbreviations `_VALID_DAYS` in telegram/schedule_command.py already restricts
+# 3-letter day codes `telegram.texts.WEEKDAYS` already restricts the Расписание screen and
 # `/set_schedule` to; a `day_of_week` outside these 7 keys would KeyError here.
 _WEEKDAY_INDEX = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 

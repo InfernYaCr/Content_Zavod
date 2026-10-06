@@ -426,24 +426,6 @@ def build_confirm_keyboard(id_: str) -> InlineKeyboardMarkup:
     )
 
 
-def build_persona_keyboard(templates: Sequence[tuple[str, str]]) -> InlineKeyboardMarkup:
-    """One row per hardcoded Persona Preset, keyed by its position in `templates`
-    rather than its (arbitrarily long) text, to stay within CALLBACK_DATA_LIMIT."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=title,
-                    callback_data=encode_callback_data(
-                        SimpleAction("persona_template", str(index))
-                    ),
-                )
-            ]
-            for index, (title, _text) in enumerate(templates)
-        ]
-    )
-
-
 def build_retry_keyboard(job_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

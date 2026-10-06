@@ -1,7 +1,12 @@
+from typing import get_args
+
 import pytest
 
 from content_zavod.telegram.callback_codec import (
+    _ACTION_CODES,
+    ACTION_ROLE,
     CALLBACK_DATA_LIMIT,
+    Action,
     ExportArticle,
     HistoryVersion,
     HistoryVersions,
@@ -110,3 +115,27 @@ def test_export_article_encoding_is_stable_across_calls() -> None:
 def test_simple_action_encoding_is_stable_across_calls() -> None:
     payload = SimpleAction(action="retry", id_="42")
     assert encode_callback_data(payload) == "rt:42"
+
+
+def test_action_codes_are_unique_and_cover_every_action() -> None:
+    assert set(_ACTION_CODES) == set(get_args(Action))
+    assert len(set(_ACTION_CODES.values())) == len(_ACTION_CODES)
+
+
+def test_every_action_but_request_access_has_a_role() -> None:
+    assert set(ACTION_ROLE) == set(get_args(Action)) - {"request_access"}
+
+
+@pytest.mark.parametrize(
+    ("payload", "data"),
+    [
+        (SimpleAction("menu", ""), "mn:"),
+        (SimpleAction("settings", ""), "st:"),
+        (SimpleAction("edit_setting", "niche"), "se:niche"),
+        (SimpleAction("schedule_day", "mon:s"), "sd:mon:s"),
+        (SimpleAction("cancel_input", "setting_input"), "ci:setting_input"),
+    ],
+)
+def test_menu_and_settings_actions_round_trip(payload: SimpleAction, data: str) -> None:
+    assert encode_callback_data(payload) == data
+    assert decode_callback_data(data) == payload

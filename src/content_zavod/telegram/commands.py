@@ -1,11 +1,12 @@
-"""commands: the per-role Telegram command menu (setMyCommands), plus /help text.
+"""commands: the Telegram command menu (setMyCommands) - just /menu and /help since #95.
 
-Owner-only commands are excluded from a Content-manager's menu entirely
-(a per-user `BotCommandScopeChat`, not just an access check on invocation) -
-Telegram can't scope commands within a single group chat, so this targets
-each user's own chat with the bot. `sync_commands` is called once when a
-role is first known (at /start) and again right after a join request is
-approved, rather than on every interaction.
+Everything else is a button in the Главное меню (`main_menu.py`), so a Владелец and a
+Контент-менеджер see the same two commands; what differs is the menu's buttons. The old
+commands (`/topic`, `/history`, `/settings`, `/set_niche`, …) still work as hidden aliases
+for whoever has them in muscle memory or in older bot messages - they're just no longer
+listed. `sync_commands` still writes a per-user `BotCommandScopeChat`: that is where every
+existing user's old 16-command list lives, and only the same scope overwrites it. It is
+called when a role is first known (at /start) and right after a join request is approved.
 """
 
 from __future__ import annotations
@@ -15,42 +16,19 @@ from aiogram.types import BotCommand, BotCommandScopeChat
 from ..access import Role
 from .gateway import BotClient
 
-SHARED_COMMANDS: list[BotCommand] = [
-    BotCommand(command="topic", description="Предложить Тему"),
-    BotCommand(command="generate_plan", description="Сгенерировать План вручную"),
-    BotCommand(command="history", description="История Планов по неделям"),
-    BotCommand(command="help", description="Список команд"),
-]
-
-OWNER_COMMANDS: list[BotCommand] = [
-    *SHARED_COMMANDS,
-    BotCommand(command="members", description="Участники и доступ"),
-    BotCommand(command="schedule", description="Текущее расписание Плана"),
-    BotCommand(command="set_schedule", description="Изменить расписание Плана"),
-    BotCommand(command="niche", description="Текущая Ниша"),
-    BotCommand(command="set_niche", description="Изменить Нишу"),
-    BotCommand(command="directions", description="Текущие Направления"),
-    BotCommand(command="set_directions", description="Изменить Направления"),
-    BotCommand(command="persona", description="Текущая Персона"),
-    BotCommand(command="set_persona", description="Изменить Персону"),
-    BotCommand(command="project", description="Текущий Проект для CTA в Статьях"),
-    BotCommand(command="set_project", description="Изменить Проект: ссылка и описание"),
-    BotCommand(command="settings", description="Ниша, Персона, Направления и Проект разом"),
+MENU_COMMANDS: list[BotCommand] = [
+    BotCommand(command="menu", description="Главное меню"),
+    BotCommand(command="help", description="Что умеет бот"),
 ]
 
 
 def commands_for_role(role: Role) -> list[BotCommand]:
-    return OWNER_COMMANDS if role == "owner" else SHARED_COMMANDS
+    """The same two commands for every Role - kept per Role so a future Role-only command
+    has an obvious place to go."""
+    return MENU_COMMANDS
 
 
 async def sync_commands(bot: BotClient, telegram_id: int, role: Role) -> None:
     await bot.set_my_commands(
         commands_for_role(role), scope=BotCommandScopeChat(chat_id=telegram_id)
     )
-
-
-def render_help_text(role: Role) -> str:
-    lines = ["Доступные команды:"]
-    for command in commands_for_role(role):
-        lines.append(f"/{command.command} — {command.description}")
-    return "\n".join(lines)
