@@ -14,6 +14,7 @@ import httpx
 from .nodes import Node
 
 API_BASE_URL = "https://api.telegra.ph"
+PAGE_BASE_URL = "https://telegra.ph"
 
 
 class TelegraphError(Exception):
@@ -46,14 +47,21 @@ class TelegraphClient(Protocol):
     ) -> TelegraphPage: ...
 
 
+def page_url(path: str) -> str:
+    """A page's public URL from its stored path - what `createPage` returns as `url`."""
+    return f"{PAGE_BASE_URL}/{path}"
+
+
 class HttpxTelegraphClient:
     """Production adapter. Sends form-encoded requests with `content` as a JSON string, the
-    shape the Telegraph API documents for both GET and POST."""
+    shape the Telegraph API documents for both GET and POST. The short default timeout is
+    deliberate: publishing runs inline with Article delivery, so a hung telegra.ph may delay
+    a card by seconds, never stall it."""
 
     def __init__(
         self,
         *,
-        timeout: float = 15.0,
+        timeout: float = 5.0,
         base_url: str = API_BASE_URL,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:

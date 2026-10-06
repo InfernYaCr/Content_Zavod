@@ -76,7 +76,9 @@ async def test_handle_topic_command_adds_the_topic_to_the_current_weeks_plan() -
     plan = FakePlan()
     gateway = TelegramGateway(FakeBot())
 
-    await handle_topic_command(plan, gateway, chat_id=1, text="  New Topic  ", tz=_TZ, now=_now)
+    await handle_topic_command(
+        plan, gateway, chat_id=1, text="  New Topic  ", team_chat_id=1, tz=_TZ, now=_now
+    )
 
     assert plan.added == [("2026-W33", [TopicDraft(title="New Topic")])]
 
@@ -87,7 +89,9 @@ async def test_handle_topic_command_sends_the_updated_plan_back_to_the_chat() ->
     bot = FakeBot()
     gateway = TelegramGateway(bot)
 
-    await handle_topic_command(plan, gateway, chat_id=1, text="New Topic", tz=_TZ, now=_now)
+    await handle_topic_command(
+        plan, gateway, chat_id=1, text="New Topic", team_chat_id=1, tz=_TZ, now=_now
+    )
 
     assert len(bot.sent_messages) == 1
     chat_id, text, keyboard = bot.sent_messages[0]
@@ -104,10 +108,17 @@ async def test_second_topic_for_the_same_plan_edits_the_canonical_message() -> N
     bot = FakeBot()
     gateway = TelegramGateway(bot)
 
-    await handle_topic_command(plan, gateway, chat_id=1, text="New Topic", tz=_TZ, now=_now)
-    await handle_topic_command(plan, gateway, chat_id=1, text="Another Topic", tz=_TZ, now=_now)
+    await handle_topic_command(
+        plan, gateway, chat_id=1, text="New Topic", team_chat_id=1, tz=_TZ, now=_now
+    )
+    await handle_topic_command(
+        plan, gateway, chat_id=1, text="Another Topic", team_chat_id=1, tz=_TZ, now=_now
+    )
 
-    assert len(bot.sent_messages) == 1
+    # One Plan message, edited in place; the second /topic only adds a short pointer to it.
+    assert [text for _chat, text, _kb in bot.sent_messages][1:] == [
+        "Тема добавлена в План — сообщение Плана выше обновлено."
+    ]
     assert len(bot.edited_messages) == 1
     edited_chat_id, edited_message_id, _text, _keyboard = bot.edited_messages[0]
     assert (edited_chat_id, edited_message_id) == (1, 1)
@@ -119,7 +130,9 @@ async def test_handle_topic_command_rejects_blank_text() -> None:
     bot = FakeBot()
     gateway = TelegramGateway(bot)
 
-    await handle_topic_command(plan, gateway, chat_id=1, text="   ", tz=_TZ, now=_now)
+    await handle_topic_command(
+        plan, gateway, chat_id=1, text="   ", team_chat_id=1, tz=_TZ, now=_now
+    )
 
     assert plan.added == []
     assert len(bot.sent_messages) == 1
@@ -132,7 +145,42 @@ async def test_handle_topic_command_rejects_a_recently_used_title() -> None:
     bot = FakeBot()
     gateway = TelegramGateway(bot)
 
-    await handle_topic_command(plan, gateway, chat_id=1, text="existing topic", tz=_TZ, now=_now)
+    await handle_topic_command(
+        plan, gateway, chat_id=1, text="existing topic", team_chat_id=1, tz=_TZ, now=_now
+    )
 
     assert plan.added == []
     assert "уже использовалась" in bot.sent_messages[0][1]
+
+
+@pytest.mark.asyncio
+async def test_topic_from_a_private_chat_puts_the_plan_in_the_team_chat() -> None:
+    """#82: /topic typed in a private chat must not make that chat the Plan's home - the Plan
+    message goes to the team chat, the private chat only gets a short confirmation."""
+    plan = FakePlan()
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    await handle_topic_command(
+        plan, gateway, chat_id=7, text="New Topic", team_chat_id=-100, tz=_TZ, now=_now
+    )
+
+    plan_chat_id, plan_text, keyboard = bot.sent_messages[0]
+    assert plan_chat_id == -100
+    assert "New Topic" in plan_text and keyboard is not None
+    assert plan.message_refs[PlanId("plan-1")].chat_id == -100
+    assert bot.sent_messages[1] == (7, "Тема добавлена в План — он в чате команды.", None)
+    assert len(bot.sent_messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_topic_from_the_team_chat_sends_no_extra_confirmation() -> None:
+    plan = FakePlan()
+    bot = FakeBot()
+    gateway = TelegramGateway(bot)
+
+    await handle_topic_command(
+        plan, gateway, chat_id=-100, text="New Topic", team_chat_id=-100, tz=_TZ, now=_now
+    )
+
+    assert [chat_id for chat_id, _text, _kb in bot.sent_messages] == [-100]

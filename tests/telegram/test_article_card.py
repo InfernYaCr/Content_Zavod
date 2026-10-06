@@ -2,7 +2,6 @@ from content_zavod.telegram import ArticleId, ArticleView, PlanItemId
 from content_zavod.telegram.article_card import (
     PREVIEW_LIMIT,
     plain_text_preview,
-    platform_display_name,
     render_article_card_text,
 )
 
@@ -15,12 +14,6 @@ def _article(content: str, *, platform: str = "vc", title: str = "Как выб�
         platform=platform,
         content=content.encode("utf-8"),
     )
-
-
-def test_platform_display_name_is_human_with_raw_fallback() -> None:
-    assert platform_display_name("zen") == "Дзен"
-    assert platform_display_name("vc") == "VC.ru"
-    assert platform_display_name("tj") == "tj"
 
 
 def test_preview_strips_markdown_and_skips_the_title_heading() -> None:

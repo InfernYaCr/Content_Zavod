@@ -6,11 +6,10 @@ from __future__ import annotations
 
 import re
 
+from .texts import ARTICLE_CARD_PLATFORM, platform_name
 from .types import ArticleView
 
 PREVIEW_LIMIT = 800
-
-_PLATFORM_NAMES = {"zen": "Дзен", "vc": "VC.ru"}
 
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
 _BULLET_RE = re.compile(r"^\s*[-*+]\s+")
@@ -20,13 +19,12 @@ _LINK_RE = re.compile(r"\[([^\]]+)\]\((?:[^)]+)\)")
 _EMPHASIS_RE = re.compile(r"(\*\*|__|`)(.+?)\1|(?<![\w*])\*([^\s*](?:.*?[^\s*])?)\*(?![\w*])")
 
 
-def platform_display_name(platform: str) -> str:
-    return _PLATFORM_NAMES.get(platform, platform)
-
-
 def render_article_card_text(article: ArticleView) -> str:
     preview = plain_text_preview(article.content.decode("utf-8"), title=article.title)
-    lines = [f"📄 {article.title}", f"Площадка: {platform_display_name(article.platform)}"]
+    lines = [
+        f"📄 {article.title}",
+        ARTICLE_CARD_PLATFORM.format(platform=platform_name(article.platform)),
+    ]
     if preview:
         lines += ["", preview]
     return "\n".join(lines)

@@ -18,7 +18,7 @@ from .gateway import TelegramGateway, build_join_request_keyboard
 
 
 class JoinRequestOperations(Protocol):
-    async def create(self, telegram_id: int, username: str | None) -> int: ...
+    async def create(self, telegram_id: int, username: str | None) -> int | None: ...
 
     async def get(self, join_request_id: int) -> JoinRequestView: ...
 
@@ -50,8 +50,12 @@ class JoinRequestFlow:
         self._membership = membership
         self._gateway = gateway
 
-    async def request_access(self, telegram_id: int, username: str | None) -> None:
+    async def request_access(self, telegram_id: int, username: str | None) -> bool:
+        """False when this user already has a pending заявка: nothing is created or re-sent to
+        the Owners, the caller just tells the user it's already on its way (#90)."""
         request_id = await self._requests.create(telegram_id, username)
+        if request_id is None:
+            return False
         owner_ids = await self._membership.list_by_role("owner")
         who = f"@{username}" if username else str(telegram_id)
         text = f"Заявка на доступ от {who} (id {telegram_id})."
@@ -60,6 +64,7 @@ class JoinRequestFlow:
             # A private chat with the bot has chat_id == the user's own telegram_id.
             message_id = await self._gateway.send_message(owner_id, text, reply_markup=keyboard)
             await self._requests.record_broadcast(request_id, owner_id, owner_id, message_id)
+        return True
 
     async def handle_approve(
         self, resolver_id: int, resolver_name: str, join_request_id: int

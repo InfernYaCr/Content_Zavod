@@ -5,7 +5,9 @@ prompt (long single-shot generations were observed to degrade in quality).
 Both job types converge on one shared pipeline core (`_run_pipeline`):
 `regenerate_article` is a refinement of the prior result, not a different
 pipeline, so it sources its facts from the Article's current Версия (via
-`ArticleReader.get`) instead of re-fetching plan_items. Money/legal Темы
+`ArticleReader.get`), plus the Тема's summary/keywords (via
+`PlanItemReader.get_item`, #85) so a regeneration isn't briefed with less
+than the first generation was. Money/legal Темы
 don't get a separate step or job_type - the sources step just uses a
 stricter prompt for them, selected by a keyword/title heuristic.
 
@@ -14,6 +16,11 @@ steps don't reference an author persona); Персона is Owner-editable (#37,
 renamed from Голос in #50), read fresh from `SettingsReader` on every call
 so a `/set_persona` takes effect without a restart, shared across all
 Площадки - platform tone is layered on top of it, not instead of it.
+
+With a Проект set (#98), outline/draft/rewrite are asked for one closing CTA
+to it, but the link itself is the code's job: `_ensure_project_link` keeps
+exactly one exact copy of the URL in the body (appending a CTA line when the
+model dropped or mangled it), and the sources step never lists or filters it.
 """
 
 from __future__ import annotations
@@ -25,9 +32,10 @@ from typing import Any, Protocol
 from ..domain import ArticleId, ArticleView
 from ..job_queue import JobHandler
 from ..personas import platform_profile
-from ..settings import SettingsReader
+from ..settings import Project, SettingsReader
 from ..yandex import DEFAULT_TEMPERATURE, Completion, Message, TextGenerator
 from .article_prompts import draft_messages, outline_messages, rewrite_messages
+from .plan_pipeline import PlanItemReader
 from .provenance import StepRecord, StepRecorder
 from .url_reachability import UrlReachabilityChecker
 
@@ -53,9 +61,9 @@ _SENSITIVE_KEYWORDS = frozenset(
 # Bumped whenever a step's prompt-building function changes shape, so a stored Версия's
 # provenance stays explainable without reading logs (#74).
 _PROMPT_VERSIONS = {
-    "outline": "outline-v1",
-    "draft": "draft-v1",
-    "rewrite": "rewrite-v1",
+    "outline": "outline-v3",
+    "draft": "draft-v3",
+    "rewrite": "rewrite-v3",
     "sources": "sources-v1",
 }
 
@@ -86,6 +94,7 @@ def make_generate_article_handler(
 
 def make_regenerate_article_handler(
     article_reader: ArticleReader,
+    item_reader: PlanItemReader,
     text_generator: TextGenerator,
     url_checker: UrlReachabilityChecker,
     settings: SettingsReader,
@@ -93,6 +102,7 @@ def make_regenerate_article_handler(
     async def handle(payload: dict[str, Any]) -> dict[str, Any]:
         article_id = ArticleId(payload["article_id"])
         view = await article_reader.get(article_id)
+        item = await item_reader.get_item(view.plan_item_id)
         return await _run_pipeline(
             text_generator,
             url_checker,
@@ -100,6 +110,8 @@ def make_regenerate_article_handler(
             article_id=article_id,
             title=view.title,
             platform=view.platform,
+            summary=item.summary,
+            keywords=item.keywords,
             comment=payload.get("comment"),
             previous_content=view.content.decode("utf-8"),
         )
@@ -143,6 +155,7 @@ async def _run_pipeline(
     try:
         owner_settings = await settings.read()
         persona, custom_persona = owner_settings.persona, owner_settings.custom_persona
+        project = owner_settings.project
         profile = platform_profile(platform)
         outline = await run_step(
             "outline",
@@ -155,6 +168,7 @@ async def _run_pipeline(
                 persona=persona,
                 custom_persona=custom_persona,
                 profile=profile,
+                project=project,
             ),
         )
         draft = await run_step(
@@ -162,26 +176,30 @@ async def _run_pipeline(
             draft_messages(
                 title=title,
                 outline=outline,
+                comment=comment,
                 persona=persona,
                 custom_persona=custom_persona,
                 profile=profile,
+                project=project,
             ),
         )
         rewrite = await run_step(
             "rewrite",
             rewrite_messages(
                 draft=draft,
+                comment=comment,
                 persona=persona,
                 custom_persona=custom_persona,
                 profile=profile,
+                project=project,
             ),
         )
         sensitive = _is_money_or_legal(title, keywords)
         sources_text = await run_step("sources", _sources_messages(rewrite, sensitive=sensitive))
 
-        urls = _extract_urls(sources_text)
+        urls = [url for url in _extract_urls(sources_text) if project is None or url != project.url]
         reachable_urls = [url for url in urls if await url_checker.is_reachable(url)]
-        content = _assemble_content(rewrite, reachable_urls)
+        content = _assemble_content(_ensure_project_link(rewrite, project), reachable_urls)
     except Exception as exc:
         raise recorder.fail(exc, article_id=article_id) from exc
 
@@ -199,50 +217,6 @@ async def _run_pipeline(
         "cost": sum(c.cost for c in completions) if cost_complete else None,
         "steps": recorder.as_output(),
     }
-
-
-def _legacy_outline_messages(
-    title: str,
-    summary: str,
-    keywords: Sequence[str],
-    platform: str,
-    previous_content: str | None,
-    comment: str | None,
-    voice: str,
-) -> list[Message]:
-    system = (
-        f"Ты - {voice}, пишущий Статью для площадки «{platform}». Составь аутлайн "
-        "в Markdown: разделы — заголовками (##), подпункты каждого раздела — списком (-)."
-    )
-    if previous_content is not None:
-        user = (
-            f"Перегенерация статьи «{title}» по комментарию: {comment or '(без комментария)'}.\n\n"
-            f"Текущая версия:\n{previous_content}"
-        )
-    else:
-        user = (
-            f"Тема: {title}\nОписание: {summary}\nКлючевые слова: {', '.join(keywords)}\n"
-            "Составь аутлайн статьи по этой Теме."
-        )
-    return [Message(role="system", text=system), Message(role="user", text=user)]
-
-
-def _legacy_draft_messages(title: str, platform: str, outline: str, voice: str) -> list[Message]:
-    system = (
-        f"Ты - {voice}. Напиши черновик статьи «{title}» для «{platform}» по аутлайну. "
-        "Форматируй текст в Markdown: заголовки разделов — ##/###, перечисления — списком (-), "
-        "ключевые термины и акценты — **жирным**."
-    )
-    return [Message(role="system", text=system), Message(role="user", text=outline)]
-
-
-def _legacy_rewrite_messages(platform: str, draft: str) -> list[Message]:
-    system = (
-        f"Отредактируй черновик под тон и формат площадки «{platform}», сохранив факты. "
-        "Сохрани и, где уместно, доработай Markdown-разметку: заголовки (##/###), списки (-), "
-        "**выделения** — не превращай текст в плейн-текст."
-    )
-    return [Message(role="system", text=system), Message(role="user", text=draft)]
 
 
 def _sources_messages(rewrite: str, *, sensitive: bool) -> list[Message]:
@@ -274,3 +248,39 @@ def _assemble_content(body: str, urls: list[str]) -> str:
         return body
     sources = "\n".join(f"- {url}" for url in urls)
     return f"{body}\n\nИсточники:\n{sources}"
+
+
+# The occurrence must end where the URL ends - `https://t.me/name_2` or `.../name/12` is a
+# different link, not a copy of `https://t.me/name`.
+_URL_END = r"(?![\w/?#=&%~+@-]|[.:]\w)"
+
+
+def _ensure_project_link(body: str, project: Project | None) -> str:
+    """Exactly one exact `project.url` in the body (#98). Repeats are cut down to the last
+    occurrence - the closing CTA - keeping a Markdown link's text. Without an exact copy, the
+    last recognizable spelling of the same link (`t.me/name`, `@name`, `http://...`) is
+    rewritten into the exact URL in place, so the model's own CTA sentence stays the only CTA;
+    a missing or truly mangled URL (a typo) gets a plain CTA line appended."""
+    if project is None:
+        return body
+    url = re.escape(project.url)
+    occurrence = re.compile(rf"\[([^\]\n]*)\]\({url}\)|[ \t]*{url}{_URL_END}")
+    matches = list(occurrence.finditer(body))
+    if not matches:
+        variant = _last_project_link_variant(body, project.url)
+        if variant is not None:
+            return body[: variant.start()] + project.url + body[variant.end() :]
+        return f"{body.rstrip()}\n\n{project.description.rstrip(' .!?…')}: {project.url}"
+    for match in reversed(matches[:-1]):
+        body = body[: match.start()] + (match.group(1) or "") + body[match.end() :]
+    return body
+
+
+def _last_project_link_variant(body: str, project_url: str) -> re.Match[str] | None:
+    bare = project_url.removeprefix("https://")
+    spellings = [rf"(?:https?://)?(?:www\.)?{re.escape(bare)}"]
+    if bare.startswith("t.me/") and re.fullmatch(r"[A-Za-z]\w{4,31}", bare[5:]):
+        spellings.append(rf"@{re.escape(bare[5:])}")
+    variant = re.compile(rf"(?<![\w@/.])(?:{'|'.join(spellings)}){_URL_END}", re.IGNORECASE)
+    matches = list(variant.finditer(body))
+    return matches[-1] if matches else None

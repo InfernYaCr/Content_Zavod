@@ -9,12 +9,13 @@ The Персона line shows the same value `/persona` shows (a Preset's title,
 a Custom Персона's fields via `format_custom_persona`), so the summary can't
 drift from what the dedicated command reports. A short note next to each
 value states what it drives, so the Owner doesn't need to remember three
-separate view commands to get the full picture.
+separate view commands to get the full picture. Проект (#98) is the fourth
+line, rendered by the same `project_detail_text` `/project` uses.
 """
 
 from __future__ import annotations
 
-from ..settings import SettingsReader, persona_detail_text
+from ..settings import SettingsReader, persona_detail_text, project_detail_text
 from .gateway import TelegramGateway
 
 
@@ -28,5 +29,6 @@ async def handle_settings_command(
         "Персона (аутлайн/черновик Статьи):",
         persona_detail_text(current.persona, current.custom_persona),
         f"Направления: {', '.join(current.directions)} (Wordstat-подбор растущих запросов)",
+        f"Проект: {project_detail_text(current.project)} (CTA в конце Статьи)",
     ]
     await gateway.send_notice(chat_id, "\n".join(lines))

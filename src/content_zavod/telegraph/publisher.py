@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from ..domain import ArticleId, ArticleView
+from ..settings import SettingsReader
 from .client import TelegraphClient, TelegraphError
 from .nodes import FooterLink, Node, fit_content, footer_nodes, markdown_to_nodes
 
@@ -118,6 +119,19 @@ class TelegraphPublisher:
                 logger.info("Created a Telegraph account and stored its token")
             self._access_token = stored
             return stored
+
+
+def project_footer(settings: SettingsReader) -> FooterLinkSource:
+    """The Owner's Проект (#98) as the page's closing link, re-read on every publish so a
+    `/set_project` change reaches the next published Версия; `None` while no Проект is set."""
+
+    async def footer() -> FooterLink | None:
+        project = (await settings.read()).project
+        if project is None:
+            return None
+        return FooterLink(text=project.description, url=project.url)
+
+    return footer
 
 
 def _page_title(title: str) -> str:

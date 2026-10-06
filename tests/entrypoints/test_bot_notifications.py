@@ -8,7 +8,12 @@ render) worth a fast unit test.
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from content_zavod.domain import (
+    ArticleSummary,
     ArticleView,
     GeneratedVersion,
     PlanId,
@@ -112,6 +117,9 @@ class FakeArticle:
             id=article_id, plan_item_id="item-1", title="T", platform="P", content=b"c"
         )
 
+    async def get_summary(self, article_id: str) -> ArticleSummary:
+        return ArticleSummary(id=article_id, title="Topic A", platform="vc", status="error")
+
     async def get_plan_id(self, article_id: str) -> PlanId:
         return self.plan_id_for_article
 
@@ -170,9 +178,34 @@ async def test_failed_job_sends_error_with_retry_button() -> None:
 
     await handle(JobResult(job_id=1, job_type="generate_plan", status="failed", error="boom"))
 
-    assert gateway.sent_errors_with_retry == [
-        (42, "Задача generate_plan завершилась ошибкой: boom", 1)
-    ]
+    assert gateway.sent_errors_with_retry == [(42, "Не удалось составить План.", 1)]
+
+
+@pytest.mark.parametrize(
+    ("job_type", "text"),
+    [
+        ("regenerate_topic", "Не удалось перегенерировать Тему."),
+        ("generate_article", "Не удалось написать Статью для VC.ru: «Topic A»"),
+        ("regenerate_article", "Не удалось переписать Статью для VC.ru: «Topic A»"),
+        ("generate_cover", "Не удалось сгенерировать обложку для Темы «Topic A»"),
+        ("some_future_job", "Не удалось выполнить задачу."),
+    ],
+)
+async def test_failed_job_text_is_russian_and_keeps_job_type_and_error_out_of_chat(
+    job_type: str, text: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#89: the chat gets «Не удалось …» by job type, naming the Тема and Площадка where
+    known; `job_type`, the Площадка key and the exception text only go to the log."""
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    with caplog.at_level(logging.WARNING):
+        await handle(
+            JobResult(job_id=5, job_type=job_type, status="failed", error="RuntimeError: boom")
+        )
+
+    assert gateway.sent_errors_with_retry == [(42, text, 5)]
+    assert "RuntimeError: boom" in caplog.text
 
 
 async def test_failed_article_job_marks_article_error_before_notifying() -> None:
@@ -247,8 +280,53 @@ async def test_redelivered_generate_plan_result_edits_the_canonical_message_inst
     assert (edited_chat_id, edited_message_id) == (42, 1)
 
 
-async def test_regenerate_topic_applies_and_notifies() -> None:
+async def test_empty_generate_plan_result_creates_no_plan_and_explains_why() -> None:
+    """#84: no Темы came out - no empty Plan (just an "Утвердить всё" that starts nothing),
+    but a notice saying what happened and what to do."""
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(
+        JobResult(
+            job_id=1,
+            job_type="generate_plan",
+            status="done",
+            output={
+                "week_label": "2026-W41",
+                "topics": [],
+                "empty_reason": "no_growing_directions",
+            },
+        )
+    )
+
+    assert plan.added_topics == []
+    assert gateway.sent_plans == [] and gateway.edited_plans == []
+    ((chat_id, text),) = gateway.sent_notices
+    assert chat_id == 42
+    assert "5–11 октября 2026" in text and "не создан" in text
+    assert "/topic" in text and "Направления" in text
+
+
+async def test_empty_generate_plan_result_of_only_recent_repeats_says_so() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(
+        JobResult(
+            job_id=1,
+            job_type="generate_plan",
+            status="done",
+            output={"week_label": "2026-W41", "topics": [], "empty_reason": "all_recently_used"},
+        )
+    )
+
+    assert "недавно уже были" in gateway.sent_notices[0][1]
+
+
+async def test_regenerate_topic_applies_and_redraws_the_plan_message() -> None:
+    """#81: the regenerated title appears in the Plan's canonical message, no separate notice."""
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
     handle = _make_notification_handler(plan, article, gateway, 42)
 
     await handle(
@@ -263,7 +341,8 @@ async def test_regenerate_topic_applies_and_notifies() -> None:
     assert plan.applied_regenerations == [
         ("item-1", TopicDraft(title="New", summary="s", keywords=["k"]))
     ]
-    assert gateway.sent_notices == [(42, "Тема обновлена: New")]
+    assert gateway.sent_notices == []
+    assert [(c, m, view.id) for c, m, view in gateway.edited_plans] == [(-100, 5, "plan-1")]
 
 
 async def test_generate_article_records_version_and_sends_article() -> None:
@@ -471,7 +550,7 @@ async def test_failed_generate_cover_within_open_batch_still_advances_progress()
     assert plan.recorded_generation_progress_calls == ["plan-1"]
     assert gateway.edited_generation_progress == [(42, 7, 9, 9)]
     assert gateway.sent_errors_with_retry == [
-        (42, "Задача generate_cover завершилась ошибкой: boom", 3)
+        (42, "Не удалось сгенерировать обложку для Темы «Topic A»", 3)
     ]
 
 

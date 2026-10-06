@@ -13,10 +13,16 @@ from docx.text.paragraph import Paragraph
 
 from .types import ArticleFormat, ArticleView
 
+_MAX_SLUG_LENGTH = 60
+_PLATFORM_FILENAME_LABELS = {"zen": "dzen", "vc": "vc"}
+
 
 def build_export_filename(title: str, platform: str, article_format: ArticleFormat) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "article"
-    return f"{slug}-{platform}.{article_format}"
+    """Slug keeps any Unicode letter/digit - Темы are titled in Russian, and an ASCII-only
+    slug collapsed every file to `article-zen.docx` (#87). Telegram accepts UTF-8 filenames."""
+    slug = re.sub(r"[\W_]+", "-", title.lower()).strip("-")[:_MAX_SLUG_LENGTH].rstrip("-")
+    label = _PLATFORM_FILENAME_LABELS.get(platform, platform)
+    return f"{slug or 'article'}-{label}.{article_format}"
 
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")

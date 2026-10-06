@@ -14,6 +14,13 @@ already does for the automatic path (ADR-0006: "дедуп по истории �
 применим" applies to both inputs); unlike the automatic path's silent
 skip-and-try-next-keyword, a rejected manual proposal gets an explicit reply,
 since this is an interactive command rather than a batch job.
+
+The Plan message is always delivered to the team chat (`team_chat_id`, i.e.
+`TELEGRAM_NOTIFY_CHAT_ID`), never to the chat /topic was typed in (#82): the
+first delivery records the chat it sent to as the Plan's canonical place, so
+a /topic from a private chat used to move the whole week's Plan out of the
+team's sight. Called from anywhere else, the caller just gets a short
+confirmation pointing at the team chat.
 """
 
 from __future__ import annotations
@@ -48,6 +55,7 @@ async def handle_topic_command(
     chat_id: int,
     text: str,
     *,
+    team_chat_id: int,
     tz: ZoneInfo,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> None:
@@ -66,4 +74,12 @@ async def handle_topic_command(
     week_label = week_label_for(current_time, tz)
     plan_id = await plan.add_topics(week_label, [TopicDraft(title=title)])
     view = await plan.get(plan_id)
-    await deliver_plan_message(plan, gateway, chat_id, view)
+    sent_new = await deliver_plan_message(plan, gateway, team_chat_id, view)
+    if chat_id != team_chat_id:
+        await gateway.send_notice(chat_id, "Тема добавлена в План — он в чате команды.")
+    elif not sent_new:
+        # The Plan message was edited in place, maybe far up the chat - without a reply the
+        # /topic would look like it did nothing.
+        await gateway.send_notice(
+            chat_id, "Тема добавлена в План — сообщение Плана выше обновлено."
+        )

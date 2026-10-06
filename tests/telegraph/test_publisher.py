@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 
 from content_zavod.domain import ArticleId, ArticleView, PlanItemId
+from content_zavod.settings import Project
 from content_zavod.telegraph import (
     ACCESS_TOKEN_SETTING_KEY,
     FooterLink,
     TelegraphError,
     TelegraphPage,
     TelegraphPublisher,
+    page_url,
+    project_footer,
 )
 from content_zavod.telegraph.nodes import Node
 
@@ -211,3 +215,24 @@ async def test_overlong_title_is_cut_to_telegraph_limit() -> None:
     title = telegraph.created[0][1]
     assert len(title) == 256
     assert title.endswith("…")
+
+
+class FakeSettingsReader:
+    def __init__(self, project: Project | None) -> None:
+        self.project = project
+
+    async def read(self) -> SimpleNamespace:
+        return SimpleNamespace(project=self.project)
+
+
+async def test_project_footer_links_the_owners_project_and_follows_changes() -> None:
+    reader = FakeSettingsReader(Project(url="https://t.me/channel", description="Наш канал"))
+    footer = project_footer(reader)
+
+    assert await footer() == FooterLink(text="Наш канал", url="https://t.me/channel")
+    reader.project = None
+    assert await footer() is None
+
+
+def test_page_url_is_built_from_the_stored_path() -> None:
+    assert page_url("Statya-10-07") == "https://telegra.ph/Statya-10-07"

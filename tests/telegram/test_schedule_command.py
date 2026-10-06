@@ -53,7 +53,7 @@ async def test_schedule_command_reports_defaults_when_unset() -> None:
 
     await handle_schedule_command(settings_store, gateway, chat_id=1)
 
-    assert gateway.sent_notices == [(1, "Текущее расписание: mon 09:00")]
+    assert gateway.sent_notices == [(1, "Текущее расписание: понедельник 09:00")]
 
 
 @pytest.mark.asyncio
@@ -63,7 +63,7 @@ async def test_schedule_command_reports_persisted_override() -> None:
 
     await handle_schedule_command(settings_store, gateway, chat_id=1)
 
-    assert gateway.sent_notices == [(1, "Текущее расписание: fri 10:30")]
+    assert gateway.sent_notices == [(1, "Текущее расписание: пятница 10:30")]
 
 
 @pytest.mark.asyncio
@@ -79,7 +79,35 @@ async def test_set_schedule_persists_and_reschedules() -> None:
     job_id, trigger = scheduler.rescheduled[0]
     assert job_id == "weekly_plan_trigger"
     assert isinstance(trigger, CronTrigger)
-    assert gateway.sent_notices == [(1, "Расписание изменено: tue 10:30")]
+    assert gateway.sent_notices == [(1, "Расписание изменено: вторник 10:30")]
+
+
+@pytest.mark.parametrize("day_text", ["ср", "СР", "среда", "WED"])
+@pytest.mark.asyncio
+async def test_set_schedule_accepts_russian_day_and_stores_the_code(day_text: str) -> None:
+    """Russian short/full day names are accepted alongside the English code; the persisted
+    value is always the code CronTrigger understands (#89)."""
+    settings_store, scheduler, gateway = FakeSettingsStore(), FakeScheduler(), FakeGateway()
+
+    await handle_set_schedule_command(
+        settings_store, scheduler, gateway, chat_id=1, args=f"{day_text} 08:00", tz=MOSCOW
+    )
+
+    assert settings_store.set_calls == [("wed", 8, 0)]
+    assert gateway.sent_notices == [(1, "Расписание изменено: среда 08:00")]
+
+
+@pytest.mark.asyncio
+async def test_invalid_day_error_lists_russian_days() -> None:
+    settings_store, scheduler, gateway = FakeSettingsStore(), FakeScheduler(), FakeGateway()
+
+    await handle_set_schedule_command(
+        settings_store, scheduler, gateway, chat_id=1, args="funday 10:30", tz=MOSCOW
+    )
+
+    assert gateway.sent_errors == [
+        (1, "Неизвестный день «funday». Допустимые: пн, вт, ср, чт, пт, сб, вс")
+    ]
 
 
 @pytest.mark.asyncio
