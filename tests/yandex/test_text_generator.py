@@ -1,7 +1,12 @@
 import pytest
 
 from content_zavod.yandex.credentials import StaticApiKeyProvider
-from content_zavod.yandex.errors import AuthError, ContentPolicyError, RateLimited
+from content_zavod.yandex.errors import (
+    AuthError,
+    ContentPolicyError,
+    RateLimited,
+    TruncatedCompletion,
+)
 from content_zavod.yandex.http import HttpResponse
 from content_zavod.yandex.text_generator import COMPLETION_URL, Message, TextGenerator
 
@@ -39,6 +44,63 @@ async def test_complete_returns_text_on_success() -> None:
     assert headers == {"Authorization": "Api-Key key"}
     assert body["messages"] == [{"role": "user", "text": "hi"}]
     assert body["completionOptions"]["temperature"] == 0.7
+    assert body["completionOptions"]["maxTokens"] == "8000"
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_is_configurable() -> None:
+    transport = FakeHttpTransport()
+    transport.queue_post(COMPLETION_URL, _success_response("hi"))
+    generator = _make_generator(transport, max_tokens=1234)
+
+    await generator.complete([Message(role="user", text="hi")])
+
+    _, _, body = transport.post_calls[0]
+    assert body["completionOptions"]["maxTokens"] == "1234"
+
+
+def _response_with_status(status: str) -> HttpResponse:
+    return HttpResponse(
+        status=200,
+        body={
+            "result": {
+                "alternatives": [
+                    {"message": {"role": "assistant", "text": "cut mid-sen"}, "status": status}
+                ]
+            }
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_truncated_response_raises_instead_of_returning_partial_text() -> None:
+    transport = FakeHttpTransport()
+    transport.queue_post(
+        COMPLETION_URL, _response_with_status("ALTERNATIVE_STATUS_TRUNCATED_FINAL")
+    )
+    generator = _make_generator(transport)
+
+    with pytest.raises(TruncatedCompletion):
+        await generator.complete_with_usage([Message(role="user", text="hi")])
+
+
+@pytest.mark.asyncio
+async def test_content_filtered_response_raises_content_policy_error() -> None:
+    transport = FakeHttpTransport()
+    transport.queue_post(COMPLETION_URL, _response_with_status("ALTERNATIVE_STATUS_CONTENT_FILTER"))
+    generator = _make_generator(transport)
+
+    with pytest.raises(ContentPolicyError):
+        await generator.complete([Message(role="user", text="hi")])
+
+
+@pytest.mark.asyncio
+async def test_final_status_returns_the_text() -> None:
+    transport = FakeHttpTransport()
+    transport.queue_post(COMPLETION_URL, _response_with_status("ALTERNATIVE_STATUS_FINAL"))
+    generator = _make_generator(transport)
+
+    assert await generator.complete([Message(role="user", text="hi")]) == "cut mid-sen"
 
 
 @pytest.mark.asyncio

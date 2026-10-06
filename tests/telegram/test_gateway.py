@@ -351,7 +351,7 @@ async def test_send_article_document_sends_docx_with_built_filename_and_caption(
     chat_id, document, caption = bot.sent_documents[0]
     assert chat_id == 42
     assert isinstance(document, BufferedInputFile)
-    assert document.filename == "best-niche-guide-zen.docx"
+    assert document.filename == "best-niche-guide-dzen.docx"
     assert caption == "📄 Best Niche Guide (Дзен)"
 
 
@@ -364,7 +364,7 @@ async def test_send_article_document_sends_md_as_plain_text_content() -> None:
 
     assert len(bot.sent_documents) == 1
     _, document, _ = bot.sent_documents[0]
-    assert document.filename == "best-niche-guide-zen.md"
+    assert document.filename == "best-niche-guide-dzen.md"
     assert document.data == b"Hello, world."
 
 
