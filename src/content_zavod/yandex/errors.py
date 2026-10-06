@@ -21,3 +21,8 @@ class AuthError(YandexError):
 
 class ContentPolicyError(YandexError):
     """The API refused to generate content due to its content policy."""
+
+
+class TruncatedCompletion(YandexError):
+    """The completion hit `maxTokens` before finishing - the text is cut off mid-way and must
+    not be stored as a finished Версия (#93)."""

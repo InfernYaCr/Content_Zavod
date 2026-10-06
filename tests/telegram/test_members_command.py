@@ -45,6 +45,26 @@ async def test_lists_every_member_with_a_remove_button() -> None:
 
 
 @pytest.mark.asyncio
+async def test_shows_username_and_russian_role_falling_back_to_the_id() -> None:
+    """#90: «кто есть кто» - @username when known, else the telegram id, and the Role in
+    Russian rather than its key."""
+    members = [
+        MemberView(telegram_id=1, role="owner"),
+        MemberView(telegram_id=2, role="content_manager", username="alice"),
+    ]
+    membership, gateway = FakeMembership(members), FakeGateway()
+
+    await handle_members_command(membership, gateway, chat_id=99)
+
+    _, text, keyboard = gateway.sent_messages[0]
+    assert text.splitlines()[1:] == ["1 — Владелец", "@alice — Контент-менеджер"]
+    assert [row[0].text for row in keyboard.inline_keyboard] == [
+        "❌ Удалить 1",
+        "❌ Удалить @alice",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_empty_member_list_sends_a_notice_instead_of_an_empty_keyboard() -> None:
     membership, gateway = FakeMembership([]), FakeGateway()
 

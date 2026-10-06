@@ -22,6 +22,7 @@ from .callback_codec import (
     SimpleAction,
     encode_callback_data,
 )
+from .texts import article_status, plan_status, platform_name, topic_status
 from .types import (
     ArticleFormat,
     ArticleSummary,
@@ -93,14 +94,6 @@ def format_week_range(week_label: str) -> str:
 
 # A Тема's status as the Контент-менеджер reads it in the Plan message (#81) - the raw
 # `plan_items.status` keys never reach the chat.
-_PLAN_ITEM_STATUS_TEXT = {
-    "pending_review": "на согласовании",
-    "approved": "утверждена",
-    "rejected": "убрана",
-    "archived": "в архиве",
-}
-
-
 def render_plan_text(plan: PlanView, *, page: int = 0) -> str:
     page_count = total_pages(len(plan.items))
     start = page * ITEMS_PER_PAGE
@@ -112,7 +105,7 @@ def render_plan_text(plan: PlanView, *, page: int = 0) -> str:
     # item number always refers to the same item regardless of which page shows it.
     for index, item in enumerate(plan.items, start=1):
         if start < index <= start + ITEMS_PER_PAGE:
-            status = _PLAN_ITEM_STATUS_TEXT.get(item.status, item.status)
+            status = topic_status(item.status)
             lines.append(f"{index}. {item.title} — {status}")
     return "\n".join(lines)
 
@@ -194,7 +187,7 @@ def render_history_weeks_text(
         lines.append("Планов пока нет.")
         return "\n".join(lines)
     for item in plans_page:
-        lines.append(f"{format_week_range(item.week_label)} — {item.status}")
+        lines.append(f"{format_week_range(item.week_label)} — {plan_status(item.status)}")
     return "\n".join(lines)
 
 
@@ -204,7 +197,7 @@ def build_history_weeks_keyboard(
     rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(
-                text=f"{format_week_range(item.week_label)} — {item.status}",
+                text=f"{format_week_range(item.week_label)} — {plan_status(item.status)}",
                 callback_data=encode_callback_data(HistoryWeek(item.id, page)),
             )
         ]
@@ -262,12 +255,14 @@ def _export_button_row(
 def render_history_articles_text(
     plan_summary: PlanSummary, articles: Sequence[ArticleSummary]
 ) -> str:
-    lines = [f"📄 Статьи: {format_week_range(plan_summary.week_label)} ({plan_summary.status})", ""]
+    week = format_week_range(plan_summary.week_label)
+    lines = [f"📄 Статьи: {week} ({plan_status(plan_summary.status)})", ""]
     if not articles:
         lines.append("Статей пока нет.")
         return "\n".join(lines)
     for index, item in enumerate(articles, start=1):
-        lines.append(f"{index}. {item.title} ({item.platform}) — {item.status}")
+        platform = platform_name(item.platform)
+        lines.append(f"{index}. {item.title} ({platform}) — {article_status(item.status)}")
     return "\n".join(lines)
 
 
@@ -319,7 +314,7 @@ def _format_usage(tokens: int | None, cost: float | None) -> str:
 def render_history_versions_text(
     article: ArticleSummary, versions: Sequence[ArticleVersionSummary]
 ) -> str:
-    lines = [f"🕓 Версии: {article.title} ({article.platform})", ""]
+    lines = [f"🕓 Версии: {article.title} ({platform_name(article.platform)})", ""]
     if not versions:
         lines.append("Версий пока нет.")
         return "\n".join(lines)
@@ -365,7 +360,7 @@ _TRUNCATION_NOTICE = "\n\n[…обрезано, версия длиннее ли
 
 def render_history_version_text(article: ArticleSummary, version: ArticleVersionView) -> str:
     header = (
-        f"🕓 {article.title} ({article.platform})\n"
+        f"🕓 {article.title} ({platform_name(article.platform)})\n"
         f"{version.created_at:%d.%m.%Y %H:%M} — {version.model}, "
         f"{_format_usage(version.tokens, version.cost)}\n\n"
     )
@@ -488,21 +483,49 @@ def build_join_request_keyboard(join_request_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def build_members_keyboard(members: list[tuple[int, str]]) -> InlineKeyboardMarkup:
-    """One "Удалить" row per (telegram_id, role) member, for the /members command."""
-    rows = [
-        [
-            InlineKeyboardButton(
-                text=f"❌ Удалить {telegram_id} ({role})",
-                callback_data=encode_callback_data(SimpleAction("remove_member", str(telegram_id))),
+def build_members_keyboard(
+    members: list[tuple[int, str]], *, confirm_id: int | None = None
+) -> InlineKeyboardMarkup:
+    """One "Удалить" row per (telegram_id, label) member, for the /members command. The
+    `confirm_id` member's row asks «Да, удалить / Отмена» instead (#90)."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for telegram_id, label in members:
+        if telegram_id == confirm_id:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"✅ Да, удалить {label}",
+                        callback_data=encode_callback_data(
+                            SimpleAction("confirm_remove_member", str(telegram_id))
+                        ),
+                    ),
+                    InlineKeyboardButton(
+                        text="↩️ Отмена",
+                        callback_data=encode_callback_data(
+                            SimpleAction("cancel_remove_member", str(telegram_id))
+                        ),
+                    ),
+                ]
             )
-        ]
-        for telegram_id, role in members
-    ]
+            continue
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"❌ Удалить {label}",
+                    callback_data=encode_callback_data(
+                        SimpleAction("remove_member", str(telegram_id))
+                    ),
+                )
+            ]
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_article_keyboard(article_id: str, plan_item_id: str) -> InlineKeyboardMarkup:
+def build_article_keyboard(
+    article_id: str, plan_item_id: str, *, exported: bool = False
+) -> InlineKeyboardMarkup:
+    """`exported` swaps ✅ for «✅ Готово» so the card shows it was accepted (#86); the button
+    keeps the same `approve` callback, which is idempotent."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             _export_button_row(article_id, docx_label="📄 .docx", md_label="📝 .md"),
@@ -514,7 +537,7 @@ def build_article_keyboard(article_id: str, plan_item_id: str) -> InlineKeyboard
                     ),
                 ),
                 InlineKeyboardButton(
-                    text="✅",
+                    text="✅ Готово" if exported else "✅",
                     callback_data=encode_callback_data(SimpleAction("approve", article_id)),
                 ),
             ],
@@ -697,9 +720,20 @@ class TelegramGateway:
         await self._bot.edit_message_text(chat_id, message_id, text)
 
     async def send_article_ready(self, chat_id: int, article: ArticleView) -> None:
-        text = f"📄 {article.title} ({article.platform})\nВыберите формат для скачивания:"
+        platform = platform_name(article.platform)
+        text = f"📄 {article.title} ({platform})\nВыберите формат для скачивания:"
         await self._bot.send_message(
             chat_id, text, reply_markup=build_article_keyboard(article.id, article.plan_item_id)
+        )
+
+    async def mark_article_card_exported(
+        self, chat_id: int, message_id: int, article: ArticleView
+    ) -> None:
+        """Redraws an Article card's buttons in place after ✅, text untouched (#86)."""
+        await self._bot.edit_message_reply_markup(
+            chat_id,
+            message_id,
+            reply_markup=build_article_keyboard(article.id, article.plan_item_id, exported=True),
         )
 
     async def send_article_document(
@@ -708,7 +742,7 @@ class TelegramGateway:
         filename = build_export_filename(article.title, article.platform, article_format)
         content = build_export_document(article, article_format)
         document = BufferedInputFile(content, filename=filename)
-        caption = f"📄 {article.title} ({article.platform})"
+        caption = f"📄 {article.title} ({platform_name(article.platform)})"
         await self._bot.send_document(chat_id, document, caption=caption)
 
     async def send_cover(self, chat_id: int, image: bytes, mime_type: str, title: str) -> None:

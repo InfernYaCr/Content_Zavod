@@ -17,12 +17,13 @@ for command handlers in `entrypoints/bot.py`.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Protocol, assert_never
 
 from aiogram.types import CallbackQuery
 
-from ..access import AccessError, Membership, Role, require_role
+from ..access import AccessError, CannotRemoveSelf, MemberNotFound, Membership, Role, require_role
 from ..domain import PLATFORMS, Article, DomainError, Plan
 from ..job_queue import JobId, JobQueue
 from ..settings import SettingsService
@@ -49,9 +50,13 @@ from .history_command import (
     handle_history_week,
 )
 from .join_request_flow import JoinRequestFlow
+from .members_command import redraw_members
 from .persona_command import handle_persona_template_callback
 from .plan_review import PlanReview
+from .texts import error_alert_text
 from .types import ArticleId, PlanId, PlanItemId
+
+logger = logging.getLogger(__name__)
 
 ACCESS_DENIED_TEXT = "Доступ запрещён. Обратитесь к владельцу бота, чтобы получить роль."
 OWNER_ONLY_TEXT = "Эта команда доступна только владельцу."
@@ -157,14 +162,21 @@ class CallbackDispatcher:
     async def dispatch(self, callback_input: CallbackInput, answer: CallbackAnswerer) -> None:
         payload = callback_input.payload
         if isinstance(payload, SimpleAction) and payload.action == "request_access":
+            # An existing member's заявка would demote them on approval (`add_member` overwrites
+            # the Role) - possibly the last Владелец (#90).
+            if await self._membership.role_for(callback_input.user_id) is not None:
+                await answer("У вас уже есть доступ.")
+                return
             await answer()
-            await self._join_request_flow.request_access(
+            sent = await self._join_request_flow.request_access(
                 callback_input.user_id, callback_input.username
             )
             await self._gateway.edit_notice(
                 callback_input.chat_id,
                 callback_input.message_id,
-                "Заявка отправлена. Ожидайте одобрения владельца.",
+                "Заявка отправлена. Ожидайте одобрения владельца."
+                if sent
+                else "Заявка уже отправлена. Ожидайте одобрения владельца.",
             )
             return
 
@@ -174,7 +186,9 @@ class CallbackDispatcher:
         try:
             await self._dispatch_gated(callback_input, payload, role, deny_text, answer)
         except (DomainError, AccessError) as exc:
-            await answer(str(exc), show_alert=True)
+            # Russian alert by error class (#89); the English technical text only goes to the log.
+            logger.info("Callback %r refused: %s", payload, exc)
+            await answer(error_alert_text(exc), show_alert=True)
 
     async def _authorized(
         self, action: Action, role: Role | None, deny_text: str, answer: CallbackAnswerer
@@ -218,8 +232,31 @@ class CallbackDispatcher:
             case SimpleAction(action="remove_member", id_=id_):
                 if not await self._authorized("remove_member", role, deny_text, answer):
                     return
+                if int(id_) == user_id:
+                    raise CannotRemoveSelf()  # refuse up front rather than after «Да» (#90)
                 await answer()
-                await self._membership.remove_member(int(id_))
+                # Ask first (#90): redraw the list with this member's row as «Да / Отмена».
+                await redraw_members(
+                    self._membership, self._bot_client, chat_id, message_id, confirm_id=int(id_)
+                )
+            case SimpleAction(action="confirm_remove_member", id_=id_):
+                if not await self._authorized("confirm_remove_member", role, deny_text, answer):
+                    return
+                # Remove first, so a refusal (self / last Владелец) is the only, alerting answer.
+                try:
+                    await self._membership.remove_member(int(id_), removed_by=user_id)
+                except MemberNotFound:
+                    # Another Owner already removed them: replace the stale «Да / Отмена» row,
+                    # then let the generic handler alert as usual.
+                    await redraw_members(self._membership, self._bot_client, chat_id, message_id)
+                    raise
+                await answer("Участник удалён.")
+                await redraw_members(self._membership, self._bot_client, chat_id, message_id)
+            case SimpleAction(action="cancel_remove_member"):
+                if not await self._authorized("cancel_remove_member", role, deny_text, answer):
+                    return
+                await answer()
+                await redraw_members(self._membership, self._bot_client, chat_id, message_id)
             case SimpleAction(action="persona_template", id_=id_):
                 if not await self._authorized("persona_template", role, deny_text, answer):
                     return
@@ -289,9 +326,13 @@ class CallbackDispatcher:
             case SimpleAction(action="approve", id_=id_):
                 if not await self._authorized("approve", role, deny_text, answer):
                     return
-                await answer()
                 # Accepting a ready Статья: no comment-wait, just the transition to "exported".
+                # Transition first, so a refusal is the callback's only (alerting) answer; then
+                # confirm it and redraw the card's ✅ as «✅ Готово» (#86).
                 await self._article.mark_exported(ArticleId(id_))
+                await answer("Отмечено как готовое")
+                view = await self._article.get(ArticleId(id_))
+                await self._gateway.mark_article_card_exported(chat_id, message_id, view)
             case SimpleAction(action="request_cover", id_=id_):
                 if not await self._authorized("request_cover", role, deny_text, answer):
                     return
