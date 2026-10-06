@@ -169,6 +169,7 @@ class FakePlan:
 class FakeArticle:
     def __init__(self) -> None:
         self.mark_exported_calls: list[ArticleId] = []
+        self.telegraph_path: str | None = None
         self.requested_generations: list[tuple] = []
         self._view = ArticleView(
             id=ArticleId("article-1"),
@@ -189,6 +190,9 @@ class FakeArticle:
 
     async def mark_exported(self, article_id: ArticleId) -> None:
         self.mark_exported_calls.append(article_id)
+
+    async def get_telegraph_path(self, article_id: ArticleId) -> str | None:
+        return self.telegraph_path
 
     async def request_generation(
         self, plan_id, plan_item_id, title, summary, keywords, platform
@@ -673,6 +677,17 @@ async def test_approve_redraws_the_card_keyboard_with_the_done_state(f: Fixtures
     labels = [button.text for row in keyboard.inline_keyboard for button in row]
     assert "✅ Готово" in labels
     assert "✅" not in labels
+
+
+async def test_approve_redraw_keeps_the_read_button(f: Fixtures) -> None:
+    """#92: the redrawn card still opens the Статья's Страница для чтения."""
+    f.article.telegraph_path = "Statya-10-07"
+
+    await dispatch(f, SimpleAction("approve", "article-1"))
+
+    _, _, _, keyboard = f.bot.edited_messages[-1]
+    urls = [button.url for row in keyboard.inline_keyboard for button in row if button.url]
+    assert urls == ["https://telegra.ph/Statya-10-07"]
 
 
 async def test_approve_refusal_is_the_only_answer(f: Fixtures) -> None:

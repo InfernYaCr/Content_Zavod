@@ -61,6 +61,9 @@ class Settings:
     # #94: `YANDEX_WEB_SEARCH=off` runs research in "no evidence" mode without calling the
     # Search API (e.g. while the service account lacks the web search role).
     web_search_enabled: bool = True
+    # Optional (#92): without it the bot creates a Telegraph account on first use and keeps
+    # its token in owner_settings.
+    telegraph_access_token: str | None = None
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -102,6 +105,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         ),
         timezone=timezone,
         web_search_enabled=_flag(env, "YANDEX_WEB_SEARCH", default=True),
+        telegraph_access_token=env.get("TELEGRAPH_ACCESS_TOKEN") or None,
     )
 
 

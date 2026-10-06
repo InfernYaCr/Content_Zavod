@@ -126,3 +126,9 @@ def test_load_settings_parses_web_search_switch_and_pricing() -> None:
 def test_load_settings_rejects_a_malformed_web_search_switch() -> None:
     with pytest.raises(ConfigError):
         load_settings({**_BASE_ENV, "YANDEX_WEB_SEARCH": "maybe"})
+
+
+def test_telegraph_access_token_is_optional() -> None:
+    assert load_settings(_BASE_ENV).telegraph_access_token is None
+    env = {**_BASE_ENV, "TELEGRAPH_ACCESS_TOKEN": "tg-token"}
+    assert load_settings(env).telegraph_access_token == "tg-token"
