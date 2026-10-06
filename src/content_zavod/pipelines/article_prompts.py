@@ -75,7 +75,8 @@ def _with_comment_rule(task: str, comment: str | None) -> str:
         return task
     return (
         f"{task} Поле editor_comment в INPUT_DATA — обязательные правки редактора к "
-        "содержанию и форме статьи: выполни их, не нарушая правил выше."
+        "содержанию и форме статьи: выполни их, не нарушая остальных правил этого "
+        "system-сообщения, включая PERSONA и PLATFORM_PROFILE."
     )
 
 
