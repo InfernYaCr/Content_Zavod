@@ -2,9 +2,9 @@
 
 Status transitions: `queued` -> `generating`* -> `ready` <-> `regenerating` ->
 `exported` -> `regenerating` (✅ doesn't lock a Статья, #86). (`generating` is
-a Job Handler concern, see #6 — this module only ever observes `queued` or the effect of `record_version`.) `record_version`
-always appends a new Версия rather than overwriting; `get`/`list_for_plan`
-serve the latest one. `mark_exported` and `request_regeneration` are
+a Job Handler concern, see #6 — this module only ever observes `queued` or the
+effect of `record_version`.) `record_version` always appends a new Версия
+rather than overwriting; `get`/`list_for_plan` serve the latest one. `mark_exported` and `request_regeneration` are
 idempotent on their target state so a retried Telegram callback is a no-op.
 """
 
