@@ -1,5 +1,9 @@
 from content_zavod.personas import platform_profile
-from content_zavod.pipelines.article_prompts import outline_messages, rewrite_messages
+from content_zavod.pipelines.article_prompts import (
+    draft_messages,
+    outline_messages,
+    rewrite_messages,
+)
 from content_zavod.settings import PERSONAS, CustomPersona
 
 
@@ -48,6 +52,31 @@ def test_custom_persona_block_omits_fields_the_owner_did_not_fill() -> None:
 
     persona_block = messages[0].text.split("PERSONA\n", 1)[1].split("\n\nPLATFORM_PROFILE", 1)[0]
     assert persona_block == "Название: Технооптимист\nРоль: фаундер\nТон: энергичный"
+
+
+def test_target_length_of_the_platform_is_in_outline_and_draft_rules() -> None:
+    profile = platform_profile("zen")
+    outline = outline_messages(
+        title="Тема",
+        summary="",
+        keywords=[],
+        previous_content=None,
+        comment=None,
+        persona=None,
+        custom_persona=None,
+        profile=profile,
+    )
+    draft = draft_messages(
+        title="Тема",
+        outline="аутлайн",
+        persona=None,
+        custom_persona=None,
+        profile=profile,
+    )
+
+    assert "4000–6000 знаков" in outline[0].text
+    assert "4000–6000 знаков" in draft[0].text
+    assert "6000–9000 знаков" in platform_profile("vc").target_length
 
 
 def test_vc_profile_and_persona_are_present_in_rewrite_rules() -> None:

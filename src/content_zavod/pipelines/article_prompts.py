@@ -43,6 +43,7 @@ def _platform_block(profile: PlatformProfile) -> str:
             f"Аудитория: {profile.audience}",
             f"Открытие: {profile.opening}",
             f"Структура: {profile.structure}",
+            f"Объём готовой статьи: {profile.target_length}",
             f"Evidence: {profile.evidence_policy}",
             f"Терминология: {profile.terminology}",
             f"CTA: {profile.cta}",

@@ -53,9 +53,9 @@ _SENSITIVE_KEYWORDS = frozenset(
 # Bumped whenever a step's prompt-building function changes shape, so a stored Версия's
 # provenance stays explainable without reading logs (#74).
 _PROMPT_VERSIONS = {
-    "outline": "outline-v1",
-    "draft": "draft-v1",
-    "rewrite": "rewrite-v1",
+    "outline": "outline-v2",
+    "draft": "draft-v2",
+    "rewrite": "rewrite-v2",
     "sources": "sources-v1",
 }
 
