@@ -12,7 +12,10 @@ writing anything - the command layer decides how to phrase the rejection,
 this module only decides whether a write happens. `set_persona` writes a
 Preset marker as-is (from a template button); any other input is parsed as
 `Роль: …`-marked Custom Персона lines (#51, ADR-0010) and stored as JSON -
-missing Роль raises `InvalidSettingValue` without writing anything.
+missing Роль raises `InvalidSettingValue` without writing anything. `set_project` (#98) takes
+`<ссылка> <описание>`, normalizes the link via `normalize_project_url` and
+raises `InvalidSettingValue("project_url")` for a link it can't accept, or
+`InvalidSettingValue("project")` when the link or description is missing.
 
 `plan_pipeline` re-exports the constants and `parse_directions` below as
 aliases so existing importers (`/settings`, `/set_niche`, `/set_directions`)
@@ -30,6 +33,13 @@ from .persona import (
     parse_custom_persona,
     resolve_persona,
     serialize_custom_persona,
+)
+from .project import (
+    PROJECT_KEY,
+    Project,
+    normalize_project_url,
+    parse_stored_project,
+    serialize_project,
 )
 from .values import OwnerSettings
 
@@ -71,6 +81,7 @@ class SettingsService:
         niche_raw = await self._store.get(NICHE_KEY)
         directions_raw = await self._store.get(DIRECTIONS_KEY)
         persona_raw = await self._store.get(PERSONA_KEY)
+        project_raw = await self._store.get(PROJECT_KEY)
         niche = niche_raw if niche_raw else DEFAULT_NICHE
         directions = parse_directions(directions_raw) if directions_raw else None
         persona, custom_persona = resolve_persona(persona_raw)
@@ -79,6 +90,7 @@ class SettingsService:
             directions=tuple(directions or DEFAULT_DIRECTIONS),
             persona=persona,
             custom_persona=custom_persona,
+            project=parse_stored_project(project_raw),
         )
 
     async def set_niche(self, value: str) -> str:
@@ -109,3 +121,15 @@ class SettingsService:
         serialized = serialize_custom_persona(custom_persona)
         await self._store.set(PERSONA_KEY, serialized)
         return serialized
+
+    async def set_project(self, value: str) -> Project:
+        parts = value.split(maxsplit=1)
+        if len(parts) < 2:
+            raise InvalidSettingValue("project")
+        try:
+            url = normalize_project_url(parts[0])
+        except ValueError as exc:
+            raise InvalidSettingValue("project_url") from exc
+        project = Project(url=url, description=parts[1].strip())
+        await self._store.set(PROJECT_KEY, serialize_project(project))
+        return project

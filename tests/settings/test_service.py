@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 
 from content_zavod.domain.errors import InvalidSettingValue
-from content_zavod.settings import PERSONAS, CustomPersona, SettingsService, persona_setting_value
+from content_zavod.settings import (
+    PERSONAS,
+    CustomPersona,
+    Project,
+    SettingsService,
+    persona_setting_value,
+)
 
 
 class InMemoryStore:
@@ -154,3 +160,52 @@ async def test_set_persona_rejects_empty_input_without_writing() -> None:
 
     with pytest.raises(InvalidSettingValue):
         await settings.set_persona("   ")
+
+
+async def test_project_is_unset_by_default() -> None:
+    current = await SettingsService(InMemoryStore()).read()
+
+    assert current.project is None
+
+
+@pytest.mark.parametrize(
+    ("link", "expected_url"),
+    [
+        ("@marketing_daily", "https://t.me/marketing_daily"),
+        ("t.me/marketing_daily", "https://t.me/marketing_daily"),
+        ("https://t.me/marketing_daily", "https://t.me/marketing_daily"),
+        ("https://example.ru/blog", "https://example.ru/blog"),
+    ],
+)
+async def test_set_project_normalizes_the_link_and_round_trips(link, expected_url) -> None:
+    settings = SettingsService(InMemoryStore())
+
+    saved = await settings.set_project(f"{link}  Разборы кейсов\nпо маркетингу ")
+    current = await settings.read()
+
+    assert saved == Project(url=expected_url, description="Разборы кейсов\nпо маркетингу")
+    assert current.project == saved
+
+
+@pytest.mark.parametrize(
+    "link", ["http://example.ru", "example.ru", "www.example.ru", "@abc", "@1channel", "https://"]
+)
+async def test_set_project_rejects_an_unusable_link_without_writing(link) -> None:
+    store = InMemoryStore()
+
+    with pytest.raises(InvalidSettingValue) as excinfo:
+        await SettingsService(store).set_project(f"{link} Канал о маркетинге")
+
+    assert excinfo.value.field == "project_url"
+    assert (await SettingsService(store).read()).project is None
+
+
+@pytest.mark.parametrize("value", ["", "   ", "@marketing_daily", "https://example.ru  "])
+async def test_set_project_requires_both_link_and_description(value) -> None:
+    store = InMemoryStore()
+
+    with pytest.raises(InvalidSettingValue) as excinfo:
+        await SettingsService(store).set_project(value)
+
+    assert excinfo.value.field == "project"
+    assert (await SettingsService(store).read()).project is None

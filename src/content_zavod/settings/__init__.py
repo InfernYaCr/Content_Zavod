@@ -15,6 +15,7 @@ from .persona import (
     resolve_persona,
     serialize_custom_persona,
 )
+from .project import PROJECT_KEY, Project, normalize_project_url, project_detail_text
 from .service import (
     DEFAULT_DIRECTIONS,
     DEFAULT_NICHE,
@@ -36,18 +37,22 @@ __all__ = [
     "PERSONAS",
     "PERSONA_KEY",
     "PERSONA_VALUE_PREFIX",
+    "PROJECT_KEY",
     "CustomPersona",
     "OwnerSettings",
     "Persona",
+    "Project",
     "SettingsReader",
     "SettingsService",
     "custom_persona_label",
     "format_custom_persona",
+    "normalize_project_url",
     "parse_custom_persona",
     "parse_directions",
     "persona_detail_text",
     "persona_display_title",
     "persona_setting_value",
+    "project_detail_text",
     "resolve_persona",
     "serialize_custom_persona",
 ]
