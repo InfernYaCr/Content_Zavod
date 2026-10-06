@@ -1,5 +1,5 @@
 from .credentials import CredentialProvider, IamTokenProvider, StaticApiKeyProvider
-from .errors import AuthError, ContentPolicyError, RateLimited, YandexError
+from .errors import AuthError, ContentPolicyError, RateLimited, TruncatedCompletion, YandexError
 from .http import HttpResponse, HttpTransport, HttpxTransport
 from .image_generator import GeneratedImage, ImageGenerator
 from .keyword_stats import KeywordDynamicsPoint, KeywordStat, KeywordStats
@@ -24,5 +24,6 @@ __all__ = [
     "RateLimited",
     "StaticApiKeyProvider",
     "TextGenerator",
+    "TruncatedCompletion",
     "YandexError",
 ]

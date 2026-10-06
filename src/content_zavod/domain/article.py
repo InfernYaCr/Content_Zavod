@@ -1,10 +1,10 @@
 """Article: Статья (one Площадка's rendering of a Тема) and its Версии.
 
 Status transitions: `queued` -> `generating`* -> `ready` <-> `regenerating` ->
-`exported`. (`generating` is a Job Handler concern, see #6 — this module only
-ever observes `queued` or the effect of `record_version`.) `record_version`
-always appends a new Версия rather than overwriting; `get`/`list_for_plan`
-serve the latest one. `mark_exported` and `request_regeneration` are
+`exported` -> `regenerating` (✅ doesn't lock a Статья, #86). (`generating` is
+a Job Handler concern, see #6 — this module only ever observes `queued` or the
+effect of `record_version`.) `record_version` always appends a new Версия
+rather than overwriting; `get`/`list_for_plan` serve the latest one. `mark_exported` and `request_regeneration` are
 idempotent on their target state so a retried Telegram callback is a no-op.
 """
 
@@ -30,7 +30,9 @@ from .types import (
     PlanItemId,
 )
 
-_REGENERABLE_STATUSES: frozenset[ArticleStatus] = frozenset({"ready", "error"})
+# `exported` stays regenerable (#86): the new Версия returns the Статья to `ready` via
+# `record_version`.
+_REGENERABLE_STATUSES: frozenset[ArticleStatus] = frozenset({"ready", "error", "exported"})
 
 GenerationResultApplication = Literal["applied", "already_applied", "stale"]
 
@@ -326,14 +328,17 @@ class Article:
                 )
 
     async def mark_exported(self, article_id: ArticleId) -> None:
-        status = await self._article_status(article_id)
-        if status == "exported":
-            return
-        if status != "ready":
-            raise ArticleNotReady(article_id)
-        await self._pool.execute(
-            "UPDATE articles SET status = 'exported', updated_at = now() WHERE id = $1", article_id
+        """The transition is conditional in SQL, so a regeneration requested between a status
+        read and this write can't be overwritten to `exported` (#86)."""
+        result = await self._pool.execute(
+            "UPDATE articles SET status = 'exported', updated_at = now() "
+            "WHERE id = $1 AND status = 'ready'",
+            article_id,
         )
+        if result == "UPDATE 1":
+            return
+        if await self._article_status(article_id) != "exported":
+            raise ArticleNotReady(article_id)
 
     async def _article_status(self, article_id: ArticleId) -> ArticleStatus:
         row = await self._pool.fetchrow("SELECT status FROM articles WHERE id = $1", article_id)

@@ -21,6 +21,8 @@ class PlatformProfile:
     terminology: str
     cta: str
     forbidden_patterns: tuple[str, ...]
+    # Target size of the finished Статья, so length isn't left to chance (#93).
+    target_length: str
 
 
 PLATFORM_PROFILES: Mapping[str, PlatformProfile] = {
@@ -34,6 +36,7 @@ PLATFORM_PROFILES: Mapping[str, PlatformProfile] = {
         "профессиональные термины объясняются при первом появлении",
         "мягкий и релевантный продолжению темы",
         ("обманный кликбейт", "искусственная сенсационность", "длинное вступление без пользы"),
+        "4000–6000 знаков с пробелами",
     ),
     "vc": PlatformProfile(
         "vc",
@@ -45,6 +48,7 @@ PLATFORM_PROFILES: Mapping[str, PlatformProfile] = {
         "профессиональный язык допустим, неизвестные сокращения расшифровываются",
         "предметный вопрос к опыту читателей или следующий практический шаг",
         ("рекламная статья без пользы", "успешный успех", "цифры без источника"),
+        "6000–9000 знаков с пробелами",
     ),
 }
 

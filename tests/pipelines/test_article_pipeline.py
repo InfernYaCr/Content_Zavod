@@ -1,6 +1,6 @@
 import pytest
 
-from content_zavod.domain import ArticleId, ArticleView
+from content_zavod.domain import ArticleId, ArticleView, PlanItemDetail, PlanItemId
 from content_zavod.job_queue import JobPartialFailure
 from content_zavod.pipelines.article_pipeline import (
     make_generate_article_handler,
@@ -45,6 +45,19 @@ class FakeArticleReader:
     async def get(self, article_id: ArticleId) -> ArticleView:
         self.requested.append(article_id)
         return self._view
+
+
+class FakePlanItemReader:
+    def __init__(self, summary: str = "", keywords: list[str] | None = None) -> None:
+        self._summary = summary
+        self._keywords = keywords or []
+        self.requested: list[PlanItemId] = []
+
+    async def get_item(self, plan_item_id: PlanItemId) -> PlanItemDetail:
+        self.requested.append(plan_item_id)
+        return PlanItemDetail(
+            id=plan_item_id, title="T", summary=self._summary, keywords=self._keywords
+        )
 
 
 class FakeOwnerSettingsStore:
@@ -210,7 +223,11 @@ async def test_regenerate_article_sources_facts_from_the_current_version_not_a_f
     )
     url_checker = FakeUrlReachabilityChecker(set())
     handler = make_regenerate_article_handler(
-        article_reader, text_generator, url_checker, SettingsService(FakeOwnerSettingsStore())
+        article_reader,
+        FakePlanItemReader(),
+        text_generator,
+        url_checker,
+        SettingsService(FakeOwnerSettingsStore()),
     )
 
     output = await handler({"article_id": "article-1", "comment": "shorter please"})
@@ -220,6 +237,53 @@ async def test_regenerate_article_sources_facts_from_the_current_version_not_a_f
     outline_user_prompt = text_generator.calls[0][1].text
     assert "old content" in outline_user_prompt
     assert "shorter please" in outline_user_prompt
+
+
+@pytest.mark.asyncio
+async def test_regenerate_article_carries_the_comment_and_topic_brief_through_every_step() -> None:
+    """#85: the editor's comment used to reach only outline and got lost by the final text;
+    the Тема's summary/keywords were dropped on regeneration altogether."""
+    view = ArticleView(
+        id="article-1", plan_item_id="item-1", title="Topic A", platform="zen", content=b"old"
+    )
+    item_reader = FakePlanItemReader(summary="обзор CRM для малого бизнеса", keywords=["crm"])
+    text_generator = ScriptedTextGenerator(
+        [_completion("outline"), _completion("draft"), _completion("new body"), _completion("")]
+    )
+    handler = make_regenerate_article_handler(
+        FakeArticleReader(view),
+        item_reader,
+        text_generator,
+        FakeUrlReachabilityChecker(set()),
+        SettingsService(FakeOwnerSettingsStore()),
+    )
+
+    await handler({"article_id": "article-1", "comment": "убери воду про CRM"})
+
+    assert item_reader.requested == ["item-1"]
+    outline_input = text_generator.calls[0][1].text
+    assert "обзор CRM для малого бизнеса" in outline_input
+    assert '"crm"' in outline_input
+    for outline_draft_rewrite in text_generator.calls[:3]:
+        system, user = outline_draft_rewrite
+        assert "убери воду про CRM" in user.text.split("INPUT_DATA", 1)[1]
+        assert "обязательные правки редактора" in system.text
+        assert "убери воду про CRM" not in system.text
+
+
+@pytest.mark.asyncio
+async def test_generate_article_without_a_comment_does_not_mention_editor_edits() -> None:
+    text_generator = ScriptedTextGenerator(
+        [_completion("outline"), _completion("draft"), _completion("rewrite"), _completion("")]
+    )
+    handler = make_generate_article_handler(
+        text_generator, FakeUrlReachabilityChecker(set()), SettingsService(FakeOwnerSettingsStore())
+    )
+
+    await handler({"article_id": "a", "title": "T", "platform": "vc"})
+
+    for system, _ in text_generator.calls[:3]:
+        assert "обязательные правки редактора" not in system.text
 
 
 @pytest.mark.asyncio
@@ -306,6 +370,7 @@ async def test_regeneration_comment_is_delimited_input_data() -> None:
     )
     handler = make_regenerate_article_handler(
         FakeArticleReader(view),
+        FakePlanItemReader(),
         text_generator,
         FakeUrlReachabilityChecker(set()),
         SettingsService(FakeOwnerSettingsStore(None)),

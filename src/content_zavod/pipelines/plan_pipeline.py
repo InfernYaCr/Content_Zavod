@@ -9,6 +9,10 @@ run so a change takes effect without a restart. `seed_keywords`
 remains an explicit override for callers (mainly tests) that want to bypass
 Настройки entirely; dedup against topic history is delegated to the
 caller-supplied `recent_topic_titles`.
+
+A Wordstat error for one Направление is skipped, but every one of them
+failing fails the Job (#84); "nothing grows" and "every draft was a recent
+repeat" are successes with empty `topics` and an `empty_reason` instead.
 """
 
 from __future__ import annotations
@@ -74,16 +78,25 @@ def make_generate_plan_handler(
         recorder = StepRecorder()
 
         growing: list[tuple[float, str]] = []
+        errors: list[Exception] = []
         for keyword in directions:
             try:
                 points = await keyword_stats.keyword_dynamics(
                     keyword, period="PERIOD_MONTHLY", from_date=from_date, to_date=to_date
                 )
-            except Exception:
+            except Exception as exc:
+                errors.append(exc)
                 continue
             growth = _growth_ratio(points)
             if growth is not None and growth > 1.0:
                 growing.append((growth, keyword))
+        if errors and len(errors) == len(directions):
+            # #84: not one Направление answered - an outage, not "nothing grows". Failing the
+            # Job gets it retried and, once exhausted, an error with "Повторить".
+            raise RuntimeError(
+                f"Wordstat недоступен: все запросы по Направлениям ({len(errors)}) "
+                f"завершились ошибкой: {errors[-1]}"
+            ) from errors[-1]
         growing.sort(key=lambda pair: pair[0], reverse=True)
 
         since = current_time - timedelta(days=RECENT_HISTORY_DAYS)
@@ -108,7 +121,11 @@ def make_generate_plan_handler(
         except Exception as exc:
             raise recorder.fail(exc) from exc
 
-        return {"week_label": week_label, "topics": topics, "steps": recorder.as_output()}
+        output = {"week_label": week_label, "topics": topics, "steps": recorder.as_output()}
+        if not topics:
+            # #84: still a success, but the notification needs to say why nothing came out.
+            output["empty_reason"] = "all_recently_used" if growing else "no_growing_directions"
+        return output
 
     return handle
 

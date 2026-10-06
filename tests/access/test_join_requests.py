@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from content_zavod.access import JoinRequestNotFound, JoinRequests, JoinRequestView
@@ -13,6 +15,38 @@ async def test_create_then_get_round_trip(join_requests: JoinRequests) -> None:
     assert view == JoinRequestView(
         id=request_id, telegram_id=100, username="alice", status="pending", resolved_by=None
     )
+
+
+async def test_create_returns_none_while_a_request_is_already_pending(
+    join_requests: JoinRequests,
+) -> None:
+    """#90: a repeated «Запросить доступ» doesn't create a second pending заявка."""
+    first = await join_requests.create(100, "alice")
+
+    assert await join_requests.create(100, "alice") is None
+    assert await join_requests.create(200, "bob") is not None  # other users unaffected
+    assert (await join_requests.get(first)).status == "pending"
+
+
+async def test_concurrent_creates_for_one_user_make_exactly_one_request(
+    join_requests: JoinRequests,
+) -> None:
+    """#90: a double tap is handled in parallel - only one of the racing creates may win."""
+    results = await asyncio.gather(*(join_requests.create(100, "alice") for _ in range(5)))
+
+    assert sum(result is not None for result in results) == 1
+
+
+async def test_create_is_allowed_again_once_the_previous_request_is_resolved(
+    join_requests: JoinRequests,
+) -> None:
+    first = await join_requests.create(100, "alice")
+    await join_requests.resolve(first, approved=False, resolved_by=1)
+
+    second = await join_requests.create(100, "alice")
+
+    assert second is not None
+    assert second != first
 
 
 async def test_get_raises_for_unknown_request(join_requests: JoinRequests) -> None:

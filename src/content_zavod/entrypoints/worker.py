@@ -118,7 +118,7 @@ async def main(settings: Settings | None = None) -> None:
                 text_generator, url_checker, owner_settings_service
             ),
             "regenerate_article": make_regenerate_article_handler(
-                article, text_generator, url_checker, owner_settings_service
+                article, plan, text_generator, url_checker, owner_settings_service
             ),
             "generate_cover": make_generate_cover_handler(image_generator),
             "regenerate_topic": make_regenerate_topic_handler(

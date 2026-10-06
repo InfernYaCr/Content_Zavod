@@ -2,7 +2,7 @@
 
 Hides retries with backoff on rate limiting, credential refresh, and
 mapping of Yandex's error responses onto RateLimited / AuthError /
-ContentPolicyError.
+ContentPolicyError / TruncatedCompletion.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from ._resilience import with_backoff_retry
 from .credentials import CredentialProvider, IamTokenProvider, StaticApiKeyProvider
-from .errors import YandexError
+from .errors import ContentPolicyError, TruncatedCompletion, YandexError
 from .http import HttpResponse, HttpTransport, HttpxTransport
 
 COMPLETION_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
@@ -24,6 +24,14 @@ COMPLETION_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1/completio
 # callers that record provenance (see `pipelines.provenance`) import this instead of
 # re-hardcoding the number, so the recorded `params` can't drift from what was actually sent.
 DEFAULT_TEMPERATURE = 0.7
+
+# Explicit cap on generated tokens, with headroom over the longest step (a VC.ru Статья of
+# ~9000 знаков is ~3000 tokens) - without it the API's own default cuts long drafts (#93).
+DEFAULT_MAX_TOKENS = 8000
+
+# `result.alternatives[].status` values meaning the text is not a usable finished answer (#93).
+_STATUS_TRUNCATED = "ALTERNATIVE_STATUS_TRUNCATED_FINAL"
+_STATUS_CONTENT_FILTER = "ALTERNATIVE_STATUS_CONTENT_FILTER"
 
 Role = Literal["system", "user", "assistant"]
 
@@ -57,6 +65,7 @@ class TextGenerator:
         url: str = COMPLETION_URL,
         clock: Callable[[], float] = time.monotonic,
         cost_per_1k_tokens: float | None = None,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
         self._transport = transport
         self._credentials = credentials
@@ -67,6 +76,7 @@ class TextGenerator:
         self._url = url
         self._clock = clock
         self._cost_per_1k_tokens = cost_per_1k_tokens
+        self._max_tokens = max_tokens
 
     @classmethod
     def with_service_account_key(
@@ -111,16 +121,27 @@ class TextGenerator:
     def _request_body(self, messages: list[Message], temperature: float) -> dict[str, Any]:
         return {
             "modelUri": f"gpt://{self._folder_id}/{self._model}",
-            "completionOptions": {"temperature": temperature},
+            # int64 is a JSON string in the API's REST mapping, as in Yandex's own examples.
+            "completionOptions": {"temperature": temperature, "maxTokens": str(self._max_tokens)},
             "messages": [{"role": m.role, "text": m.text} for m in messages],
         }
 
     def _extract_completion(self, body: dict[str, Any], *, latency_ms: int) -> Completion:
         try:
             result = body["result"]
-            text = str(result["alternatives"][0]["message"]["text"])
+            alternative = result["alternatives"][0]
+            text = str(alternative["message"]["text"])
         except (KeyError, IndexError, TypeError) as exc:
             raise YandexError(f"Malformed YandexGPT response: {body}") from exc
+        # A truncated or filtered answer still arrives as HTTP 200 with text - without this
+        # check it would be stored as a finished Версия (#93).
+        status = alternative.get("status")
+        if status == _STATUS_TRUNCATED:
+            raise TruncatedCompletion(
+                f"YandexGPT response truncated at maxTokens={self._max_tokens}"
+            )
+        if status == _STATUS_CONTENT_FILTER:
+            raise ContentPolicyError(f"YandexGPT response blocked by content filter: {text!r}")
         # `usage` is absent entirely from some sandbox responses - that's a real gap in
         # what we know this call cost, not a legitimate zero, so it's tracked explicitly
         # via `usage_missing` rather than folded into `tokens` defaulting to 0.
