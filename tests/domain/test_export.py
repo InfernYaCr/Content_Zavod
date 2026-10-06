@@ -20,12 +20,27 @@ _ARTICLE = ArticleView(
 
 
 def test_build_export_filename_slugifies_title_and_appends_format() -> None:
-    assert build_export_filename("Best Niche Guide", "zen", "docx") == "best-niche-guide-zen.docx"
-    assert build_export_filename("Best Niche Guide", "zen", "md") == "best-niche-guide-zen.md"
+    assert build_export_filename("Best Niche Guide", "zen", "docx") == "best-niche-guide-dzen.docx"
+    assert build_export_filename("Best Niche Guide", "vc", "md") == "best-niche-guide-vc.md"
+
+
+def test_build_export_filename_keeps_cyrillic_in_the_slug() -> None:
+    assert (
+        build_export_filename("Как выбрать CRM для малого бизнеса", "zen", "docx")
+        == "как-выбрать-crm-для-малого-бизнеса-dzen.docx"
+    )
+
+
+def test_build_export_filename_truncates_a_long_title_without_a_trailing_dash() -> None:
+    filename = build_export_filename("слово " * 30, "vc", "md")
+
+    slug = filename.removesuffix("-vc.md")
+    assert len(slug) <= 60
+    assert not slug.endswith("-")
 
 
 def test_build_export_filename_falls_back_to_article_for_an_empty_slug() -> None:
-    assert build_export_filename("!!!", "zen", "docx") == "article-zen.docx"
+    assert build_export_filename("!!!", "zen", "docx") == "article-dzen.docx"
 
 
 def test_build_export_document_md_is_the_plain_text_content() -> None:
