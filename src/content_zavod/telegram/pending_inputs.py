@@ -6,7 +6,8 @@ dict, so a wait survives a bot restart, and is shared by every flow that asks fo
 (today the regeneration comment; Настройки/onboarding input later), each under its own `kind`.
 
 A wait older than `PENDING_INPUT_TTL` is treated as gone: `get`/`take` ignore it and the next
-`put` for that (chat_id, user_id) overwrites it, so there is nothing to clean up.
+`put` for that (chat_id, user_id) overwrites it, so there is no cleanup job. `put` hands back
+the row it overwrote (expired or not), so the caller can remove that wait's prompt messages.
 """
 
 from __future__ import annotations
@@ -24,31 +25,44 @@ class PendingInput:
     kind: str
     target_id: str
     prompt_message_id: int
-    force_reply_message_id: int
+    force_reply_message_id: int | None = None
+    """The group-only ForceReply line; `None` in a private chat (one prompt message)."""
 
 
 class PendingInputs:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
-    async def put(self, chat_id: int, user_id: int, pending: PendingInput) -> None:
-        await self._pool.execute(
-            """
-            INSERT INTO pending_inputs
-                (chat_id, user_id, kind, target_id, prompt_message_id, force_reply_message_id)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (chat_id, user_id) DO UPDATE
-            SET kind = EXCLUDED.kind, target_id = EXCLUDED.target_id,
-                prompt_message_id = EXCLUDED.prompt_message_id,
-                force_reply_message_id = EXCLUDED.force_reply_message_id, created_at = now()
-            """,
-            chat_id,
-            user_id,
-            pending.kind,
-            pending.target_id,
-            pending.prompt_message_id,
-            pending.force_reply_message_id,
-        )
+    async def put(self, chat_id: int, user_id: int, pending: PendingInput) -> PendingInput | None:
+        """Store `pending` as this (chat_id, user_id)'s wait; returns the wait it replaced, if
+        any - expired ones included, since their prompt messages are still in the chat."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            previous = await conn.fetchrow(
+                """
+                DELETE FROM pending_inputs WHERE chat_id = $1 AND user_id = $2
+                RETURNING kind, target_id, prompt_message_id, force_reply_message_id
+                """,
+                chat_id,
+                user_id,
+            )
+            await conn.execute(
+                """
+                INSERT INTO pending_inputs
+                    (chat_id, user_id, kind, target_id, prompt_message_id, force_reply_message_id)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (chat_id, user_id) DO UPDATE
+                SET kind = EXCLUDED.kind, target_id = EXCLUDED.target_id,
+                    prompt_message_id = EXCLUDED.prompt_message_id,
+                    force_reply_message_id = EXCLUDED.force_reply_message_id, created_at = now()
+                """,
+                chat_id,
+                user_id,
+                pending.kind,
+                pending.target_id,
+                pending.prompt_message_id,
+                pending.force_reply_message_id,
+            )
+        return None if previous is None else PendingInput(**dict(previous))
 
     async def get(self, chat_id: int, user_id: int) -> PendingInput | None:
         row = await self._pool.fetchrow(
@@ -75,7 +89,7 @@ class PendingInputs:
         """Atomically remove and return the live `kind` wait, if it matches - so two updates
         racing for the same wait (a double-tapped Пропустить, two quick replies) resolve it
         once. `target_id`, when given, must match the wait's target; `reply_to_message_id`,
-        when given, must be one of the wait's two prompt messages."""
+        when given, must be one of the wait's prompt messages."""
         row = await self._pool.fetchrow(
             """
             DELETE FROM pending_inputs

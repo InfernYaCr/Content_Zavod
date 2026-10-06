@@ -148,6 +148,13 @@ class _AiogramBotClient:
             if "message is not modified" not in str(exc):
                 raise
 
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        try:
+            await self._bot.delete_message(chat_id, message_id)
+        except TelegramBadRequest as exc:
+            # Already deleted, or older than Telegram's 48h delete window: nothing to tidy.
+            logger.info("could not delete message %s in chat %s: %s", message_id, chat_id, exc)
+
     async def set_my_commands(
         self, commands: list[BotCommand], *, scope: BotCommandScopeChat
     ) -> None:
@@ -345,7 +352,9 @@ def _build_router(
             if private:
                 await gateway.send_error(message.chat.id, ACCESS_DENIED_TEXT)
             return
-        chat_id, user_id, text = message.chat.id, message.from_user.id, message.text or ""
+        if message.text is None:
+            return  # a sticker/photo/voice is not a comment - the wait stays open
+        chat_id, user_id, text = message.chat.id, message.from_user.id, message.text
         consumed = await plan_review.handle_comment_reply(
             chat_id, user_id, text, reply_to_message_id
         )

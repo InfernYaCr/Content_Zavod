@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from datetime import date
 from typing import Protocol
@@ -23,6 +24,7 @@ from .callback_codec import (
     SimpleAction,
     encode_callback_data,
 )
+from .pending_inputs import PendingInput
 from .types import (
     ArticleFormat,
     ArticleSummary,
@@ -34,6 +36,8 @@ from .types import (
     build_export_document,
     build_export_filename,
 )
+
+logger = logging.getLogger(__name__)
 
 MESSAGE_LIMIT = 4096
 ITEMS_PER_PAGE = 8
@@ -557,6 +561,10 @@ class BotClient(Protocol):
         reply_markup: InlineKeyboardMarkup | None = None,
     ) -> None: ...
 
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        """Best effort: a message already gone (or too old to delete) is not an error."""
+        ...
+
     async def set_my_commands(
         self, commands: list[BotCommand], *, scope: BotCommandScopeChat
     ) -> None: ...
@@ -739,17 +747,31 @@ class TelegramCommentPrompt:
     Plan item, `"regenerate_article"` for an Article), otherwise Skip would
     route back into the wrong review flow (see #13 regenerate-misrouting fix).
 
-    The request is two messages (#88), because Telegram allows one reply markup per message:
-    the question with Пропустить/Отмена (the prompt message, later edited to "⏳ Генерирую...",
-    #80), then a `ForceReply(selective=True)` line mentioning the asking user, so only their
-    client opens a reply to it - in a group a comment counts only as a reply to the request.
+    In a private chat the request is one message - the question with Пропустить/Отмена - and
+    the user's next text is the comment. In a group it is two (#88): bots there (privacy mode)
+    only see replies to their own messages, and a comment must not be any stray chat line, so a
+    `ForceReply(selective=True)` line mentioning the asking user follows - their client opens a
+    reply to it at once. Telegram allows one reply markup per message, hence the second message;
+    it is transient and deleted as soon as the wait closes. On a regeneration the question is
+    edited to "⏳ Генерирую..." (#80); on Отмена or a superseded wait both are deleted.
     """
 
     def __init__(self, bot: BotClient, *, action: Action = "regenerate") -> None:
         self._bot = bot
         self._action = action
 
-    async def prompt_for_comment(self, chat_id: int, user_id: int, id_: str) -> tuple[int, int]:
+    async def prompt_for_comment(
+        self, chat_id: int, user_id: int, id_: str
+    ) -> tuple[int, int | None]:
+        # A private chat's id is its user's id; group and channel ids are negative.
+        if chat_id == user_id:
+            prompt_message_id = await self._bot.send_message(
+                chat_id,
+                "Комментарий к перегенерации? Напишите его следующим сообщением "
+                "или нажмите «Пропустить».",
+                reply_markup=build_skip_keyboard(id_, self._action),
+            )
+            return prompt_message_id, None
         prompt_message_id = await self._bot.send_message(
             chat_id,
             "Комментарий к перегенерации? Ответьте одной строкой, или нажмите «Пропустить».",
@@ -765,5 +787,17 @@ class TelegramCommentPrompt:
         )
         return prompt_message_id, force_reply_message_id
 
-    async def mark_generating(self, chat_id: int, prompt_message_id: int) -> None:
-        await self._bot.edit_message_text(chat_id, prompt_message_id, "⏳ Генерирую...")
+    async def mark_generating(self, chat_id: int, pending: PendingInput) -> None:
+        # Cosmetic: the regeneration is already enqueued, so a prompt the user deleted
+        # meanwhile must not fail the update.
+        try:
+            await self._bot.edit_message_text(chat_id, pending.prompt_message_id, "⏳ Генерирую...")
+        except Exception:
+            logger.warning("could not mark comment prompt as generating", exc_info=True)
+        if pending.force_reply_message_id is not None:
+            await self._bot.delete_message(chat_id, pending.force_reply_message_id)
+
+    async def withdraw(self, chat_id: int, pending: PendingInput) -> None:
+        await self._bot.delete_message(chat_id, pending.prompt_message_id)
+        if pending.force_reply_message_id is not None:
+            await self._bot.delete_message(chat_id, pending.force_reply_message_id)

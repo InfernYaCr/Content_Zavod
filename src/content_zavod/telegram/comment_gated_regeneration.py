@@ -9,17 +9,30 @@ type RegenerateOp[Id] = Callable[[Id, str | None], Awaitable[None]]
 
 
 class CommentPrompt[Id](Protocol):
-    async def prompt_for_comment(self, chat_id: int, user_id: int, id_: Id) -> tuple[int, int]:
-        """Sends the request and returns `(prompt_message_id, force_reply_message_id)` (#80/#88)."""
+    async def prompt_for_comment(
+        self, chat_id: int, user_id: int, id_: Id
+    ) -> tuple[int, int | None]:
+        """Sends the request; returns `(prompt_message_id, force_reply_message_id)` - the
+        second is `None` when the chat needs no ForceReply line (a private chat, #88)."""
         ...
 
-    async def mark_generating(self, chat_id: int, prompt_message_id: int) -> None: ...
+    async def mark_generating(self, chat_id: int, pending: PendingInput) -> None:
+        """The wait resolved into a regeneration: show it on the prompt message (#80) and
+        drop the ForceReply line, if any."""
+        ...
+
+    async def withdraw(self, chat_id: int, pending: PendingInput) -> None:
+        """The wait closed without a regeneration (Отмена, superseded, another action):
+        remove its messages, so no dead prompt is left in the chat."""
+        ...
 
 
 class PendingInputStore(Protocol):
     """What this flow needs from `PendingInputs` (#88) - a fake in tests, Postgres in the bot."""
 
-    async def put(self, chat_id: int, user_id: int, pending: PendingInput) -> None: ...
+    async def put(
+        self, chat_id: int, user_id: int, pending: PendingInput
+    ) -> PendingInput | None: ...
 
     async def get(self, chat_id: int, user_id: int) -> PendingInput | None: ...
 
@@ -39,13 +52,14 @@ class CommentGatedRegeneration[Id: str]:
 
     First press on a target prompts for a comment; a second press on the same
     target (the Skip button, or the original 🔄 again) regenerates without one;
-    a press on a different target silently cancels the earlier wait. One waiting
-    prompt per (chat_id, user_id), stored in `pending` under this flow's `kind`
-    so it survives a bot restart (#88).
+    a press on a different target silently cancels the earlier wait (and removes
+    its prompt). One waiting prompt per (chat_id, user_id), stored in `pending`
+    under this flow's `kind` so it survives a bot restart (#88).
 
     Once a wait resolves, the prompt's own request message is edited to
     "⏳ Генерирую..." - never the message whose button was pressed, which may be
-    the Plan or the Статья card itself (#80).
+    the Plan or the Статья card itself (#80); a wait closed any other way has
+    its prompt removed.
     """
 
     def __init__(
@@ -65,16 +79,18 @@ class CommentGatedRegeneration[Id: str]:
         pending = await self._pending.take(chat_id, user_id, self._kind, target_id=id_)
         if pending is not None:
             await self._regenerate(id_, None)
-            await self._prompt.mark_generating(chat_id, pending.prompt_message_id)
+            await self._prompt.mark_generating(chat_id, pending)
             return
         prompt_message_id, force_reply_message_id = await self._prompt.prompt_for_comment(
             chat_id, user_id, id_
         )
-        await self._pending.put(
+        replaced = await self._pending.put(
             chat_id,
             user_id,
             PendingInput(self._kind, id_, prompt_message_id, force_reply_message_id),
         )
+        if replaced is not None:
+            await self._prompt.withdraw(chat_id, replaced)
 
     async def handle_comment_reply(
         self, chat_id: int, user_id: int, text: str, reply_to_message_id: int | None
@@ -88,13 +104,17 @@ class CommentGatedRegeneration[Id: str]:
         if pending is None:
             return False
         await self._regenerate(cast(Id, pending.target_id), text)
-        await self._prompt.mark_generating(chat_id, pending.prompt_message_id)
+        await self._prompt.mark_generating(chat_id, pending)
         return True
 
     async def cancel(self, chat_id: int, user_id: int, id_: Id | None = None) -> bool:
         """Drop this flow's wait (only if it's for `id_`, when given - so a stale Отмена button
-        can't cancel a newer wait, #88). Returns whether there was one to drop."""
-        return await self._pending.take(chat_id, user_id, self._kind, target_id=id_) is not None
+        can't cancel a newer wait, #88) and remove its prompt. Returns whether there was one."""
+        pending = await self._pending.take(chat_id, user_id, self._kind, target_id=id_)
+        if pending is None:
+            return False
+        await self._prompt.withdraw(chat_id, pending)
+        return True
 
     async def has_matching_pending(self, chat_id: int, user_id: int, id_: Id) -> bool:
         """True if `request(chat_id, user_id, id_)` would enqueue immediately rather than prompt.

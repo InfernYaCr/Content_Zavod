@@ -10,8 +10,10 @@ class FakePendingInputs:
     def __init__(self) -> None:
         self.rows: dict[tuple[int, int], PendingInput] = {}
 
-    async def put(self, chat_id: int, user_id: int, pending: PendingInput) -> None:
+    async def put(self, chat_id: int, user_id: int, pending: PendingInput) -> PendingInput | None:
+        previous = self.rows.get((chat_id, user_id))
         self.rows[(chat_id, user_id)] = pending
+        return previous
 
     async def get(self, chat_id: int, user_id: int) -> PendingInput | None:
         return self.rows.get((chat_id, user_id))

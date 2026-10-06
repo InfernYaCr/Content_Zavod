@@ -33,6 +33,7 @@ from content_zavod.telegram import (
     TelegramGateway,
 )
 from content_zavod.telegram.callback_dispatcher import CallbackDispatcher, CallbackInput
+from content_zavod.telegram.pending_inputs import PendingInput
 
 from .fakes import FakePendingInputs
 
@@ -67,6 +68,9 @@ class FakeBot:
 
     async def edit_message_reply_markup(self, chat_id, message_id, reply_markup=None) -> None:
         self.edited_messages.append((chat_id, message_id, "", reply_markup))
+
+    async def delete_message(self, chat_id, message_id) -> None:
+        pass
 
     async def set_my_commands(self, commands, *, scope) -> None:
         pass
@@ -215,13 +219,19 @@ class FakePrompt:
     def __init__(self) -> None:
         self.prompted: list[tuple[int, object]] = []
         self.generating: list[tuple[int, int]] = []
+        self.withdrawn: list[tuple[int, int]] = []
 
-    async def prompt_for_comment(self, chat_id: int, user_id: int, id_: object) -> tuple[int, int]:
+    async def prompt_for_comment(
+        self, chat_id: int, user_id: int, id_: object
+    ) -> tuple[int, int | None]:
         self.prompted.append((chat_id, id_))
         return 100, 101
 
-    async def mark_generating(self, chat_id: int, prompt_message_id: int) -> None:
-        self.generating.append((chat_id, prompt_message_id))
+    async def mark_generating(self, chat_id: int, pending: PendingInput) -> None:
+        self.generating.append((chat_id, pending.prompt_message_id))
+
+    async def withdraw(self, chat_id: int, pending: PendingInput) -> None:
+        self.withdrawn.append((chat_id, pending.prompt_message_id))
 
 
 class FakeArticleRegen:
@@ -577,7 +587,9 @@ async def test_cancel_comment_drops_the_plan_wait_and_closes_the_prompt(f: Fixtu
     answer = await dispatch(f, SimpleAction("cancel_comment", "item-1"))
 
     assert answer.calls == [(None, None)]
-    assert f.bot.edited_messages == [(1, 2, "Отменено.", None)]
+    # The flow deletes its prompt; the pressed message is not edited by the dispatcher.
+    assert f.plan_prompt.withdrawn == [(1, 100)]
+    assert f.bot.edited_messages == []
     assert await f.plan_review.handle_comment_reply(1, CM_ID, "too late", None) is False
     assert f.plan_ops.regenerated == []
 
@@ -587,19 +599,21 @@ async def test_cancel_comment_drops_the_article_wait(f: Fixtures) -> None:
 
     await dispatch(f, SimpleAction("cancel_comment", "article-1"))
 
-    assert f.bot.edited_messages == [(1, 2, "Отменено.", None)]
+    assert f.article_prompt.withdrawn == [(1, 100)]
+    assert f.plan_prompt.withdrawn == []
     assert f.pending_inputs.rows == {}
 
 
 async def test_cancel_comment_without_a_matching_wait_leaves_the_message(f: Fixtures) -> None:
     """A stale Отмена (or one pressed by another member) cancels nothing, so it must not
-    claim "Отменено." on a prompt that is still waiting for its owner (#88)."""
+    remove a prompt that is still waiting for its owner (#88)."""
     await dispatch(f, SimpleAction("regenerate", "item-1"))
 
     answer = await dispatch(f, SimpleAction("cancel_comment", "item-1"), user_id=OWNER_ID)
 
     assert answer.calls == [(None, None)]
     assert f.bot.edited_messages == []
+    assert f.plan_prompt.withdrawn == []
     assert len(f.pending_inputs.rows) == 1
 
 

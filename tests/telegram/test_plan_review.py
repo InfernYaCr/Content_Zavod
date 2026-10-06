@@ -1,6 +1,7 @@
 import pytest
 
 from content_zavod.telegram import PlanItemId, PlanReview
+from content_zavod.telegram.pending_inputs import PendingInput
 
 from .fakes import FakePendingInputs
 
@@ -27,11 +28,14 @@ class FakePrompt:
 
     async def prompt_for_comment(
         self, chat_id: int, user_id: int, plan_item_id: PlanItemId
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int | None]:
         self.prompted.append((chat_id, plan_item_id))
         return 100, 101
 
-    async def mark_generating(self, chat_id: int, prompt_message_id: int) -> None:
+    async def mark_generating(self, chat_id: int, pending: PendingInput) -> None:
+        pass
+
+    async def withdraw(self, chat_id: int, pending: PendingInput) -> None:
         pass
 
 

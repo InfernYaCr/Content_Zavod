@@ -316,13 +316,11 @@ class CallbackDispatcher:
                 if not await self._authorized("cancel_comment", role, deny_text, answer):
                     return
                 await answer()
-                # The Отмена button sits on the prompt message itself (#88); a stale one, or
-                # someone else's, drops nothing and leaves the message as is.
-                cancelled = await self._plan_review.cancel_comment(
-                    chat_id, user_id, PlanItemId(id_)
-                ) or await self._article_regeneration.cancel(chat_id, user_id, ArticleId(id_))
-                if cancelled:
-                    await self._gateway.edit_notice(chat_id, message_id, "Отменено.")
+                # The Отмена button sits on the prompt itself (#88); the flow deletes the prompt
+                # when it drops the wait. A stale one, or someone else's, drops nothing and
+                # leaves the message as is.
+                if not await self._plan_review.cancel_comment(chat_id, user_id, PlanItemId(id_)):
+                    await self._article_regeneration.cancel(chat_id, user_id, ArticleId(id_))
             case SimpleAction(action="approve_all", id_=id_):
                 if not await self._authorized("approve_all", role, deny_text, answer):
                     return
