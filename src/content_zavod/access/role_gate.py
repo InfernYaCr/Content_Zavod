@@ -2,7 +2,7 @@
 
 `require_role` is pure - no gateway/aiogram dependency - so it is table-tested
 directly instead of through a fake Telegram transport. `COMMAND_ROLE` is the
-one place that says which of the 14 gated commands need "owner" and which
+one place that says which of the 16 gated commands need "owner" and which
 accept any registered Role; `start` is deliberately absent - it treats a
 missing Role as its own welcome branch, not a denial (see ADR-0012).
 """
@@ -25,6 +25,8 @@ COMMAND_ROLE: dict[str, Role | None] = {
     "set_directions": "owner",
     "persona": "owner",
     "set_persona": "owner",
+    "project": "owner",
+    "set_project": "owner",
     "settings": "owner",
 }
 

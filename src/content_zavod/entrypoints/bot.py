@@ -76,10 +76,12 @@ from ..telegram import (
     handle_members_command,
     handle_niche_command,
     handle_persona_command,
+    handle_project_command,
     handle_schedule_command,
     handle_set_directions_command,
     handle_set_niche_command,
     handle_set_persona_command,
+    handle_set_project_command,
     handle_set_schedule_command,
     handle_settings_command,
     handle_topic_command,
@@ -284,6 +286,18 @@ def _build_router(
     @gated(COMMAND_ROLE["set_persona"])
     async def on_set_persona(message: Message, command: CommandObject) -> None:
         await handle_set_persona_command(
+            owner_settings_service, gateway, message.chat.id, command.args or ""
+        )
+
+    @router.message(Command("project"))
+    @gated(COMMAND_ROLE["project"])
+    async def on_project(message: Message) -> None:
+        await handle_project_command(owner_settings_service, gateway, message.chat.id)
+
+    @router.message(Command("set_project"))
+    @gated(COMMAND_ROLE["set_project"])
+    async def on_set_project(message: Message, command: CommandObject) -> None:
+        await handle_set_project_command(
             owner_settings_service, gateway, message.chat.id, command.args or ""
         )
 

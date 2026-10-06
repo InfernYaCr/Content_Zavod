@@ -33,7 +33,9 @@ OWNER_COMMANDS: list[BotCommand] = [
     BotCommand(command="set_directions", description="Изменить Направления"),
     BotCommand(command="persona", description="Текущая Персона"),
     BotCommand(command="set_persona", description="Изменить Персону"),
-    BotCommand(command="settings", description="Ниша, Персона и Направления разом"),
+    BotCommand(command="project", description="Текущий Проект для CTA в Статьях"),
+    BotCommand(command="set_project", description="Изменить Проект: ссылка и описание"),
+    BotCommand(command="settings", description="Ниша, Персона, Направления и Проект разом"),
 ]
 
 
