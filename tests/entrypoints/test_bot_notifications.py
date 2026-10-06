@@ -8,7 +8,12 @@ render) worth a fast unit test.
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from content_zavod.domain import (
+    ArticleSummary,
     ArticleView,
     GeneratedVersion,
     PlanId,
@@ -112,6 +117,9 @@ class FakeArticle:
             id=article_id, plan_item_id="item-1", title="T", platform="P", content=b"c"
         )
 
+    async def get_summary(self, article_id: str) -> ArticleSummary:
+        return ArticleSummary(id=article_id, title="Topic A", platform="vc", status="error")
+
     async def get_plan_id(self, article_id: str) -> PlanId:
         return self.plan_id_for_article
 
@@ -166,9 +174,34 @@ async def test_failed_job_sends_error_with_retry_button() -> None:
 
     await handle(JobResult(job_id=1, job_type="generate_plan", status="failed", error="boom"))
 
-    assert gateway.sent_errors_with_retry == [
-        (42, "Задача generate_plan завершилась ошибкой: boom", 1)
-    ]
+    assert gateway.sent_errors_with_retry == [(42, "Не удалось составить План.", 1)]
+
+
+@pytest.mark.parametrize(
+    ("job_type", "text"),
+    [
+        ("regenerate_topic", "Не удалось перегенерировать Тему."),
+        ("generate_article", "Не удалось написать Статью для VC.ru: «Topic A»"),
+        ("regenerate_article", "Не удалось переписать Статью для VC.ru: «Topic A»"),
+        ("generate_cover", "Не удалось сгенерировать обложку для Темы «Topic A»"),
+        ("some_future_job", "Не удалось выполнить задачу."),
+    ],
+)
+async def test_failed_job_text_is_russian_and_keeps_job_type_and_error_out_of_chat(
+    job_type: str, text: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#89: the chat gets «Не удалось …» by job type, naming the Тема and Площадка where
+    known; `job_type`, the Площадка key and the exception text only go to the log."""
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    with caplog.at_level(logging.WARNING):
+        await handle(
+            JobResult(job_id=5, job_type=job_type, status="failed", error="RuntimeError: boom")
+        )
+
+    assert gateway.sent_errors_with_retry == [(42, text, 5)]
+    assert "RuntimeError: boom" in caplog.text
 
 
 async def test_failed_article_job_marks_article_error_before_notifying() -> None:
@@ -467,7 +500,7 @@ async def test_failed_generate_cover_within_open_batch_still_advances_progress()
     assert plan.recorded_generation_progress_calls == ["plan-1"]
     assert gateway.edited_generation_progress == [(42, 7, 9, 9)]
     assert gateway.sent_errors_with_retry == [
-        (42, "Задача generate_cover завершилась ошибкой: boom", 3)
+        (42, "Не удалось сгенерировать обложку для Темы «Topic A»", 3)
     ]
 
 
