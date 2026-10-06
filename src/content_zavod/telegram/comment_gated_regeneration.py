@@ -1,60 +1,106 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
+
+from .pending_inputs import PendingInput
 
 type RegenerateOp[Id] = Callable[[Id, str | None], Awaitable[None]]
 
 
 class CommentPrompt[Id](Protocol):
-    async def prompt_for_comment(self, chat_id: int, id_: Id) -> None: ...
+    async def prompt_for_comment(self, chat_id: int, user_id: int, id_: Id) -> tuple[int, int]:
+        """Sends the request and returns `(prompt_message_id, force_reply_message_id)` (#80/#88)."""
+        ...
+
+    async def mark_generating(self, chat_id: int, prompt_message_id: int) -> None: ...
 
 
-@dataclass(frozen=True)
-class _PendingComment[Id]:
-    id_: Id
+class PendingInputStore(Protocol):
+    """What this flow needs from `PendingInputs` (#88) - a fake in tests, Postgres in the bot."""
+
+    async def put(self, chat_id: int, user_id: int, pending: PendingInput) -> None: ...
+
+    async def get(self, chat_id: int, user_id: int) -> PendingInput | None: ...
+
+    async def take(
+        self,
+        chat_id: int,
+        user_id: int,
+        kind: str,
+        *,
+        target_id: str | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> PendingInput | None: ...
 
 
-class CommentGatedRegeneration[Id]:
+class CommentGatedRegeneration[Id: str]:
     """Regenerate-with-optional-comment flow, shared by any 'press to regenerate' UI.
 
     First press on a target prompts for a comment; a second press on the same
-    target (the Skip button) regenerates without one; a press on a different
-    target silently cancels the earlier wait. One waiting prompt per
-    (chat_id, user_id).
+    target (the Skip button, or the original 🔄 again) regenerates without one;
+    a press on a different target silently cancels the earlier wait. One waiting
+    prompt per (chat_id, user_id), stored in `pending` under this flow's `kind`
+    so it survives a bot restart (#88).
+
+    Once a wait resolves, the prompt's own request message is edited to
+    "⏳ Генерирую..." - never the message whose button was pressed, which may be
+    the Plan or the Статья card itself (#80).
     """
 
-    def __init__(self, regenerate: RegenerateOp[Id], prompt: CommentPrompt[Id]) -> None:
+    def __init__(
+        self,
+        regenerate: RegenerateOp[Id],
+        prompt: CommentPrompt[Id],
+        pending: PendingInputStore,
+        *,
+        kind: str,
+    ) -> None:
         self._regenerate = regenerate
         self._prompt = prompt
-        self._pending: dict[tuple[int, int], _PendingComment[Id]] = {}
+        self._pending = pending
+        self._kind = kind
 
     async def request(self, chat_id: int, user_id: int, id_: Id) -> None:
-        key = (chat_id, user_id)
-        pending = self._pending.get(key)
-        if pending is not None and pending.id_ == id_:
-            del self._pending[key]
+        pending = await self._pending.take(chat_id, user_id, self._kind, target_id=id_)
+        if pending is not None:
             await self._regenerate(id_, None)
+            await self._prompt.mark_generating(chat_id, pending.prompt_message_id)
             return
-        self._pending[key] = _PendingComment(id_)
-        await self._prompt.prompt_for_comment(chat_id, id_)
+        prompt_message_id, force_reply_message_id = await self._prompt.prompt_for_comment(
+            chat_id, user_id, id_
+        )
+        await self._pending.put(
+            chat_id,
+            user_id,
+            PendingInput(self._kind, id_, prompt_message_id, force_reply_message_id),
+        )
 
-    async def handle_comment_reply(self, chat_id: int, user_id: int, text: str) -> bool:
-        pending = self._pending.pop((chat_id, user_id), None)
+    async def handle_comment_reply(
+        self, chat_id: int, user_id: int, text: str, reply_to_message_id: int | None
+    ) -> bool:
+        """`reply_to_message_id` is the message `text` replied to. In a group the caller must
+        pass it, and only a reply to this wait's prompt counts (#88); `None` means the chat
+        doesn't bind comments to the prompt (a private chat), so any text resolves the wait."""
+        pending = await self._pending.take(
+            chat_id, user_id, self._kind, reply_to_message_id=reply_to_message_id
+        )
         if pending is None:
             return False
-        await self._regenerate(pending.id_, text)
+        await self._regenerate(cast(Id, pending.target_id), text)
+        await self._prompt.mark_generating(chat_id, pending.prompt_message_id)
         return True
 
-    def cancel(self, chat_id: int, user_id: int) -> None:
-        self._pending.pop((chat_id, user_id), None)
+    async def cancel(self, chat_id: int, user_id: int, id_: Id | None = None) -> bool:
+        """Drop this flow's wait (only if it's for `id_`, when given - so a stale Отмена button
+        can't cancel a newer wait, #88). Returns whether there was one to drop."""
+        return await self._pending.take(chat_id, user_id, self._kind, target_id=id_) is not None
 
-    def has_matching_pending(self, chat_id: int, user_id: int, id_: Id) -> bool:
+    async def has_matching_pending(self, chat_id: int, user_id: int, id_: Id) -> bool:
         """True if `request(chat_id, user_id, id_)` would enqueue immediately rather than prompt.
 
         Lets a caller (e.g. the Telegram callback handler) show a "generating..."
         progress indicator only when a Job is actually about to be enqueued.
         """
-        pending = self._pending.get((chat_id, user_id))
-        return pending is not None and pending.id_ == id_
+        pending = await self._pending.get(chat_id, user_id)
+        return pending is not None and pending.kind == self._kind and pending.target_id == id_

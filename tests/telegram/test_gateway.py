@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
-from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
+from aiogram.types import BufferedInputFile, ForceReply, InlineKeyboardMarkup
 
 from content_zavod.telegram import (
     ArticleId,
@@ -50,7 +50,7 @@ class FakeBot:
         self.sent_photos: list[tuple[int, BufferedInputFile, str | None]] = []
         self.edited_messages: list[tuple[int, int, str, InlineKeyboardMarkup | None]] = []
 
-    async def send_message(self, chat_id, text, reply_markup=None) -> int:
+    async def send_message(self, chat_id, text, reply_markup=None, parse_mode=None) -> int:
         self.sent_messages.append((chat_id, text, reply_markup))
         return len(self.sent_messages)
 
@@ -578,13 +578,15 @@ async def test_comment_prompt_sends_message_with_skip_button_encoding_regenerate
     bot = FakeBot()
     prompt = TelegramCommentPrompt(bot)
 
-    await prompt.prompt_for_comment(chat_id=1, id_="item-1")
+    await prompt.prompt_for_comment(chat_id=1, user_id=10, id_="item-1")
 
-    assert len(bot.sent_messages) == 1
     chat_id, _, keyboard = bot.sent_messages[0]
     assert chat_id == 1
-    (skip_button,) = keyboard.inline_keyboard[0]
+    skip_button, cancel_button = keyboard.inline_keyboard[0]
     assert decode_callback_data(skip_button.callback_data) == SimpleAction("regenerate", "item-1")
+    assert decode_callback_data(cancel_button.callback_data) == SimpleAction(
+        "cancel_comment", "item-1"
+    )
 
 
 @pytest.mark.asyncio
@@ -592,12 +594,39 @@ async def test_comment_prompt_with_article_action_encodes_regenerate_article_on_
     bot = FakeBot()
     prompt = TelegramCommentPrompt(bot, action="regenerate_article")
 
-    await prompt.prompt_for_comment(chat_id=1, id_="article-1")
+    await prompt.prompt_for_comment(chat_id=1, user_id=10, id_="article-1")
 
-    (skip_button,) = bot.sent_messages[0][2].inline_keyboard[0]
+    skip_button, _ = bot.sent_messages[0][2].inline_keyboard[0]
     assert decode_callback_data(skip_button.callback_data) == SimpleAction(
         "regenerate_article", "article-1"
     )
+
+
+@pytest.mark.asyncio
+async def test_comment_prompt_adds_a_selective_force_reply_mentioning_the_user() -> None:
+    """#88: buttons and ForceReply can't share a message, so the request is two - and the
+    ForceReply one mentions the asking user, which is what `selective` targets in a group."""
+    bot = FakeBot()
+    prompt = TelegramCommentPrompt(bot)
+
+    message_ids = await prompt.prompt_for_comment(chat_id=1, user_id=10, id_="item-1")
+
+    assert message_ids == (1, 2)
+    chat_id, text, markup = bot.sent_messages[1]
+    assert chat_id == 1
+    assert 'href="tg://user?id=10"' in text
+    assert isinstance(markup, ForceReply)
+    assert markup.selective is True
+
+
+@pytest.mark.asyncio
+async def test_comment_prompt_mark_generating_edits_the_prompt_message() -> None:
+    bot = FakeBot()
+    prompt = TelegramCommentPrompt(bot)
+
+    await prompt.mark_generating(chat_id=1, prompt_message_id=7)
+
+    assert bot.edited_messages == [(1, 7, "⏳ Генерирую...", None)]
 
 
 def make_article_summary() -> ArticleSummary:
