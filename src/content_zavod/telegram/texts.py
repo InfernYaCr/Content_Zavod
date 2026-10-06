@@ -37,6 +37,8 @@ PLAN_STATUSES = {
 }
 
 PLATFORMS = {"zen": "Дзен", "vc": "VC.ru"}
+# «Статья для …»: Дзен declines, VC.ru doesn't.
+_PLATFORMS_GENITIVE = {"zen": "Дзена", "vc": "VC.ru"}
 
 # code -> (short, full); `mon`..`sun` are what APScheduler's CronTrigger and the DB expect.
 WEEKDAYS = {
@@ -57,6 +59,14 @@ JOB_FAILURES = {
     "generate_cover": "Не удалось сгенерировать обложку.",
 }
 JOB_FAILURE_FALLBACK = "Не удалось выполнить задачу."
+
+# The same failures once the Тема (and, for a Статья, its Площадка) is known - a chat
+# with several Статьи in flight needs to say which one failed (#89).
+_ARTICLE_JOB_FAILURES = {
+    "generate_article": "Не удалось написать Статью для {platform}: «{title}»",
+    "regenerate_article": "Не удалось переписать Статью для {platform}: «{title}»",
+}
+_COVER_JOB_FAILURE = "Не удалось сгенерировать обложку для Темы «{title}»"
 
 ERROR_ALERTS: dict[type[Exception], str] = {
     PlanNotFound: "План не найден.",
@@ -100,7 +110,18 @@ def parse_weekday(text: str) -> str | None:
     return None
 
 
-def job_failure_text(job_type: str) -> str:
+def job_failure_text(
+    job_type: str, *, title: str | None = None, platform: str | None = None
+) -> str:
+    """«Не удалось …» for a failed Job, naming the Тема and Площадка when the caller knows
+    them; the bare per-type text otherwise."""
+    if title is not None:
+        if platform is not None and job_type in _ARTICLE_JOB_FAILURES:
+            return _ARTICLE_JOB_FAILURES[job_type].format(
+                platform=_PLATFORMS_GENITIVE.get(platform, platform_name(platform)), title=title
+            )
+        if job_type == "generate_cover":
+            return _COVER_JOB_FAILURE.format(title=title)
     return JOB_FAILURES.get(job_type, JOB_FAILURE_FALLBACK)
 
 

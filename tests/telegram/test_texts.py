@@ -6,6 +6,7 @@ from content_zavod.telegram.texts import (
     ARTICLE_STATUSES,
     PLAN_STATUSES,
     article_status,
+    job_failure_text,
     parse_weekday,
     plan_status,
     platform_name,
@@ -33,3 +34,12 @@ def test_parse_weekday_accepts_code_short_and_full_names() -> None:
     assert parse_weekday("Пн") == "mon"
     assert parse_weekday("воскресенье") == "sun"
     assert parse_weekday("funday") is None
+
+
+def test_job_failure_text_names_the_tema_and_platform_when_known() -> None:
+    assert (
+        job_failure_text("generate_article", title="Тренды", platform="zen")
+        == "Не удалось написать Статью для Дзена: «Тренды»"
+    )
+    assert job_failure_text("generate_article") == "Не удалось написать Статью."
+    assert job_failure_text("generate_plan", title="Тренды") == "Не удалось составить План."

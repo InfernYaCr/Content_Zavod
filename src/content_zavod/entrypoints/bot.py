@@ -418,11 +418,15 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
     as idempotent as the domain operations it calls."""
     if result.status == "failed":
         batch_delivery: _BatchProgressDelivery | _BatchDoneDelivery | None = None
+        failed_title: str | None = None
+        failed_platform: str | None = None
         if result.job_type in ("generate_article", "regenerate_article"):
             article_id = await article.mark_generation_failed(result.job_id)
             if article_id is None:
                 logger.info("Ignoring stale Article failure for job_id=%s", result.job_id)
                 return None
+            summary = await article.get_summary(article_id)
+            failed_title, failed_platform = summary.title, summary.platform
             if result.job_type == "generate_article":
                 batch_delivery = await _advance_batch(plan, await article.get_plan_id(article_id))
         elif result.job_type == "generate_cover":
@@ -430,13 +434,14 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
             if plan_item_id is None:
                 logger.info("Ignoring stale cover failure for job_id=%s", result.job_id)
                 return None
+            failed_title = (await plan.get_item(plan_item_id)).title
             batch_delivery = await _advance_batch(
                 plan, await plan.get_plan_id_for_item(plan_item_id)
             )
         # The chat gets a plain Russian «Не удалось …» (#89); the technical error stays in the log.
         logger.warning("Job %s (%s) failed: %s", result.job_id, result.job_type, result.error)
         return _ErrorDelivery(
-            text=job_failure_text(result.job_type),
+            text=job_failure_text(result.job_type, title=failed_title, platform=failed_platform),
             job_id=result.job_id,
             batch_progress=batch_delivery,
         )
