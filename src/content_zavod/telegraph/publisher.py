@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
@@ -56,7 +57,10 @@ class TelegraphPublisher:
         footer_link: FooterLinkSource | None = None,
     ) -> None:
         """`footer_link`, if given, is asked on every publish for a closing link (e.g. the
-        customer's project); returning `None` leaves the page without one."""
+        customer's project); returning `None` leaves the page without one. The footer is also
+        skipped when the text already links that URL - with a Проект set the pipeline ends
+        every Статья with a CTA to it (#98), so only Статьи written before the Проект was
+        set (or changed) get the footer."""
         self._client = client
         self._pages = pages
         self._settings = settings
@@ -100,8 +104,13 @@ class TelegraphPublisher:
         return page.url
 
     async def _content(self, article: ArticleView, title: str) -> list[Node]:
-        nodes = markdown_to_nodes(article.content.decode("utf-8"), title=title)
+        markdown = article.content.decode("utf-8")
+        nodes = markdown_to_nodes(markdown, title=title)
         footer = await self._footer_link() if self._footer_link is not None else None
+        if footer is not None and _mentions_url(markdown, footer.url):
+            # The pipeline already closes the text with a CTA to this exact link (#98);
+            # a second copy in the footer would just repeat it on the page.
+            footer = None
         return fit_content(nodes, tail=footer_nodes(footer) if footer is not None else None)
 
     async def _token(self) -> str:
@@ -132,6 +141,11 @@ def project_footer(settings: SettingsReader) -> FooterLinkSource:
         return FooterLink(text=project.description, url=project.url)
 
     return footer
+
+
+def _mentions_url(text: str, url: str) -> bool:
+    """`url` appears in `text` as a whole link - `https://t.me/name_2` is not `t.me/name`."""
+    return re.search(rf"{re.escape(url)}(?![\w/?#=&%~+@-]|[.:]\w)", text) is not None
 
 
 def _page_title(title: str) -> str:

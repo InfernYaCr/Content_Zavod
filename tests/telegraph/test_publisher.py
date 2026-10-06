@@ -200,6 +200,39 @@ async def test_footer_link_is_appended_when_the_source_returns_one() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Текст.\n\nПодписывайтесь на наш проект: https://example.com",
+        "Текст. [Наш проект](https://example.com).",
+    ],
+)
+async def test_footer_is_skipped_when_the_text_already_links_the_project(text: str) -> None:
+    telegraph, pages, settings = FakeTelegraph(), FakePages(), FakeSettings()
+
+    async def footer() -> FooterLink | None:
+        return FooterLink("Наш проект", "https://example.com")
+
+    await TelegraphPublisher(telegraph, pages, settings, footer_link=footer).publish(_article(text))
+
+    content = telegraph.created[0][2]
+    assert {"tag": "hr"} not in content
+    assert str(content).count("'href': 'https://example.com'") == 1
+
+
+async def test_footer_is_kept_when_the_text_links_only_a_longer_url() -> None:
+    telegraph, pages, settings = FakeTelegraph(), FakePages(), FakeSettings()
+
+    async def footer() -> FooterLink | None:
+        return FooterLink("Наш канал", "https://t.me/name")
+
+    await TelegraphPublisher(telegraph, pages, settings, footer_link=footer).publish(
+        _article("Соседний канал: https://t.me/name_2")
+    )
+
+    assert telegraph.created[0][2][-2] == {"tag": "hr"}
+
+
 async def test_overlong_title_is_cut_to_telegraph_limit() -> None:
     telegraph, pages, settings = FakeTelegraph(), FakePages(), FakeSettings()
     article = ArticleView(
