@@ -124,3 +124,52 @@ def test_fit_content_truncates_oversized_content_but_keeps_the_footer() -> None:
     assert "Текст сокращён" in str(fitted[-3])
     assert fitted[0] == nodes[0]
     assert len(fitted) < len(nodes)
+
+
+def test_blank_lines_between_numbered_items_keep_one_list() -> None:
+    nodes = markdown_to_nodes("1. первый\n\n2. второй")
+
+    assert nodes == [
+        {
+            "tag": "ol",
+            "children": [
+                {"tag": "li", "children": ["первый"]},
+                {"tag": "li", "children": ["второй"]},
+            ],
+        }
+    ]
+
+
+def test_numbering_interrupted_by_paragraphs_is_written_out_not_restarted() -> None:
+    # Telegraph would render three one-item `ol`s as «1. … 1. … 1. …».
+    nodes = markdown_to_nodes("1. **Шаг**\nПояснение.\n2. **Шаг**\nЕщё.\n3. Финал")
+
+    assert nodes == [
+        {"tag": "p", "children": ["1. ", {"tag": "strong", "children": ["Шаг"]}]},
+        {"tag": "p", "children": ["Пояснение."]},
+        {"tag": "p", "children": ["2. ", {"tag": "strong", "children": ["Шаг"]}]},
+        {"tag": "p", "children": ["Ещё."]},
+        {"tag": "p", "children": ["3. ", "Финал"]},
+    ]
+
+
+def test_urls_keep_balanced_parentheses() -> None:
+    wiki = "https://ru.wikipedia.org/wiki/CRM_(software)"
+
+    assert parse_inline(f"См. [Вики]({wiki}) и ({wiki}).") == [
+        "См. ",
+        _link(wiki, "Вики"),
+        " и (",
+        _link(wiki, wiki),
+        ").",
+    ]
+
+
+def test_code_fences_become_one_pre_block() -> None:
+    nodes = markdown_to_nodes("Пример:\n```python\nx = 1\n\ny = 2\n```\nДальше.")
+
+    assert nodes == [
+        {"tag": "p", "children": ["Пример:"]},
+        {"tag": "pre", "children": ["x = 1\n\ny = 2"]},
+        {"tag": "p", "children": ["Дальше."]},
+    ]
