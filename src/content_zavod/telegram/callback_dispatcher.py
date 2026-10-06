@@ -324,12 +324,18 @@ class CallbackDispatcher:
                 await _generate_articles_for_approved_plan(
                     self._plan, self._article, self._gateway, chat_id, PlanId(id_)
                 )
+                # #81: re-rendered from the DB only once the fan-out is through, so a crash
+                # mid-fan-out still leaves "Утвердить всё" there to replay it.
+                view = await self._plan.get(PlanId(id_))
+                await self._gateway.edit_plan(chat_id, message_id, view)
             case SimpleAction(action="delete", id_=id_):
                 if not await self._authorized("delete", role, deny_text, answer):
                     return
                 await answer()
                 await self._plan_review.handle_action(chat_id, user_id, PlanItemId(id_), "delete")
-                await self._gateway.send_notice(chat_id, "Тема удалена.")
+                # #81: the Plan message itself shows the Тема as removed, no separate notice.
+                plan_id = await self._plan.get_plan_id_for_item(PlanItemId(id_))
+                await self._gateway.edit_plan(chat_id, message_id, await self._plan.get(plan_id))
             case SimpleAction(action=unreachable):
                 assert_never(unreachable)
 

@@ -456,7 +456,8 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
                 title=output["title"], summary=output["summary"], keywords=output["keywords"]
             ),
         )
-        return _NoticeDelivery(text=f"Тема обновлена: {output['title']}")
+        # #81: the new title shows up in the Plan message itself, not in a separate notice.
+        return _PlanDelivery(plan_id=await plan.get_plan_id_for_item(plan_item_id))
     if result.job_type in ("generate_article", "regenerate_article"):
         article_id = ArticleId(output["article_id"])
         application = await article.record_version(

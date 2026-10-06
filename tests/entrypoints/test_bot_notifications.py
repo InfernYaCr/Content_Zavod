@@ -243,8 +243,10 @@ async def test_redelivered_generate_plan_result_edits_the_canonical_message_inst
     assert (edited_chat_id, edited_message_id) == (42, 1)
 
 
-async def test_regenerate_topic_applies_and_notifies() -> None:
+async def test_regenerate_topic_applies_and_redraws_the_plan_message() -> None:
+    """#81: the regenerated title appears in the Plan's canonical message, no separate notice."""
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
     handle = _make_notification_handler(plan, article, gateway, 42)
 
     await handle(
@@ -259,7 +261,8 @@ async def test_regenerate_topic_applies_and_notifies() -> None:
     assert plan.applied_regenerations == [
         ("item-1", TopicDraft(title="New", summary="s", keywords=["k"]))
     ]
-    assert gateway.sent_notices == [(42, "Тема обновлена: New")]
+    assert gateway.sent_notices == []
+    assert [(c, m, view.id) for c, m, view in gateway.edited_plans] == [(-100, 5, "plan-1")]
 
 
 async def test_generate_article_records_version_and_sends_article() -> None:

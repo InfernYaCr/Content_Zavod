@@ -91,6 +91,16 @@ def format_week_range(week_label: str) -> str:
     return f"{monday.day}–{sunday.day} {end_month} {sunday.year}"
 
 
+# A Тема's status as the Контент-менеджер reads it in the Plan message (#81) - the raw
+# `plan_items.status` keys never reach the chat.
+_PLAN_ITEM_STATUS_TEXT = {
+    "pending_review": "на согласовании",
+    "approved": "утверждена",
+    "rejected": "убрана",
+    "archived": "в архиве",
+}
+
+
 def render_plan_text(plan: PlanView, *, page: int = 0) -> str:
     page_count = total_pages(len(plan.items))
     start = page * ITEMS_PER_PAGE
@@ -102,7 +112,8 @@ def render_plan_text(plan: PlanView, *, page: int = 0) -> str:
     # item number always refers to the same item regardless of which page shows it.
     for index, item in enumerate(plan.items, start=1):
         if start < index <= start + ITEMS_PER_PAGE:
-            lines.append(f"{index}. {item.title} — {item.status}")
+            status = _PLAN_ITEM_STATUS_TEXT.get(item.status, item.status)
+            lines.append(f"{index}. {item.title} — {status}")
     return "\n".join(lines)
 
 
@@ -117,20 +128,27 @@ def render_generation_progress_text(done: int, total: int) -> str:
     return f"🔄 Готовлю материалы: {done}/{total}"
 
 
-def build_plan_keyboard(plan: PlanView, *, page: int = 0) -> InlineKeyboardMarkup:
+def build_plan_keyboard(plan: PlanView, *, page: int = 0) -> InlineKeyboardMarkup | None:
+    """Edit buttons only for Темы still `pending_review`, labelled with the same absolute
+    number `render_plan_text` shows (#81) - an approved, removed or archived Тема can't be
+    edited anyway, so an approved Plan ends up with no edit buttons at all. "Утвердить всё"
+    only while something is left to approve. `None` once no button is left, so the
+    send/edit drops the keyboard instead of leaving a stale one."""
     page_count = total_pages(len(plan.items))
     start = page * ITEMS_PER_PAGE
     page_items = plan.items[start : start + ITEMS_PER_PAGE]
     rows: list[list[InlineKeyboardButton]] = []
-    for item in page_items:
+    for number, item in enumerate(page_items, start=start + 1):
+        if item.status != "pending_review":
+            continue
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="🔄 Перегенерировать",
+                    text=f"🔄 {number}",
                     callback_data=encode_callback_data(SimpleAction("regenerate", item.id)),
                 ),
                 InlineKeyboardButton(
-                    text="❌ Удалить",
+                    text=f"🗑 {number}",
                     callback_data=encode_callback_data(SimpleAction("delete", item.id)),
                 ),
             ]
@@ -153,15 +171,16 @@ def build_plan_keyboard(plan: PlanView, *, page: int = 0) -> InlineKeyboardMarku
             )
         if nav_row:
             rows.append(nav_row)
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text="✅ Утвердить всё",
-                callback_data=encode_callback_data(SimpleAction("approve_all", plan.id)),
-            )
-        ]
-    )
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    if any(item.status == "pending_review" for item in plan.items):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="✅ Утвердить всё",
+                    callback_data=encode_callback_data(SimpleAction("approve_all", plan.id)),
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 def render_history_weeks_text(
