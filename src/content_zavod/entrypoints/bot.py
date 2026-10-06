@@ -87,6 +87,7 @@ from ..telegram import (
     sync_commands,
     unpack_callback_query,
 )
+from ..telegram.gateway import format_week_range
 from ._process import register_shutdown
 
 logger = logging.getLogger(__name__)
@@ -409,6 +410,19 @@ async def _advance_batch(
     return _BatchProgressDelivery(plan_id=plan_id, done=done, total=total)
 
 
+def _empty_plan_text(week_label: str, empty_reason: str | None) -> str:
+    """Why a `generate_plan` run came back with no Темы, and what to do about it (#84)."""
+    if empty_reason == "all_recently_used":
+        why = "все найденные Темы недавно уже были в Планах"
+    else:
+        why = "ни одно Направление сейчас не растёт в Wordstat"
+    return (
+        f"План на {format_week_range(week_label)} не создан: {why}.\n"
+        "Предложите Тему сами: /topic <текст>\n"
+        "Или пусть Владелец проверит Направления: /directions"
+    )
+
+
 async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Delivery | None:
     """The DB half of notification handling (#73): applies a finished Job's result to
     domain state and returns what, if anything, still needs delivering to Telegram - `None`
@@ -446,6 +460,12 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
             )
             for t in output["topics"]
         ]
+        if not topics:
+            # #84: an empty result creates no Plan (one with only "Утвердить всё" on it would
+            # start nothing) - the team chat gets what happened and what to do instead.
+            return _NoticeDelivery(
+                text=_empty_plan_text(output["week_label"], output.get("empty_reason"))
+            )
         plan_id = await plan.add_topics(output["week_label"], topics)
         return _PlanDelivery(plan_id=plan_id)
     if result.job_type == "regenerate_topic":
