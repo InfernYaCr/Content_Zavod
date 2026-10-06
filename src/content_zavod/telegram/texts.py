@@ -66,6 +66,11 @@ WEEKDAYS = {
     "sun": ("вс", "воскресенье"),
 }
 
+# The ready-Статья card (#92).
+ARTICLE_CARD_PLATFORM = "Площадка: {platform}"
+READ_BUTTON = "📖 Читать"
+REFINE_BUTTON = "✏️ Доработать"
+
 JOB_FAILURES = {
     "generate_plan": "Не удалось составить План.",
     "regenerate_topic": "Не удалось перегенерировать Тему.",
