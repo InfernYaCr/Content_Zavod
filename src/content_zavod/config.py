@@ -56,6 +56,9 @@ class Settings:
     yandex: YandexCredentials
     yandex_pricing: YandexPricing
     timezone: ZoneInfo
+    # Optional (#92): without it the bot creates a Telegraph account on first use and keeps
+    # its token in owner_settings.
+    telegraph_access_token: str | None = None
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -95,6 +98,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
             image_cost_per_generation=_optional_float(env, "YANDEX_IMAGE_COST_PER_GENERATION"),
         ),
         timezone=timezone,
+        telegraph_access_token=env.get("TELEGRAPH_ACCESS_TOKEN") or None,
     )
 
 

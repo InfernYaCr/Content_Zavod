@@ -12,6 +12,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 
+from .article_card import render_article_card_text
 from .callback_codec import (
     Action,
     ExportArticle,
@@ -483,23 +484,29 @@ def build_members_keyboard(members: list[tuple[int, str]]) -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_article_keyboard(article_id: str, plan_item_id: str) -> InlineKeyboardMarkup:
+def build_article_keyboard(
+    article_id: str, plan_item_id: str, *, read_url: str | None = None
+) -> InlineKeyboardMarkup:
+    """«📖 Читать» opens the Статья's Страница для чтения (#92) and is left out when it
+    couldn't be published; «✏️ Доработать» is the comment-gated Перегенерация."""
+    read = [InlineKeyboardButton(text="📖 Читать", url=read_url)] if read_url else []
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            _export_button_row(article_id, docx_label="📄 .docx", md_label="📝 .md"),
             [
+                *read,
                 InlineKeyboardButton(
-                    text="🔄 Перегенерировать",
+                    text="✏️ Доработать",
                     callback_data=encode_callback_data(
                         SimpleAction("regenerate_article", article_id)
                     ),
                 ),
+            ],
+            _export_button_row(article_id, docx_label="⬇️ .docx", md_label="⬇️ .md"),
+            [
                 InlineKeyboardButton(
-                    text="✅",
+                    text="✅ Готово",
                     callback_data=encode_callback_data(SimpleAction("approve", article_id)),
                 ),
-            ],
-            [
                 InlineKeyboardButton(
                     text="🖼 Обложка",
                     callback_data=encode_callback_data(SimpleAction("request_cover", plan_item_id)),
@@ -677,10 +684,12 @@ class TelegramGateway:
     async def edit_notice(self, chat_id: int, message_id: int, text: str) -> None:
         await self._bot.edit_message_text(chat_id, message_id, text)
 
-    async def send_article_ready(self, chat_id: int, article: ArticleView) -> None:
-        text = f"📄 {article.title} ({article.platform})\nВыберите формат для скачивания:"
+    async def send_article_ready(
+        self, chat_id: int, article: ArticleView, *, read_url: str | None = None
+    ) -> None:
+        keyboard = build_article_keyboard(article.id, article.plan_item_id, read_url=read_url)
         await self._bot.send_message(
-            chat_id, text, reply_markup=build_article_keyboard(article.id, article.plan_item_id)
+            chat_id, render_article_card_text(article), reply_markup=keyboard
         )
 
     async def send_article_document(

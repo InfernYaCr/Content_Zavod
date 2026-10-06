@@ -276,6 +276,32 @@ async def test_get_plan_id_raises_for_unknown_article(article: Article) -> None:
         await article.get_plan_id("missing")
 
 
+async def test_telegraph_path_is_unset_until_stored_and_does_not_bump_updated_at(
+    article: Article, plan: Plan, pool
+) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.create(plan_id, item_id, "Topic A", "zen")
+    updated_before = await pool.fetchval(
+        "SELECT updated_at FROM articles WHERE id = $1", article_id
+    )
+
+    assert await article.get_telegraph_path(article_id) is None
+    await article.set_telegraph_path(article_id, "Topic-A-10-07")
+
+    assert await article.get_telegraph_path(article_id) == "Topic-A-10-07"
+    assert (
+        await pool.fetchval("SELECT updated_at FROM articles WHERE id = $1", article_id)
+        == updated_before
+    )
+
+
+async def test_telegraph_path_raises_for_unknown_article(article: Article) -> None:
+    with pytest.raises(ArticleNotFound):
+        await article.get_telegraph_path("missing")
+    with pytest.raises(ArticleNotFound):
+        await article.set_telegraph_path("missing", "p")
+
+
 async def test_list_versions_is_empty_for_an_article_with_no_version_yet(
     article: Article, plan: Plan
 ) -> None:

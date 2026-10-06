@@ -155,6 +155,23 @@ class Article:
             raise ArticleNotFound(article_id)
         return PlanId(row["plan_id"])
 
+    async def get_telegraph_path(self, article_id: ArticleId) -> str | None:
+        """The Статья's Страница для чтения on telegra.ph (#92), `None` until first published."""
+        row = await self._pool.fetchrow(
+            "SELECT telegraph_path FROM articles WHERE id = $1", article_id
+        )
+        if row is None:
+            raise ArticleNotFound(article_id)
+        return row["telegraph_path"]
+
+    async def set_telegraph_path(self, article_id: ArticleId, path: str) -> None:
+        # Deliberately leaves updated_at alone: it keys request_regeneration's idempotency.
+        result = await self._pool.execute(
+            "UPDATE articles SET telegraph_path = $2 WHERE id = $1", article_id, path
+        )
+        if result == "UPDATE 0":
+            raise ArticleNotFound(article_id)
+
     async def list_versions(self, article_id: ArticleId) -> list[ArticleVersionSummary]:
         """Every Версия's metadata, newest first, for /history's version list (#26)."""
         article_row = await self._pool.fetchrow("SELECT id FROM articles WHERE id = $1", article_id)

@@ -19,6 +19,7 @@ async def test_run_pending_applies_every_migration_once_and_is_idempotent(
         "0005_nullable_article_version_cost",
         "0006_plan_generation_progress",
         "0007_plan_item_active_cover_job",
+        "0009_article_telegraph_path",
     ]
 
     applied_second_run = await run_migrations(isolated_pool)
@@ -33,6 +34,7 @@ async def test_run_pending_applies_every_migration_once_and_is_idempotent(
         "0005_nullable_article_version_cost",
         "0006_plan_generation_progress",
         "0007_plan_item_active_cover_job",
+        "0009_article_telegraph_path",
     ]
 
 
@@ -120,9 +122,10 @@ async def test_concurrent_run_pending_does_not_race_on_the_tracking_insert(
         "0005_nullable_article_version_cost",
         "0006_plan_generation_progress",
         "0007_plan_item_active_cover_job",
+        "0009_article_telegraph_path",
     }
     recorded = await isolated_pool.fetch("SELECT version FROM schema_migrations")
-    assert len(recorded) == 7
+    assert len(recorded) == 8
 
 
 async def test_rollback_of_0002_drops_only_the_index_without_losing_data(
@@ -166,6 +169,7 @@ async def test_rollback_of_0002_drops_only_the_index_without_losing_data(
         "0005_nullable_article_version_cost",
         "0006_plan_generation_progress",
         "0007_plan_item_active_cover_job",
+        "0009_article_telegraph_path",
     }
     statuses = {
         row["id"]: row["status"]

@@ -124,6 +124,7 @@ class FakeGateway:
         self.sent_plans: list[tuple[int, PlanView]] = []
         self.edited_plans: list[tuple[int, int, PlanView]] = []
         self.sent_articles: list[tuple[int, ArticleView]] = []
+        self.article_read_urls: list[str | None] = []
         self.sent_errors: list[tuple[int, str]] = []
         self.sent_errors_with_retry: list[tuple[int, str, int]] = []
         self.sent_notices: list[tuple[int, str]] = []
@@ -144,8 +145,11 @@ class FakeGateway:
     async def edit_plan(self, chat_id: int, message_id: int, plan: PlanView) -> None:
         self.edited_plans.append((chat_id, message_id, plan))
 
-    async def send_article_ready(self, chat_id: int, article: ArticleView) -> None:
+    async def send_article_ready(
+        self, chat_id: int, article: ArticleView, *, read_url: str | None = None
+    ) -> None:
         self.sent_articles.append((chat_id, article))
+        self.article_read_urls.append(read_url)
 
     async def send_error(self, chat_id: int, text: str) -> None:
         self.sent_errors.append((chat_id, text))
@@ -493,3 +497,72 @@ async def test_unknown_job_type_is_ignored() -> None:
     assert gateway.sent_errors == []
     assert gateway.sent_plans == []
     assert gateway.sent_articles == []
+
+
+class FakePublisher:
+    """Stands in for `telegraph.TelegraphPublisher` (#92): URL per article id, or `None`
+    the way a real publish reports a Telegraph failure."""
+
+    def __init__(self, urls: dict[str, str | None]) -> None:
+        self._urls = urls
+        self.published: list[str] = []
+
+    async def publish(self, article: ArticleView) -> str | None:
+        self.published.append(article.id)
+        return self._urls.get(article.id)
+
+
+def _article_result(job_type: str = "regenerate_article") -> JobResult:
+    return JobResult(
+        job_id=1,
+        job_type=job_type,
+        status="done",
+        output={
+            "article_id": "article-1",
+            "content": "body",
+            "prompt": "p",
+            "model": "m",
+            "tokens": 10,
+            "cost": 0.0,
+        },
+    )
+
+
+async def test_ready_article_card_carries_the_published_read_url() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    publisher = FakePublisher({"article-1": "https://telegra.ph/T-10-07"})
+    handle = _make_notification_handler(plan, article, gateway, 42, publisher=publisher)
+
+    await handle(_article_result())
+
+    assert publisher.published == ["article-1"]
+    assert [a.id for _, a in gateway.sent_articles] == ["article-1"]
+    assert gateway.article_read_urls == ["https://telegra.ph/T-10-07"]
+
+
+async def test_telegraph_failure_still_delivers_the_card_without_read_url() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    publisher = FakePublisher({"article-1": None})
+    handle = _make_notification_handler(plan, article, gateway, 42, publisher=publisher)
+
+    await handle(_article_result())
+
+    assert [a.id for _, a in gateway.sent_articles] == ["article-1"]
+    assert gateway.article_read_urls == [None]
+
+
+async def test_batch_burst_publishes_every_ready_article() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    plan.progress_message_refs["plan-1"] = PlanMessageRef(chat_id=42, message_id=7)
+    plan.generation_progress_results = [(2, 2)]
+    article.articles_for_plan = [
+        ArticleView(id="a1", plan_item_id="item-1", title="T1", platform="zen", content=b"c1"),
+        ArticleView(id="a2", plan_item_id="item-1", title="T1", platform="vc", content=b"c2"),
+    ]
+    publisher = FakePublisher({"a1": "https://telegra.ph/a1", "a2": None})
+    handle = _make_notification_handler(plan, article, gateway, 42, publisher=publisher)
+
+    await handle(_article_result("generate_article"))
+
+    assert publisher.published == ["a1", "a2"]
+    assert gateway.article_read_urls == ["https://telegra.ph/a1", None]

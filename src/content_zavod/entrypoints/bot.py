@@ -19,6 +19,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import wraps
+from typing import Protocol
 
 import asyncpg
 from aiogram import Bot, Dispatcher, Router
@@ -38,6 +39,7 @@ from ..access import COMMAND_ROLE, JoinRequests, Membership, Role, require_role
 from ..config import Settings, load_settings
 from ..domain import (
     Article,
+    ArticleView,
     GeneratedVersion,
     Plan,
     PlanId,
@@ -87,9 +89,16 @@ from ..telegram import (
     sync_commands,
     unpack_callback_query,
 )
+from ..telegraph import HttpxTelegraphClient, TelegraphPublisher
 from ._process import register_shutdown
 
 logger = logging.getLogger(__name__)
+
+
+class ArticlePagePublisher(Protocol):
+    """See `telegraph.TelegraphPublisher`: the Статья's page URL, `None` on failure."""
+
+    async def publish(self, article: ArticleView) -> str | None: ...
 
 
 class _AiogramBotClient:
@@ -497,6 +506,7 @@ async def _deliver(
     gateway: TelegramGateway,
     notify_chat_id: int,
     delivery: _Delivery,
+    publisher: ArticlePagePublisher | None = None,
 ) -> None:
     """The Telegram half of notification handling (#73): turns an `_apply_result` outcome
     into the actual message(s). A Plan delivery goes through `deliver_plan_message`, which
@@ -509,16 +519,18 @@ async def _deliver(
         await gateway.send_notice(notify_chat_id, delivery.text)
     elif isinstance(delivery, _ArticleDelivery):
         view = await article.get(delivery.article_id)
-        await gateway.send_article_ready(notify_chat_id, view)
+        await _send_article_card(gateway, notify_chat_id, view, publisher)
     elif isinstance(delivery, _CoverDelivery):
         item = await plan.get_item(delivery.plan_item_id)
         await gateway.send_cover(notify_chat_id, delivery.image, delivery.mime_type, item.title)
     elif isinstance(delivery, _ErrorDelivery):
         await gateway.send_error_with_retry(notify_chat_id, delivery.text, delivery.job_id)
         if delivery.batch_progress is not None:
-            await _deliver_batch(plan, article, gateway, notify_chat_id, delivery.batch_progress)
+            await _deliver_batch(
+                plan, article, gateway, notify_chat_id, delivery.batch_progress, publisher
+            )
     elif isinstance(delivery, _BatchProgressDelivery | _BatchDoneDelivery):
-        await _deliver_batch(plan, article, gateway, notify_chat_id, delivery)
+        await _deliver_batch(plan, article, gateway, notify_chat_id, delivery, publisher)
 
 
 async def _deliver_batch(
@@ -527,6 +539,7 @@ async def _deliver_batch(
     gateway: TelegramGateway,
     notify_chat_id: int,
     delivery: _BatchProgressDelivery | _BatchDoneDelivery,
+    publisher: ArticlePagePublisher | None = None,
 ) -> None:
     """Shared by the dedicated batch deliveries and a failed Job that was also part of an open
     batch (#91) - a failure still has to advance/finalize the shared progress message, and if
@@ -541,18 +554,36 @@ async def _deliver_batch(
         await gateway.edit_generation_progress(ref.chat_id, ref.message_id, done, delivery.total)
     if isinstance(delivery, _BatchDoneDelivery):
         for view in await article.list_for_plan(delivery.plan_id):
-            await gateway.send_article_ready(notify_chat_id, view)
+            await _send_article_card(gateway, notify_chat_id, view, publisher)
         for cover in await plan.list_covers_for_plan(delivery.plan_id):
             await gateway.send_cover(notify_chat_id, cover.image, cover.mime_type, cover.title)
 
 
+async def _send_article_card(
+    gateway: TelegramGateway,
+    notify_chat_id: int,
+    view: ArticleView,
+    publisher: ArticlePagePublisher | None,
+) -> None:
+    """Publishes (or updates) the Статья's Страница для чтения first, so the card can carry
+    «📖 Читать» (#92). `publish` returns `None` on any Telegraph failure - the card still goes
+    out, just without that button."""
+    read_url = await publisher.publish(view) if publisher is not None else None
+    await gateway.send_article_ready(notify_chat_id, view, read_url=read_url)
+
+
 def _make_notification_handler(
-    plan: Plan, article: Article, gateway: TelegramGateway, notify_chat_id: int
+    plan: Plan,
+    article: Article,
+    gateway: TelegramGateway,
+    notify_chat_id: int,
+    *,
+    publisher: ArticlePagePublisher | None = None,
 ):
     async def handle(result: JobResult) -> None:
         delivery = await _apply_result(plan, article, result)
         if delivery is not None:
-            await _deliver(plan, article, gateway, notify_chat_id, delivery)
+            await _deliver(plan, article, gateway, notify_chat_id, delivery, publisher)
 
     return handle
 
@@ -633,8 +664,15 @@ async def main(settings: Settings | None = None) -> None:
         stop = asyncio.Event()
         register_shutdown(stop)
 
+        telegraph_client = HttpxTelegraphClient()
+        publisher = TelegraphPublisher(
+            telegraph_client,
+            article,
+            owner_settings,
+            access_token=settings.telegraph_access_token,
+        )
         notify_handler = _make_notification_handler(
-            plan, article, gateway, settings.telegram_notify_chat_id
+            plan, article, gateway, settings.telegram_notify_chat_id, publisher=publisher
         )
         polling_task = asyncio.create_task(dispatcher.start_polling(bot, handle_signals=False))
         notifications_task = asyncio.create_task(
@@ -649,6 +687,7 @@ async def main(settings: Settings | None = None) -> None:
             await polling_task
             await notifications_task
             scheduler.shutdown(wait=False)
+            await telegraph_client.aclose()
             await bot.session.close()
     finally:
         await pool.close()
