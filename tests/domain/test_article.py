@@ -396,6 +396,8 @@ async def test_request_generation_creates_the_article_and_enqueues_generate_arti
     assert claimed.job_type == "generate_article"
     assert claimed.payload == {
         "article_id": article_id,
+        # #94: the worker keys the Тема's cached Исследование on it.
+        "plan_item_id": item_id,
         "title": "Topic A",
         "platform": "zen",
         "summary": "summary text",

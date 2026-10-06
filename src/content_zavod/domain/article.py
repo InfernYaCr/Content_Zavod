@@ -280,6 +280,7 @@ class Article:
             "generate_article",
             {
                 "article_id": article_id,
+                "plan_item_id": plan_item_id,
                 "title": title,
                 "platform": platform,
                 "summary": summary,

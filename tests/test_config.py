@@ -105,3 +105,24 @@ def test_load_settings_raises_for_non_numeric_pricing() -> None:
 
     with pytest.raises(ConfigError):
         load_settings(env)
+
+
+def test_load_settings_web_search_is_on_by_default_without_search_pricing() -> None:
+    settings = load_settings(_BASE_ENV)
+
+    assert settings.web_search_enabled is True
+    assert settings.yandex_pricing.search_cost_per_request is None
+
+
+def test_load_settings_parses_web_search_switch_and_pricing() -> None:
+    env = {**_BASE_ENV, "YANDEX_WEB_SEARCH": "off", "YANDEX_SEARCH_COST_PER_REQUEST": "0.48"}
+
+    settings = load_settings(env)
+
+    assert settings.web_search_enabled is False
+    assert settings.yandex_pricing.search_cost_per_request == 0.48
+
+
+def test_load_settings_rejects_a_malformed_web_search_switch() -> None:
+    with pytest.raises(ConfigError):
+        load_settings({**_BASE_ENV, "YANDEX_WEB_SEARCH": "maybe"})

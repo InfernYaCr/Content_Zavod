@@ -46,6 +46,8 @@ class YandexPricing:
 
     text_cost_per_1k_tokens: float | None
     image_cost_per_generation: float | None
+    # One Yandex Search API web search request (#94) - research makes one per Тема.
+    search_cost_per_request: float | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,9 @@ class Settings:
     yandex: YandexCredentials
     yandex_pricing: YandexPricing
     timezone: ZoneInfo
+    # #94: `YANDEX_WEB_SEARCH=off` runs research in "no evidence" mode without calling the
+    # Search API (e.g. while the service account lacks the web search role).
+    web_search_enabled: bool = True
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -93,8 +98,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         yandex_pricing=YandexPricing(
             text_cost_per_1k_tokens=_optional_float(env, "YANDEX_TEXT_COST_PER_1K_TOKENS"),
             image_cost_per_generation=_optional_float(env, "YANDEX_IMAGE_COST_PER_GENERATION"),
+            search_cost_per_request=_optional_float(env, "YANDEX_SEARCH_COST_PER_REQUEST"),
         ),
         timezone=timezone,
+        web_search_enabled=_flag(env, "YANDEX_WEB_SEARCH", default=True),
     )
 
 
@@ -103,6 +110,17 @@ def _require(env: Mapping[str, str], name: str) -> str:
     if not value:
         raise ConfigError(f"missing required environment variable: {name}")
     return value
+
+
+def _flag(env: Mapping[str, str], name: str, *, default: bool) -> bool:
+    value = (env.get(name) or "").strip().lower()
+    if not value:
+        return default
+    if value in ("1", "on", "true", "yes"):
+        return True
+    if value in ("0", "off", "false", "no"):
+        return False
+    raise ConfigError(f"invalid {name}={value!r}, must be on/off")
 
 
 def _optional_float(env: Mapping[str, str], name: str) -> float | None:
