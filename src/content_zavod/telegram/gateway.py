@@ -469,17 +469,41 @@ def build_join_request_keyboard(join_request_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def build_members_keyboard(members: list[tuple[int, str]]) -> InlineKeyboardMarkup:
-    """One "Удалить" row per (telegram_id, role) member, for the /members command."""
-    rows = [
-        [
-            InlineKeyboardButton(
-                text=f"❌ Удалить {telegram_id} ({role})",
-                callback_data=encode_callback_data(SimpleAction("remove_member", str(telegram_id))),
+def build_members_keyboard(
+    members: list[tuple[int, str]], *, confirm_id: int | None = None
+) -> InlineKeyboardMarkup:
+    """One "Удалить" row per (telegram_id, label) member, for the /members command. The
+    `confirm_id` member's row asks «Да, удалить / Отмена» instead (#90)."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for telegram_id, label in members:
+        if telegram_id == confirm_id:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"✅ Да, удалить {label}",
+                        callback_data=encode_callback_data(
+                            SimpleAction("confirm_remove_member", str(telegram_id))
+                        ),
+                    ),
+                    InlineKeyboardButton(
+                        text="↩️ Отмена",
+                        callback_data=encode_callback_data(
+                            SimpleAction("cancel_remove_member", str(telegram_id))
+                        ),
+                    ),
+                ]
             )
-        ]
-        for telegram_id, role in members
-    ]
+            continue
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"❌ Удалить {label}",
+                    callback_data=encode_callback_data(
+                        SimpleAction("remove_member", str(telegram_id))
+                    ),
+                )
+            ]
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -22,7 +22,7 @@ from typing import Protocol, assert_never
 
 from aiogram.types import CallbackQuery
 
-from ..access import AccessError, Membership, Role, require_role
+from ..access import AccessError, CannotRemoveSelf, Membership, Role, require_role
 from ..domain import PLATFORMS, Article, DomainError, Plan
 from ..job_queue import JobId, JobQueue
 from ..settings import SettingsService
@@ -49,6 +49,7 @@ from .history_command import (
     handle_history_week,
 )
 from .join_request_flow import JoinRequestFlow
+from .members_command import redraw_members
 from .persona_command import handle_persona_template_callback
 from .plan_review import PlanReview
 from .types import ArticleId, PlanId, PlanItemId
@@ -220,8 +221,25 @@ class CallbackDispatcher:
             case SimpleAction(action="remove_member", id_=id_):
                 if not await self._authorized("remove_member", role, deny_text, answer):
                     return
+                if int(id_) == user_id:
+                    raise CannotRemoveSelf()  # refuse up front rather than after «Да» (#90)
                 await answer()
-                await self._membership.remove_member(int(id_))
+                # Ask first (#90): redraw the list with this member's row as «Да / Отмена».
+                await redraw_members(
+                    self._membership, self._bot_client, chat_id, message_id, confirm_id=int(id_)
+                )
+            case SimpleAction(action="confirm_remove_member", id_=id_):
+                if not await self._authorized("confirm_remove_member", role, deny_text, answer):
+                    return
+                # Remove first, so a refusal (self / last Владелец) is the only, alerting answer.
+                await self._membership.remove_member(int(id_), removed_by=user_id)
+                await answer("Участник удалён.")
+                await redraw_members(self._membership, self._bot_client, chat_id, message_id)
+            case SimpleAction(action="cancel_remove_member"):
+                if not await self._authorized("cancel_remove_member", role, deny_text, answer):
+                    return
+                await answer()
+                await redraw_members(self._membership, self._bot_client, chat_id, message_id)
             case SimpleAction(action="persona_template", id_=id_):
                 if not await self._authorized("persona_template", role, deny_text, answer):
                     return

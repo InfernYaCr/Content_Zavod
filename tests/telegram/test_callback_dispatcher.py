@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
 
-from content_zavod.access.membership import Role
+from content_zavod.access.membership import MemberView, Role
 from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.telegram import (
     ArticleId,
@@ -83,8 +83,16 @@ class FakeMembership:
     async def role_for(self, telegram_id: int) -> Role | None:
         return self._roles.get(telegram_id)
 
-    async def remove_member(self, telegram_id: int) -> None:
+    async def remove_member(self, telegram_id: int, *, removed_by: int) -> None:
         self.removed.append(telegram_id)
+        self._roles.pop(telegram_id, None)
+
+    async def list_all(self) -> list[MemberView]:
+        return [
+            MemberView(telegram_id=tid, role=r, username=f"user{tid}")
+            for tid, r in sorted(self._roles.items())
+            if r is not None
+        ]
 
     async def list_by_role(self, role: str) -> list[int]:
         return [tid for tid, r in self._roles.items() if r == role]
@@ -445,11 +453,69 @@ async def test_decline_join_resolves_without_granting(f: Fixtures) -> None:
     assert f.membership.added == []
 
 
-async def test_remove_member_removes_for_owner(f: Fixtures) -> None:
-    answer = await dispatch(f, SimpleAction("remove_member", "42"), user_id=OWNER_ID)
+def _button_labels(keyboard: InlineKeyboardMarkup) -> list[str]:
+    return [button.text for row in keyboard.inline_keyboard for button in row]
+
+
+async def test_remove_member_asks_for_confirmation_instead_of_removing(f: Fixtures) -> None:
+    """#90: «Удалить» only swaps that member's row for «Да, удалить / Отмена»."""
+    answer = await dispatch(f, SimpleAction("remove_member", str(CM_ID)), user_id=OWNER_ID)
 
     assert answer.calls == [(None, None)]
-    assert f.membership.removed == [42]
+    assert f.membership.removed == []
+    chat_id, message_id, text, keyboard = f.bot.edited_messages[-1]
+    assert (chat_id, message_id) == (1, 2)
+    assert "@user2 — Контент-менеджер" in text
+    assert _button_labels(keyboard) == ["❌ Удалить @user1", "✅ Да, удалить @user2", "↩️ Отмена"]
+
+
+async def test_remove_member_refuses_yourself_up_front(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("remove_member", str(OWNER_ID)), user_id=OWNER_ID)
+
+    assert answer.calls == [("Нельзя удалить самого себя.", True)]
+    assert f.bot.edited_messages == []
+
+
+async def test_confirm_remove_member_removes_and_redraws_the_list(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("confirm_remove_member", str(CM_ID)), user_id=OWNER_ID)
+
+    assert answer.calls == [("Участник удалён.", None)]
+    assert f.membership.removed == [CM_ID]
+    _, _, text, keyboard = f.bot.edited_messages[-1]
+    assert "@user2" not in text
+    assert _button_labels(keyboard) == ["❌ Удалить @user1"]
+
+
+async def test_confirm_remove_member_refusal_is_the_only_answer(f: Fixtures) -> None:
+    """#90: a refused removal (here: the last Владелец) alerts once and changes nothing."""
+    from content_zavod.access import LastOwnerRemoval
+
+    async def refuse(telegram_id: int, *, removed_by: int) -> None:
+        raise LastOwnerRemoval()
+
+    f.membership.remove_member = refuse  # type: ignore[method-assign]
+
+    answer = await dispatch(f, SimpleAction("confirm_remove_member", "42"), user_id=OWNER_ID)
+
+    assert answer.calls == [("Нельзя удалить последнего Владельца.", True)]
+    assert f.bot.edited_messages == []
+
+
+async def test_cancel_remove_member_redraws_the_plain_list(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("cancel_remove_member", str(CM_ID)), user_id=OWNER_ID)
+
+    assert answer.calls == [(None, None)]
+    assert f.membership.removed == []
+    _, _, _, keyboard = f.bot.edited_messages[-1]
+    assert _button_labels(keyboard) == ["❌ Удалить @user1", "❌ Удалить @user2"]
+
+
+@pytest.mark.parametrize("action", ["confirm_remove_member", "cancel_remove_member"])
+async def test_remove_member_confirmation_refuses_content_manager(f: Fixtures, action) -> None:
+    answer = await dispatch(f, SimpleAction(action, "42"))
+
+    assert answer.calls == [(_OWNER_ONLY_TEXT, True)]
+    assert f.membership.removed == []
 
 
 async def test_persona_template_sets_persona_for_owner(f: Fixtures) -> None:
