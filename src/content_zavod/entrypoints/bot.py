@@ -88,8 +88,8 @@ from ..telegram import (
     sync_commands,
     unpack_callback_query,
 )
-from ..telegram.pending_inputs import PendingInputs
 from ..telegram.gateway import format_week_range
+from ..telegram.pending_inputs import PendingInputs
 from ..telegram.texts import job_failure_text
 from ._process import register_shutdown
 

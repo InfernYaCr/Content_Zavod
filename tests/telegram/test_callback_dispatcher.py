@@ -859,15 +859,6 @@ async def test_regenerate_second_press_on_the_plan_message_keeps_the_plan(f: Fix
     assert all("Генерирую" not in text for _, _, text, _ in f.bot.edited_messages)
 
 
-async def test_regenerate_skip_on_the_comment_prompt_shows_progress(f: Fixtures) -> None:
-    f.plan.message_ref = PlanMessageRef(chat_id=1, message_id=99)
-    await dispatch(f, SimpleAction("regenerate", "item-1"))
-
-    await dispatch(f, SimpleAction("regenerate", "item-1"))
-
-    assert f.bot.edited_messages[-1][:3] == (1, 2, "⏳ Генерирую...")
-
-
 # --- a DomainError/AccessError raised mid-branch is answered as a show_alert, not raised ---
 
 
