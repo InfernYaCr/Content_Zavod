@@ -74,6 +74,12 @@ async def handle_topic_command(
     week_label = week_label_for(current_time, tz)
     plan_id = await plan.add_topics(week_label, [TopicDraft(title=title)])
     view = await plan.get(plan_id)
-    await deliver_plan_message(plan, gateway, team_chat_id, view)
+    sent_new = await deliver_plan_message(plan, gateway, team_chat_id, view)
     if chat_id != team_chat_id:
         await gateway.send_notice(chat_id, "Тема добавлена в План — он в чате команды.")
+    elif not sent_new:
+        # The Plan message was edited in place, maybe far up the chat - without a reply the
+        # /topic would look like it did nothing.
+        await gateway.send_notice(
+            chat_id, "Тема добавлена в План — сообщение Плана выше обновлено."
+        )

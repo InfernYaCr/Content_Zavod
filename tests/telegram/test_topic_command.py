@@ -115,7 +115,10 @@ async def test_second_topic_for_the_same_plan_edits_the_canonical_message() -> N
         plan, gateway, chat_id=1, text="Another Topic", team_chat_id=1, tz=_TZ, now=_now
     )
 
-    assert len(bot.sent_messages) == 1
+    # One Plan message, edited in place; the second /topic only adds a short pointer to it.
+    assert [text for _chat, text, _kb in bot.sent_messages][1:] == [
+        "Тема добавлена в План — сообщение Плана выше обновлено."
+    ]
     assert len(bot.edited_messages) == 1
     edited_chat_id, edited_message_id, _text, _keyboard = bot.edited_messages[0]
     assert (edited_chat_id, edited_message_id) == (1, 1)
