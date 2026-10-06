@@ -22,7 +22,7 @@ def test_commands_for_role_owner_includes_owner_only_commands() -> None:
     commands = commands_for_role("owner")
 
     names = {c.command for c in commands}
-    assert {"members", "schedule", "set_schedule"} <= names
+    assert {"members", "schedule", "set_schedule", "project", "set_project"} <= names
 
 
 def test_commands_for_role_content_manager_excludes_owner_only_commands() -> None:
