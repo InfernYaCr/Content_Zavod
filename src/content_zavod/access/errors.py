@@ -14,6 +14,20 @@ class MemberNotFound(AccessError):
         super().__init__(f"No member with telegram_id={telegram_id!r}")
 
 
+class CannotRemoveSelf(AccessError):
+    """A member tried to remove themselves from the allowlist (#90)."""
+
+    def __init__(self) -> None:
+        super().__init__("Нельзя удалить самого себя.")
+
+
+class LastOwnerRemoval(AccessError):
+    """Removing this member would leave the bot without a Владелец (#90)."""
+
+    def __init__(self) -> None:
+        super().__init__("Нельзя удалить последнего Владельца.")
+
+
 class JoinRequestNotFound(AccessError):
     """No join request exists with the given id."""
 

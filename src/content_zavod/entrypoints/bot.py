@@ -29,6 +29,7 @@ from aiogram.types import (
     BotCommandScopeChat,
     BufferedInputFile,
     CallbackQuery,
+    ForceReply,
     InlineKeyboardMarkup,
     Message,
 )
@@ -89,6 +90,9 @@ from ..telegram import (
     sync_commands,
     unpack_callback_query,
 )
+from ..telegram.gateway import format_week_range
+from ..telegram.pending_inputs import PendingInputs
+from ..telegram.texts import job_failure_text
 from ._process import register_shutdown
 
 logger = logging.getLogger(__name__)
@@ -101,9 +105,15 @@ class _AiogramBotClient:
         self._bot = bot
 
     async def send_message(
-        self, chat_id: int, text: str, reply_markup: InlineKeyboardMarkup | None = None
+        self,
+        chat_id: int,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | ForceReply | None = None,
+        parse_mode: str | None = None,
     ) -> int:
-        message = await self._bot.send_message(chat_id, text, reply_markup=reply_markup)
+        message = await self._bot.send_message(
+            chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode
+        )
         return message.message_id
 
     async def send_document(
@@ -141,6 +151,13 @@ class _AiogramBotClient:
         except TelegramBadRequest as exc:
             if "message is not modified" not in str(exc):
                 raise
+
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        try:
+            await self._bot.delete_message(chat_id, message_id)
+        except TelegramBadRequest as exc:
+            # Already deleted, or older than Telegram's 48h delete window: nothing to tidy.
+            logger.info("could not delete message %s in chat %s: %s", message_id, chat_id, exc)
 
     async def set_my_commands(
         self, commands: list[BotCommand], *, scope: BotCommandScopeChat
@@ -219,12 +236,26 @@ def _build_router(
     async def on_topic(message: Message) -> None:
         parts = (message.text or "").split(maxsplit=1)
         text = parts[1] if len(parts) > 1 else ""
-        await handle_topic_command(plan, gateway, message.chat.id, text, tz=settings.timezone)
+        await handle_topic_command(
+            plan,
+            gateway,
+            message.chat.id,
+            text,
+            team_chat_id=settings.telegram_notify_chat_id,
+            tz=settings.timezone,
+        )
 
     @router.message(Command("generate_plan"))
     @gated(COMMAND_ROLE["generate_plan"])
     async def on_generate_plan(message: Message) -> None:
-        await handle_generate_plan_command(plan, gateway, message.chat.id, tz=settings.timezone)
+        await handle_generate_plan_command(
+            plan,
+            gateway,
+            message.chat.id,
+            queue=queue,
+            team_chat_id=settings.telegram_notify_chat_id,
+            tz=settings.timezone,
+        )
 
     @router.message(Command("history"))
     @gated(COMMAND_ROLE["history"])
@@ -332,16 +363,35 @@ def _build_router(
 
     @router.message()
     async def on_message(message: Message) -> None:
+        """Any non-command message: a possible comment for a pending regeneration (#4/#9).
+
+        In a group only a reply can be one - it must answer the comment prompt (#88) - so
+        everything else is dropped before Membership is even looked up, and a non-member
+        writing in the group gets no "Доступ запрещён" back; that refusal is private-only."""
         if message.from_user is None:
+            return
+        private = message.chat.type == "private"
+        if private:
+            reply_to_message_id = None
+        elif message.reply_to_message is not None:
+            reply_to_message_id = message.reply_to_message.message_id
+        else:
             return
         actual = await membership.role_for(message.from_user.id)
         if not require_role(actual, None):
-            await gateway.send_error(message.chat.id, ACCESS_DENIED_TEXT)
+            if private:
+                await gateway.send_error(message.chat.id, ACCESS_DENIED_TEXT)
             return
-        chat_id, user_id, text = message.chat.id, message.from_user.id, message.text or ""
-        consumed = await plan_review.handle_comment_reply(chat_id, user_id, text)
+        if message.text is None:
+            return  # a sticker/photo/voice is not a comment - the wait stays open
+        chat_id, user_id, text = message.chat.id, message.from_user.id, message.text
+        consumed = await plan_review.handle_comment_reply(
+            chat_id, user_id, text, reply_to_message_id
+        )
         if not consumed:
-            await article_regeneration.handle_comment_reply(chat_id, user_id, text)
+            await article_regeneration.handle_comment_reply(
+                chat_id, user_id, text, reply_to_message_id
+            )
 
     return router
 
@@ -423,6 +473,19 @@ async def _advance_batch(
     return _BatchProgressDelivery(plan_id=plan_id, done=done, total=total)
 
 
+def _empty_plan_text(week_label: str, empty_reason: str | None) -> str:
+    """Why a `generate_plan` run came back with no Темы, and what to do about it (#84)."""
+    if empty_reason == "all_recently_used":
+        why = "все найденные Темы недавно уже были в Планах"
+    else:
+        why = "ни одно Направление сейчас не растёт в Wordstat"
+    return (
+        f"План на {format_week_range(week_label)} не создан: {why}.\n"
+        "Предложите Тему сами: /topic <текст>\n"
+        "Или пусть Владелец проверит Направления: /directions"
+    )
+
+
 async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Delivery | None:
     """The DB half of notification handling (#73): applies a finished Job's result to
     domain state and returns what, if anything, still needs delivering to Telegram - `None`
@@ -431,11 +494,15 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
     as idempotent as the domain operations it calls."""
     if result.status == "failed":
         batch_delivery: _BatchProgressDelivery | _BatchDoneDelivery | None = None
+        failed_title: str | None = None
+        failed_platform: str | None = None
         if result.job_type in ("generate_article", "regenerate_article"):
             article_id = await article.mark_generation_failed(result.job_id)
             if article_id is None:
                 logger.info("Ignoring stale Article failure for job_id=%s", result.job_id)
                 return None
+            summary = await article.get_summary(article_id)
+            failed_title, failed_platform = summary.title, summary.platform
             if result.job_type == "generate_article":
                 batch_delivery = await _advance_batch(plan, await article.get_plan_id(article_id))
         elif result.job_type == "generate_cover":
@@ -443,11 +510,14 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
             if plan_item_id is None:
                 logger.info("Ignoring stale cover failure for job_id=%s", result.job_id)
                 return None
+            failed_title = (await plan.get_item(plan_item_id)).title
             batch_delivery = await _advance_batch(
                 plan, await plan.get_plan_id_for_item(plan_item_id)
             )
+        # The chat gets a plain Russian «Не удалось …» (#89); the technical error stays in the log.
+        logger.warning("Job %s (%s) failed: %s", result.job_id, result.job_type, result.error)
         return _ErrorDelivery(
-            text=f"Задача {result.job_type} завершилась ошибкой: {result.error}",
+            text=job_failure_text(result.job_type, title=failed_title, platform=failed_platform),
             job_id=result.job_id,
             batch_progress=batch_delivery,
         )
@@ -460,6 +530,12 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
             )
             for t in output["topics"]
         ]
+        if not topics:
+            # #84: an empty result creates no Plan (one with only "Утвердить всё" on it would
+            # start nothing) - the team chat gets what happened and what to do instead.
+            return _NoticeDelivery(
+                text=_empty_plan_text(output["week_label"], output.get("empty_reason"))
+            )
         plan_id = await plan.add_topics(output["week_label"], topics)
         return _PlanDelivery(plan_id=plan_id)
     if result.job_type == "regenerate_topic":
@@ -470,7 +546,8 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
                 title=output["title"], summary=output["summary"], keywords=output["keywords"]
             ),
         )
-        return _NoticeDelivery(text=f"Тема обновлена: {output['title']}")
+        # #81: the new title shows up in the Plan message itself, not in a separate notice.
+        return _PlanDelivery(plan_id=await plan.get_plan_id_for_item(plan_item_id))
     if result.job_type in ("generate_article", "regenerate_article"):
         article_id = ArticleId(output["article_id"])
         application = await article.record_version(
@@ -592,11 +669,15 @@ async def main(settings: Settings | None = None) -> None:
         bot = Bot(token=settings.telegram_bot_token)
         bot_client = _AiogramBotClient(bot)
         gateway = TelegramGateway(bot_client)
+        pending_inputs = PendingInputs(pool)
         comment_prompt = TelegramCommentPrompt(bot_client)
-        plan_review = PlanReview(plan, comment_prompt)
+        plan_review = PlanReview(plan, comment_prompt, pending_inputs)
         article_comment_prompt = TelegramCommentPrompt(bot_client, action="regenerate_article")
         article_regeneration = CommentGatedRegeneration[ArticleId](
-            article.request_regeneration, article_comment_prompt
+            article.request_regeneration,
+            article_comment_prompt,
+            pending_inputs,
+            kind="article_comment",
         )
         join_request_flow = JoinRequestFlow(join_requests, membership, gateway)
 

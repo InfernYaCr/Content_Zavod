@@ -12,7 +12,11 @@ class FakeRequests:
         self._requests: dict[int, JoinRequestView] = {}
         self._broadcasts: dict[int, list[JoinRequestBroadcast]] = {}
 
-    async def create(self, telegram_id: int, username: str | None) -> int:
+    async def create(self, telegram_id: int, username: str | None) -> int | None:
+        if any(
+            r.telegram_id == telegram_id and r.status == "pending" for r in self._requests.values()
+        ):
+            return None
         request_id = self._next_id
         self._next_id += 1
         self._requests[request_id] = JoinRequestView(
@@ -104,6 +108,29 @@ async def test_request_access_broadcasts_to_every_owner() -> None:
     view = await requests.get(1)
     broadcasts = await requests.broadcasts_for(view.id)
     assert {b.owner_telegram_id for b in broadcasts} == {10, 20}
+
+
+@pytest.mark.asyncio
+async def test_repeated_request_while_pending_is_not_rebroadcast() -> None:
+    """#90: an impatient user tapping «Запросить доступ» again doesn't spam the Owners."""
+    requests, membership, gateway = FakeRequests(), FakeMembership([10, 20]), FakeGateway()
+    flow = JoinRequestFlow(requests, membership, gateway)
+
+    first = await flow.request_access(telegram_id=100, username="alice")
+    second = await flow.request_access(telegram_id=100, username="alice")
+
+    assert (first, second) == (True, False)
+    assert len(gateway.sent_messages) == 2  # one per Owner, from the first request only
+
+
+@pytest.mark.asyncio
+async def test_new_request_is_allowed_once_the_previous_one_is_resolved() -> None:
+    requests, membership, gateway = FakeRequests(), FakeMembership([10]), FakeGateway()
+    flow = JoinRequestFlow(requests, membership, gateway)
+    await flow.request_access(telegram_id=100, username="alice")
+    await flow.handle_decline(resolver_id=10, resolver_name="Owner10", join_request_id=1)
+
+    assert await flow.request_access(telegram_id=100, username="alice") is True
 
 
 @pytest.mark.asyncio

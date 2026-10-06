@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 import pytest
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
 
-from content_zavod.access.membership import Role
+from content_zavod.access import MemberNotFound
+from content_zavod.access.membership import MemberView, Role
 from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.telegram import (
     ArticleId,
@@ -26,6 +27,7 @@ from content_zavod.telegram import (
     PlanId,
     PlanItemId,
     PlanItemView,
+    PlanMessageRef,
     PlanReview,
     PlanSummary,
     PlanView,
@@ -33,6 +35,9 @@ from content_zavod.telegram import (
     TelegramGateway,
 )
 from content_zavod.telegram.callback_dispatcher import CallbackDispatcher, CallbackInput
+from content_zavod.telegram.pending_inputs import PendingInput
+
+from .fakes import FakePendingInputs
 
 OWNER_ID = 1
 CM_ID = 2
@@ -66,6 +71,9 @@ class FakeBot:
     async def edit_message_reply_markup(self, chat_id, message_id, reply_markup=None) -> None:
         self.edited_messages.append((chat_id, message_id, "", reply_markup))
 
+    async def delete_message(self, chat_id, message_id) -> None:
+        pass
+
     async def set_my_commands(self, commands, *, scope) -> None:
         pass
 
@@ -83,8 +91,18 @@ class FakeMembership:
     async def role_for(self, telegram_id: int) -> Role | None:
         return self._roles.get(telegram_id)
 
-    async def remove_member(self, telegram_id: int) -> None:
+    async def remove_member(self, telegram_id: int, *, removed_by: int) -> None:
+        if telegram_id not in self._roles:
+            raise MemberNotFound(telegram_id)
         self.removed.append(telegram_id)
+        del self._roles[telegram_id]
+
+    async def list_all(self) -> list[MemberView]:
+        return [
+            MemberView(telegram_id=tid, role=r, username=f"user{tid}")
+            for tid, r in sorted(self._roles.items())
+            if r is not None
+        ]
 
     async def list_by_role(self, role: str) -> list[int]:
         return [tid for tid, r in self._roles.items() if r == role]
@@ -101,6 +119,7 @@ class FakePlan:
         self.started_batches: list[tuple[PlanId, int]] = []
         self.recorded_progress_refs: list[tuple[PlanId, int, int]] = []
         self._start_generation_batch_returns = start_generation_batch_returns
+        self.message_ref: PlanMessageRef | None = None
         self._view = PlanView(
             id=PlanId("plan-1"),
             week_label="2026-W33",
@@ -115,6 +134,12 @@ class FakePlan:
 
     async def get(self, plan_id: PlanId) -> PlanView:
         return self._view
+
+    async def get_plan_id_for_item(self, plan_item_id: PlanItemId) -> PlanId:
+        return self._view.id
+
+    async def get_message_ref(self, plan_id: PlanId) -> PlanMessageRef | None:
+        return self.message_ref
 
     async def get_summary(self, plan_id: PlanId) -> PlanSummary:
         return self._summary
@@ -208,11 +233,24 @@ class FakePlanOps:
 
 
 class FakePrompt:
+    """Each prompt is two messages, ids 100 (with the buttons) and 101 (ForceReply)."""
+
     def __init__(self) -> None:
         self.prompted: list[tuple[int, object]] = []
+        self.generating: list[tuple[int, int]] = []
+        self.withdrawn: list[tuple[int, int]] = []
 
-    async def prompt_for_comment(self, chat_id: int, id_: object) -> None:
+    async def prompt_for_comment(
+        self, chat_id: int, user_id: int, id_: object
+    ) -> tuple[int, int | None]:
         self.prompted.append((chat_id, id_))
+        return 100, 101
+
+    async def mark_generating(self, chat_id: int, pending: PendingInput) -> None:
+        self.generating.append((chat_id, pending.prompt_message_id))
+
+    async def withdraw(self, chat_id: int, pending: PendingInput) -> None:
+        self.withdrawn.append((chat_id, pending.prompt_message_id))
 
 
 class FakeArticleRegen:
@@ -229,9 +267,13 @@ class FakeJoinRequests:
         self._requests: dict[int, object] = {}
         self._broadcasts: dict[int, list[object]] = {}
 
-    async def create(self, telegram_id: int, username: str | None) -> int:
+    async def create(self, telegram_id: int, username: str | None) -> int | None:
         from content_zavod.access import JoinRequestView
 
+        if any(
+            r.telegram_id == telegram_id and r.status == "pending" for r in self._requests.values()
+        ):
+            return None
         request_id = self._next_id
         self._next_id += 1
         self._requests[request_id] = JoinRequestView(
@@ -314,10 +356,13 @@ class Fixtures:
         self.plan = plan if plan is not None else FakePlan()
         self.article = FakeArticle()
         self.plan_ops = FakePlanOps()
-        self.plan_review = PlanReview(self.plan_ops, FakePrompt())
+        self.pending_inputs = FakePendingInputs()
+        self.plan_prompt = FakePrompt()
+        self.plan_review = PlanReview(self.plan_ops, self.plan_prompt, self.pending_inputs)
         self.article_regen_op = FakeArticleRegen()
+        self.article_prompt = FakePrompt()
         self.article_regeneration = CommentGatedRegeneration[ArticleId](
-            self.article_regen_op, FakePrompt()
+            self.article_regen_op, self.article_prompt, self.pending_inputs, kind="article_comment"
         )
         self.join_requests = FakeJoinRequests()
         self.join_request_flow = JoinRequestFlow(self.join_requests, self.membership, self.gateway)
@@ -363,6 +408,31 @@ async def test_request_access_works_for_unregistered_caller(f: Fixtures) -> None
     assert answer.calls == [(None, None)]
     request = await f.join_requests.get(1)
     assert request.telegram_id == UNKNOWN_ID
+    assert f.bot.edited_messages[-1][2] == "Заявка отправлена. Ожидайте одобрения владельца."
+
+
+async def test_repeated_request_access_says_already_sent_and_does_not_rebroadcast(
+    f: Fixtures,
+) -> None:
+    """#90: the second tap while a заявка is pending isn't re-sent to the Owner."""
+    await dispatch(f, SimpleAction("request_access", "ignored"), user_id=UNKNOWN_ID)
+    sent_after_first = len(f.bot.sent_messages)
+
+    await dispatch(f, SimpleAction("request_access", "ignored"), user_id=UNKNOWN_ID)
+
+    assert len(f.bot.sent_messages) == sent_after_first
+    assert f.bot.edited_messages[-1][2] == "Заявка уже отправлена. Ожидайте одобрения владельца."
+
+
+async def test_request_access_by_an_existing_member_creates_no_request(f: Fixtures) -> None:
+    """#90: approving a member's own заявка would demote them to content_manager - possibly
+    the last Владелец - so a member's tap creates nothing."""
+    answer = await dispatch(f, SimpleAction("request_access", "ignored"), user_id=OWNER_ID)
+
+    assert answer.calls == [("У вас уже есть доступ.", None)]
+    assert f.join_requests._requests == {}
+    assert f.bot.sent_messages == []
+    assert f.bot.edited_messages == []
 
 
 # --- unregistered caller denied on every other Action ---
@@ -427,11 +497,79 @@ async def test_decline_join_resolves_without_granting(f: Fixtures) -> None:
     assert f.membership.added == []
 
 
-async def test_remove_member_removes_for_owner(f: Fixtures) -> None:
-    answer = await dispatch(f, SimpleAction("remove_member", "42"), user_id=OWNER_ID)
+def _button_labels(keyboard: InlineKeyboardMarkup) -> list[str]:
+    return [button.text for row in keyboard.inline_keyboard for button in row]
+
+
+async def test_remove_member_asks_for_confirmation_instead_of_removing(f: Fixtures) -> None:
+    """#90: «Удалить» only swaps that member's row for «Да, удалить / Отмена»."""
+    answer = await dispatch(f, SimpleAction("remove_member", str(CM_ID)), user_id=OWNER_ID)
 
     assert answer.calls == [(None, None)]
-    assert f.membership.removed == [42]
+    assert f.membership.removed == []
+    chat_id, message_id, text, keyboard = f.bot.edited_messages[-1]
+    assert (chat_id, message_id) == (1, 2)
+    assert "@user2 — Контент-менеджер" in text
+    assert _button_labels(keyboard) == ["❌ Удалить @user1", "✅ Да, удалить @user2", "↩️ Отмена"]
+
+
+async def test_remove_member_refuses_yourself_up_front(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("remove_member", str(OWNER_ID)), user_id=OWNER_ID)
+
+    assert answer.calls == [("Нельзя удалить самого себя.", True)]
+    assert f.bot.edited_messages == []
+
+
+async def test_confirm_remove_member_removes_and_redraws_the_list(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("confirm_remove_member", str(CM_ID)), user_id=OWNER_ID)
+
+    assert answer.calls == [("Участник удалён.", None)]
+    assert f.membership.removed == [CM_ID]
+    _, _, text, keyboard = f.bot.edited_messages[-1]
+    assert "@user2" not in text
+    assert _button_labels(keyboard) == ["❌ Удалить @user1"]
+
+
+async def test_confirm_remove_member_refusal_is_the_only_answer(f: Fixtures) -> None:
+    """#90: a refused removal (here: the last Владелец) alerts once and changes nothing."""
+    from content_zavod.access import LastOwnerRemoval
+
+    async def refuse(telegram_id: int, *, removed_by: int) -> None:
+        raise LastOwnerRemoval()
+
+    f.membership.remove_member = refuse  # type: ignore[method-assign]
+
+    answer = await dispatch(f, SimpleAction("confirm_remove_member", "42"), user_id=OWNER_ID)
+
+    assert answer.calls == [("Нельзя удалить последнего Владельца.", True)]
+    assert f.bot.edited_messages == []
+
+
+async def test_confirm_remove_member_already_removed_alerts_and_redraws(f: Fixtures) -> None:
+    """#90: a stale «Да» (another Owner removed them first) alerts and replaces the stale
+    confirmation row with the current list."""
+    answer = await dispatch(f, SimpleAction("confirm_remove_member", "42"), user_id=OWNER_ID)
+
+    assert answer.calls == [("Участник не найден.", True)]
+    _, _, _, keyboard = f.bot.edited_messages[-1]
+    assert _button_labels(keyboard) == ["❌ Удалить @user1", "❌ Удалить @user2"]
+
+
+async def test_cancel_remove_member_redraws_the_plain_list(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("cancel_remove_member", str(CM_ID)), user_id=OWNER_ID)
+
+    assert answer.calls == [(None, None)]
+    assert f.membership.removed == []
+    _, _, _, keyboard = f.bot.edited_messages[-1]
+    assert _button_labels(keyboard) == ["❌ Удалить @user1", "❌ Удалить @user2"]
+
+
+@pytest.mark.parametrize("action", ["confirm_remove_member", "cancel_remove_member"])
+async def test_remove_member_confirmation_refuses_content_manager(f: Fixtures, action) -> None:
+    answer = await dispatch(f, SimpleAction(action, "42"))
+
+    assert answer.calls == [(_OWNER_ONLY_TEXT, True)]
+    assert f.membership.removed == []
 
 
 async def test_persona_template_sets_persona_for_owner(f: Fixtures) -> None:
@@ -507,11 +645,50 @@ async def test_regenerate_article_prompts_for_a_comment_on_first_press(f: Fixtur
     assert len(f.article_regen_op.regenerated) == 0
 
 
+async def test_second_regenerate_article_press_marks_the_prompt_not_the_card(f: Fixtures) -> None:
+    """#80: pressing 🔄 on the Статья card twice regenerates without a comment, but the
+    "generating" edit goes to the comment prompt - the card (message 2) keeps its buttons."""
+    await dispatch(f, SimpleAction("regenerate_article", "article-1"))
+    answer = await dispatch(f, SimpleAction("regenerate_article", "article-1"))
+
+    assert answer.calls == [("Принято, генерирую...", None)]
+    assert f.article_regen_op.regenerated == [(ArticleId("article-1"), None)]
+    assert f.bot.edited_messages == []
+    assert f.article_prompt.generating == [(1, 100)]
+
+
 async def test_approve_marks_article_exported(f: Fixtures) -> None:
     answer = await dispatch(f, SimpleAction("approve", "article-1"))
 
-    assert answer.calls == [(None, None)]
+    assert answer.calls == [("Отмечено как готовое", None)]
     assert f.article.mark_exported_calls == [ArticleId("article-1")]
+
+
+async def test_approve_redraws_the_card_keyboard_with_the_done_state(f: Fixtures) -> None:
+    """#86: the card itself shows the Статья was accepted - ✅ becomes «✅ Готово»."""
+    await dispatch(f, SimpleAction("approve", "article-1"))
+
+    chat_id, message_id, _, keyboard = f.bot.edited_messages[-1]
+    assert (chat_id, message_id) == (1, 2)
+    labels = [button.text for row in keyboard.inline_keyboard for button in row]
+    assert "✅ Готово" in labels
+    assert "✅" not in labels
+
+
+async def test_approve_refusal_is_the_only_answer(f: Fixtures) -> None:
+    """A Статья that isn't ready gets one alerting answer, and the card isn't redrawn."""
+    from content_zavod.domain import ArticleNotReady
+
+    async def not_ready(article_id: ArticleId) -> None:
+        raise ArticleNotReady(article_id)
+
+    f.article.mark_exported = not_ready  # type: ignore[method-assign]
+
+    answer = await dispatch(f, SimpleAction("approve", "article-1"))
+
+    assert len(answer.calls) == 1
+    assert answer.calls[0][1] is True
+    assert f.bot.edited_messages == []
 
 
 async def test_request_cover_requests_the_cover(f: Fixtures) -> None:
@@ -533,6 +710,54 @@ async def test_regenerate_prompts_for_a_comment_on_first_press(f: Fixtures) -> N
 
     assert answer.calls == [(None, None)]
     assert f.plan_ops.regenerated == []
+
+
+async def test_second_regenerate_press_marks_the_prompt_not_the_plan(f: Fixtures) -> None:
+    """#80: pressing 🔄 on the Тема twice regenerates without a comment, but the
+    "generating" edit goes to the comment prompt - the Plan (message 2) keeps its keyboard."""
+    await dispatch(f, SimpleAction("regenerate", "item-1"))
+    answer = await dispatch(f, SimpleAction("regenerate", "item-1"))
+
+    assert answer.calls == [("Принято, генерирую...", None)]
+    assert f.plan_ops.regenerated == [(PlanItemId("item-1"), None)]
+    assert f.bot.edited_messages == []
+    assert f.plan_prompt.generating == [(1, 100)]
+
+
+async def test_cancel_comment_drops_the_plan_wait_and_closes_the_prompt(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("regenerate", "item-1"))
+
+    answer = await dispatch(f, SimpleAction("cancel_comment", "item-1"))
+
+    assert answer.calls == [(None, None)]
+    # The flow deletes its prompt; the pressed message is not edited by the dispatcher.
+    assert f.plan_prompt.withdrawn == [(1, 100)]
+    assert f.bot.edited_messages == []
+    assert await f.plan_review.handle_comment_reply(1, CM_ID, "too late", None) is False
+    assert f.plan_ops.regenerated == []
+
+
+async def test_cancel_comment_drops_the_article_wait(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("regenerate_article", "article-1"))
+
+    await dispatch(f, SimpleAction("cancel_comment", "article-1"))
+
+    assert f.article_prompt.withdrawn == [(1, 100)]
+    assert f.plan_prompt.withdrawn == []
+    assert f.pending_inputs.rows == {}
+
+
+async def test_cancel_comment_without_a_matching_wait_leaves_the_message(f: Fixtures) -> None:
+    """A stale Отмена (or one pressed by another member) cancels nothing, so it must not
+    remove a prompt that is still waiting for its owner (#88)."""
+    await dispatch(f, SimpleAction("regenerate", "item-1"))
+
+    answer = await dispatch(f, SimpleAction("cancel_comment", "item-1"), user_id=OWNER_ID)
+
+    assert answer.calls == [(None, None)]
+    assert f.bot.edited_messages == []
+    assert f.plan_prompt.withdrawn == []
+    assert len(f.pending_inputs.rows) == 1
 
 
 async def test_approve_all_approves_and_fans_out_generation(f: Fixtures) -> None:
@@ -569,12 +794,69 @@ async def test_approve_all_replay_does_not_resend_progress_message() -> None:
     assert f.plan.recorded_progress_refs == []
 
 
-async def test_delete_deletes_and_sends_notice(f: Fixtures) -> None:
+async def test_approve_all_re_renders_the_plan_without_edit_buttons(f: Fixtures) -> None:
+    """#81: after approving, the pressed Plan message is redrawn from the DB - approved Темы
+    leave no 🔄/🗑/"Утвердить всё" behind."""
+    f.plan._view = PlanView(
+        id=PlanId("plan-1"),
+        week_label="2026-W33",
+        items=[PlanItemView(id=PlanItemId("item-1"), title="Тема", status="approved")],
+    )
+
+    await dispatch(f, SimpleAction("approve_all", "plan-1"))
+
+    chat_id, message_id, text, keyboard = f.bot.edited_messages[-1]
+    assert (chat_id, message_id) == (1, 2)
+    assert "Тема — утверждена" in text
+    assert keyboard is None
+
+
+async def test_delete_deletes_and_re_renders_the_plan(f: Fixtures) -> None:
+    """#81: no separate "Тема удалена." - the pressed Plan message is redrawn from the DB."""
+    f.plan._view = PlanView(
+        id=PlanId("plan-1"),
+        week_label="2026-W33",
+        items=[PlanItemView(id=PlanItemId("item-1"), title="Тема", status="rejected")],
+    )
+
     answer = await dispatch(f, SimpleAction("delete", "item-1"))
 
     assert answer.calls == [(None, None)]
     assert f.plan_ops.deleted == [PlanItemId("item-1")]
-    assert f.bot.sent_messages[-1][1] == "Тема удалена."
+    assert f.bot.sent_messages == []
+    chat_id, message_id, text, keyboard = f.bot.edited_messages[-1]
+    assert (chat_id, message_id) == (1, 2)
+    assert "Тема — убрана" in text
+    assert keyboard is None
+
+
+async def test_delete_on_a_later_page_redraws_that_page(f: Fixtures) -> None:
+    """Deleting Тема 9 (page 2 of 8-per-page) must not throw the reader back to page 1."""
+    items = [
+        PlanItemView(id=PlanItemId(f"item-{n}"), title=f"Тема {n}", status="pending_review")
+        for n in range(1, 10)
+    ]
+    f.plan._view = PlanView(id=PlanId("plan-1"), week_label="2026-W33", items=items)
+
+    await dispatch(f, SimpleAction("delete", "item-9"))
+
+    _, _, text, _ = f.bot.edited_messages[-1]
+    assert "Страница 2/2" in text
+    assert "9. Тема 9" in text
+
+
+async def test_regenerate_second_press_on_the_plan_message_keeps_the_plan(f: Fixtures) -> None:
+    """A second 🔄 on the Plan message (instead of the comment prompt's "Пропустить") enqueues
+    without a comment but must not overwrite the Plan with "⏳ Генерирую..." - nothing would
+    redraw it if the Job then failed."""
+    f.plan.message_ref = PlanMessageRef(chat_id=1, message_id=2)
+    await dispatch(f, SimpleAction("regenerate", "item-1"))
+
+    answer = await dispatch(f, SimpleAction("regenerate", "item-1"))
+
+    assert answer.calls == [("Принято, генерирую...", None)]
+    assert f.plan_ops.regenerated == [(PlanItemId("item-1"), None)]
+    assert all("Генерирую" not in text for _, _, text, _ in f.bot.edited_messages)
 
 
 # --- a DomainError/AccessError raised mid-branch is answered as a show_alert, not raised ---
@@ -584,12 +866,28 @@ async def test_domain_error_from_a_branch_is_answered_not_raised(f: Fixtures) ->
     from content_zavod.domain import DomainError
 
     async def boom(plan_item_id: PlanItemId) -> None:
-        raise DomainError("Тема не найдена")
+        raise DomainError("some technical detail")
 
     f.plan_ops.delete_item = boom  # type: ignore[method-assign]
 
     answer = await dispatch(f, SimpleAction("delete", "item-1"))
 
     # The branch already answered() before calling the collaborator that raised (same
-    # ordering as before this refactor); the DomainError produces a second, alerting answer.
-    assert answer.calls[-1] == ("Тема не найдена", True)
+    # ordering as before this refactor); the DomainError produces a second, alerting answer -
+    # an unmapped error class gets the generic Russian fallback, never its own text (#89).
+    assert answer.calls[-1] == ("Не получилось, попробуйте ещё раз", True)
+
+
+async def test_known_domain_error_is_alerted_in_russian_not_its_english_text(
+    f: Fixtures,
+) -> None:
+    from content_zavod.domain.errors import PlanItemNotEditable
+
+    async def boom(plan_item_id: PlanItemId) -> None:
+        raise PlanItemNotEditable(plan_item_id, "approved")
+
+    f.plan_ops.delete_item = boom  # type: ignore[method-assign]
+
+    answer = await dispatch(f, SimpleAction("delete", "item-1"))
+
+    assert answer.calls[-1] == ("Эту Тему уже нельзя изменить.", True)
