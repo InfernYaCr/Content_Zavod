@@ -376,6 +376,32 @@ async def test_generate_article_records_version_and_sends_article() -> None:
     assert len(gateway.sent_articles) == 1
 
 
+async def test_article_research_status_is_recorded_on_the_version_not_in_its_text() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(
+        JobResult(
+            job_id=1,
+            job_type="generate_article",
+            status="done",
+            output={
+                "article_id": "article-1",
+                "content": "body",
+                "prompt": "p",
+                "model": "m",
+                "tokens": 10,
+                "cost": 0.0,
+                "research_status": "no_evidence",
+            },
+        )
+    )
+
+    [(_, version)] = article.recorded_versions
+    assert version.research_status == "no_evidence"
+    assert version.content == "body"
+
+
 async def test_replayed_article_result_reuses_version_then_retries_telegram_send() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     article.application = "already_applied"

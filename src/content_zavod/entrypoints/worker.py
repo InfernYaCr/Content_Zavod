@@ -4,7 +4,8 @@ Wires the already-tested pieces together: one `asyncpg.Pool`, `JobQueue`,
 `Plan`/`Article` (used here only as the readers `regenerate_topic`/
 `regenerate_article` need, per ADR-0004's "notification handler applies the
 result" split — this process never writes Plan/Article state itself), the
-Yandex clients, and the Job Handler factories from `pipelines/`, then runs
+Yandex clients, the Тема research pieces (web search, page fetcher, Postgres
+research cache - #94), and the Job Handler factories from `pipelines/`, then runs
 `run_worker` until SIGINT/SIGTERM.
 """
 
@@ -18,12 +19,13 @@ from typing import Any
 import asyncpg
 
 from ..config import Settings, YandexCredentials, load_settings
-from ..domain import Article, GenerationSteps, Plan
+from ..domain import Article, GenerationSteps, Plan, TopicResearchStore
 from ..job_queue import ClaimedJob, JobHandler, JobPartialFailure, JobQueue, run_worker
 from ..migrations import run_migrations
 from ..owner_settings import OwnerSettingsStore
 from ..pipelines import (
-    HttpxUrlReachabilityChecker,
+    HttpxPageFetcher,
+    TopicResearcher,
     make_generate_article_handler,
     make_generate_cover_handler,
     make_generate_plan_handler,
@@ -31,7 +33,7 @@ from ..pipelines import (
     make_regenerate_topic_handler,
 )
 from ..settings import SettingsService
-from ..yandex import ImageGenerator, KeywordStats, TextGenerator
+from ..yandex import ImageGenerator, KeywordStats, TextGenerator, WebSearch
 from ._process import register_shutdown
 
 logger = logging.getLogger(__name__)
@@ -108,17 +110,28 @@ async def main(settings: Settings | None = None) -> None:
         keyword_stats = _build_yandex_client(
             settings.yandex, KeywordStats.with_service_account_key, KeywordStats.with_oauth_token
         )
-        url_checker = HttpxUrlReachabilityChecker()
+        web_search = (
+            _build_yandex_client(
+                settings.yandex,
+                WebSearch.with_service_account_key,
+                WebSearch.with_oauth_token,
+                cost_per_request=settings.yandex_pricing.search_cost_per_request,
+            )
+            if settings.web_search_enabled
+            else None
+        )
+        page_fetcher = HttpxPageFetcher()
+        researcher = TopicResearcher(web_search, page_fetcher, TopicResearchStore(pool))
 
         handlers: dict[str, JobHandler] = {
             "generate_plan": make_generate_plan_handler(
                 keyword_stats, text_generator, plan.recent_topic_titles, owner_settings_service
             ),
             "generate_article": make_generate_article_handler(
-                text_generator, url_checker, owner_settings_service
+                text_generator, researcher, owner_settings_service
             ),
             "regenerate_article": make_regenerate_article_handler(
-                article, plan, text_generator, url_checker, owner_settings_service
+                article, plan, text_generator, researcher, owner_settings_service
             ),
             "generate_cover": make_generate_cover_handler(image_generator),
             "regenerate_topic": make_regenerate_topic_handler(
@@ -134,7 +147,7 @@ async def main(settings: Settings | None = None) -> None:
                 queue, handlers, stop=stop, on_attempt=_make_on_attempt(generation_steps)
             )
         finally:
-            await url_checker.aclose()
+            await page_fetcher.aclose()
     finally:
         await pool.close()
 
