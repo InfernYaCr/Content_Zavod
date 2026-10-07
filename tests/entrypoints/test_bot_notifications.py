@@ -609,7 +609,7 @@ async def test_failed_manual_cover_also_says_so_in_the_chat() -> None:
     ]
 
 
-# --- #114: the team chat's pinned note and the «План готов» picture ---
+# --- #114: the team chat's pinned note ---
 
 
 class FakeTeamNote:
@@ -620,15 +620,6 @@ class FakeTeamNote:
         self.ensured += 1
 
 
-class FakePhotos:
-    def __init__(self) -> None:
-        self.sent: list[tuple[int, str]] = []
-
-    async def send(self, chat_id, name, caption, reply_markup=None) -> int:
-        self.sent.append((chat_id, name))
-        return 1
-
-
 _PLAN_RESULT = JobResult(
     job_id=1,
     job_type="generate_plan",
@@ -637,16 +628,15 @@ _PLAN_RESULT = JobResult(
 )
 
 
-async def test_a_new_plan_is_preceded_by_the_team_note_and_followed_by_its_picture() -> None:
+async def test_a_plan_delivery_is_preceded_by_the_team_note() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    note, photos = FakeTeamNote(), FakePhotos()
-    handle = _make_notification_handler(plan, article, gateway, 42, team_note=note, photos=photos)
+    note = FakeTeamNote()
+    handle = _make_notification_handler(plan, article, gateway, 42, team_note=note)
 
     await handle(_PLAN_RESULT)
-    await handle(_PLAN_RESULT)  # redelivered: the Plan message is edited, no second picture
+    await handle(_PLAN_RESULT)
 
     assert note.ensured == 2  # TeamNote itself posts only once
-    assert photos.sent == [(42, "plan_ready")]
 
 
 async def test_nothing_for_the_chat_means_no_team_note() -> None:

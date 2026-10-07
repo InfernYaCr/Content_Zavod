@@ -122,8 +122,8 @@ def test_action_codes_are_unique_and_cover_every_action() -> None:
     assert len(set(_ACTION_CODES.values())) == len(_ACTION_CODES)
 
 
-def test_every_action_but_request_access_has_a_role() -> None:
-    assert set(ACTION_ROLE) == set(get_args(Action)) - {"request_access"}
+def test_every_action_but_the_ungated_ones_has_a_role() -> None:
+    assert set(ACTION_ROLE) == set(get_args(Action)) - {"request_access", "guide_slide"}
 
 
 @pytest.mark.parametrize(

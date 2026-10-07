@@ -92,8 +92,7 @@ uv run pre-commit run --all-files
 - Слайды (1280×960) — по ключу слайда из `telegram/guide.py`: `about`, `week`, `niche`, `audience`,
   `persona`, `directions`, `project`, `schedule`, `article`, `roles`, `faq`.
 - Баннеры (1280×640): `welcome` (/start), `onboarding` (вступление Онбординга), `cm_welcome`
-  (приветствие Контент-менеджера), `plan_ready` (под новым Планом в чате команды), `team_note`
-  (закреплённая памятка «📌 Как мы работаем»).
+  (приветствие Контент-менеджера), `team_note` (закреплённая памятка «📌 Как мы работаем»).
 
 Слайды — макеты экрана Telegram из настоящих текстов бота (`texts.py`, `SETTING_FIELDS`, экраны
 Онбординга), поэтому после правки текстов их стоит пересобрать одной командой (Chromium от
@@ -105,7 +104,13 @@ uv run --with playwright==1.56.0 python scripts/render_guide_assets.py
 uv run --with playwright==1.56.0 python scripts/render_guide_assets.py --only welcome,niche --html /tmp/guide-html
 ```
 
-Дизайнер может просто заменить любой PNG: имя файла и размер сохранить, код не трогать.
+Рядом лежит `sources.json` — хэши текстов и разметки, из которых нарисован каждый PNG. Тест
+`tests/telegram/test_guide.py` пересчитывает их и падает, если текст бота поменяли, а картинку не
+пересобрали.
+
+Дизайнер может просто заменить любой PNG: имя файла и размер сохранить, код не трогать. Если
+после этого меняется текст, нарисованный на картинке, — поправить PNG и обновить только хэши:
+`uv run python scripts/render_guide_assets.py --sources-only`.
 
 ## Issue-трекер
 

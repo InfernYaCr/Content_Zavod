@@ -99,13 +99,14 @@ from ..telegram.direction_suggestions import (
 )
 from ..telegram.gateway import SentPhoto, format_week_range
 from ..telegram.guide import DEEP_LINK as GUIDE_DEEP_LINK
-from ..telegram.guide import Guide, TeamNote, announce_plan_ready
+from ..telegram.guide import Guide, TeamNote
 from ..telegram.onboarding import Onboarding
 from ..telegram.pending_inputs import PendingInputs
 from ..telegram.texts import (
     BOT_DESCRIPTION,
     BOT_SHORT_DESCRIPTION,
     UNKNOWN_MESSAGE_TEXT,
+    UNREGISTERED_TEXT,
     job_failure_text,
 )
 from ..telegraph import HttpxTelegraphClient, TelegraphPublisher, project_footer
@@ -295,9 +296,13 @@ def _build_router(
         telegram_id = message.from_user.id
         role = await membership.role_for(telegram_id)
         if role is None:
+            if command.args == GUIDE_DEEP_LINK:
+                # A newcomer from the team chat's pinned note: the Инструкция first, so they
+                # see what they are asking access to, then the usual заявка (#114).
+                await guide.send(chat_id, None)
             await gateway.send_message(
                 chat_id,
-                "Вы не зарегистрированы. Нажмите кнопку, чтобы отправить заявку на доступ владельцу.",
+                UNREGISTERED_TEXT,
                 reply_markup=build_request_access_keyboard(telegram_id),
             )
             return
@@ -672,7 +677,6 @@ async def _deliver(
     notify_chat_id: int,
     delivery: _Delivery,
     publisher: ArticlePagePublisher | None = None,
-    photos: AssetPhotos | None = None,
 ) -> None:
     """The Telegram half of notification handling (#73): turns an `_apply_result` outcome
     into the actual message. A Plan delivery goes through `deliver_plan_message`, a Хаб one
@@ -680,9 +684,7 @@ async def _deliver(
     message every time after, the fix for #73's duplicate-message gap."""
     if isinstance(delivery, _PlanDelivery):
         view = await plan.get(delivery.plan_id)
-        sent = await deliver_plan_message(plan, gateway, notify_chat_id, view)
-        if sent and photos is not None:
-            await announce_plan_ready(photos, notify_chat_id)  # #114
+        await deliver_plan_message(plan, gateway, notify_chat_id, view)
     elif isinstance(delivery, _HubDelivery):
         await deliver_plan_hub(plan, gateway, notify_chat_id, delivery.plan_id)
     elif isinstance(delivery, _NoticeDelivery):
@@ -708,7 +710,6 @@ def _make_notification_handler(
     *,
     publisher: ArticlePagePublisher | None = None,
     team_note: TeamNote | None = None,
-    photos: AssetPhotos | None = None,
     directions: DirectionSuggestions | None = None,
 ):
     async def handle(result: JobResult) -> None:
@@ -725,7 +726,7 @@ def _make_notification_handler(
             # работаем» (#114) - posted once, never failing the delivery itself.
             await team_note.ensure()
         for delivery in deliveries:
-            await _deliver(plan, article, gateway, notify_chat_id, delivery, publisher, photos)
+            await _deliver(plan, article, gateway, notify_chat_id, delivery, publisher)
 
     return handle
 

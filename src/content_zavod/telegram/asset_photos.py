@@ -20,7 +20,7 @@ from typing import Protocol
 
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
 
-from .gateway import BotClient
+from .gateway import BotClient, MessageGone
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +58,12 @@ class AssetPhotos:
         name: str,
         caption: str,
         reply_markup: InlineKeyboardMarkup | None = None,
+        *,
+        text_markup: InlineKeyboardMarkup | None = None,
     ) -> int:
-        """Send picture `name` with `caption`; plain text if the picture can't go. Returns the
-        sent message's id either way."""
+        """Send picture `name` with `caption`; plain text if the picture can't go - with
+        `text_markup` when given (a carousel's buttons that remember it went out as text),
+        else the same `reply_markup`. Returns the sent message's id either way."""
         data = self._read(name)
         if data is not None:
             digest = _digest(data)
@@ -82,7 +85,9 @@ class AssetPhotos:
             else:
                 await self._remember(name, digest, sent.file_id)
                 return sent.message_id
-        return await self._bot.send_message(chat_id, caption, reply_markup=reply_markup)
+        return await self._bot.send_message(
+            chat_id, caption, reply_markup=text_markup or reply_markup
+        )
 
     async def edit(
         self,
@@ -106,6 +111,8 @@ class AssetPhotos:
                     chat_id, message_id, cached, caption=caption, reply_markup=reply_markup
                 )
                 return True
+            except MessageGone:
+                return False  # no upload can bring it back
             except Exception:
                 logger.info("could not edit %s to cached photo %s", message_id, name, exc_info=True)
         try:

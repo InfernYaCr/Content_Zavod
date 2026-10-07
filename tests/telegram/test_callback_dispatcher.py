@@ -1408,11 +1408,20 @@ async def test_guide_slide_turns_the_carousel_by_the_pressers_role(f: Fixtures) 
     assert cm_photo.filename == "article.png"  # a Контент-менеджер has no settings slides
 
 
-async def test_guide_buttons_need_a_role(f: Fixtures) -> None:
-    answer = await dispatch(f, SimpleAction("guide_slide", "0"), user_id=UNKNOWN_ID)
+async def test_a_guest_turns_the_carousel_too(f: Fixtures) -> None:
+    """`/start guide` shows a newcomer the Контент-менеджер's slides above the заявка."""
+    answer = await dispatch(f, SimpleAction("guide_slide", "2"), user_id=UNKNOWN_ID)
+
+    assert answer.calls == [(None, None)]
+    ((_, _, photo, _),) = f.bot.edited_media
+    assert photo.filename == "article.png"  # the third of the Контент-менеджер's slides
+
+
+async def test_other_guide_buttons_need_a_role(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("guide", ""), user_id=UNKNOWN_ID)
 
     assert answer.calls == [(_ACCESS_DENIED_TEXT, True)]
-    assert f.bot.edited_media == []
+    assert f.bot.sent_photos == []
 
 
 async def test_to_menu_from_the_carousel_replaces_it_with_the_menu(f: Fixtures) -> None:

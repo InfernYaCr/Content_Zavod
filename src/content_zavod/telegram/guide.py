@@ -78,7 +78,6 @@ from .guide_texts import (
     GUIDE_TO_MENU_BUTTON,
     GUIDE_WEEK,
     GUIDE_WEEK_TITLE,
-    PLAN_READY,
     TEAM_NOTE,
     TEAM_NOTE_GUIDE_BUTTON,
     TEAM_NOTE_NOT_PINNED,
@@ -87,6 +86,7 @@ from .guide_texts import (
 from .settings_screen import SETTING_FIELDS, SettingField
 from .texts import (
     ARTICLE_CARD_NO_EVIDENCE,
+    DIRECTIONS_SUGGEST_BUTTON,
     HUB_BUTTON_RETRY_TOPIC,
     MENU_HISTORY_BUTTON,
     MENU_PLAN_BUTTON,
@@ -220,7 +220,7 @@ def _settings_slides(fields: Sequence[SettingField]) -> list[Slide]:
             _setting_slide(
                 field,
                 GUIDE_DIRECTIONS_TITLE,
-                why=GUIDE_DIRECTIONS_WHY,
+                why=GUIDE_DIRECTIONS_WHY.format(suggest=DIRECTIONS_SUGGEST_BUTTON),
                 good=example_of(ONBOARDING_DIRECTIONS_QUESTION),
                 bad=GUIDE_DIRECTIONS_BAD,
                 bad_why=GUIDE_DIRECTIONS_BAD_WHY,
@@ -305,10 +305,11 @@ def build_slides(fields: Sequence[SettingField] = SETTING_FIELDS) -> tuple[Slide
 GUIDE_SLIDES: tuple[Slide, ...] = build_slides()
 
 # Every picture the bot sends besides the slides; `scripts/render_guide_assets.py` draws them.
-BANNERS: tuple[str, ...] = ("welcome", "onboarding", "cm_welcome", "plan_ready", "team_note")
+BANNERS: tuple[str, ...] = ("welcome", "onboarding", "cm_welcome", "team_note")
 
 
-def slides_for(role: Role, slides: Sequence[Slide] = GUIDE_SLIDES) -> tuple[Slide, ...]:
+def slides_for(role: Role | None, slides: Sequence[Slide] = GUIDE_SLIDES) -> tuple[Slide, ...]:
+    """The slides `role` sees; no Role (a newcomer on `/start guide`) sees a Контент-менеджер's."""
     return tuple(slide for slide in slides if role == "owner" or not slide.owner_only)
 
 
@@ -316,12 +317,22 @@ def clamp_index(index: int, total: int) -> int:
     return min(max(index, 0), max(total - 1, 0))
 
 
-def parse_index(text: str) -> int:
-    """A slide index from callback data; anything unparsable is the first slide."""
+TEXT_MODE = "t"
+"""Suffix on a `guide_slide` id: this carousel went out as text (its picture couldn't be
+sent), so its pages are turned with `editMessageText` straight away."""
+
+
+def slide_id(index: int, *, text_mode: bool = False) -> str:
+    return f"{index}{TEXT_MODE if text_mode else ''}"
+
+
+def parse_slide_id(text: str) -> tuple[int, bool]:
+    """`guide_slide` id -> (slide index, text mode); anything unparsable is the first slide."""
+    text_mode = text.endswith(TEXT_MODE)
     try:
-        return int(text)
+        return int(text.removesuffix(TEXT_MODE)), text_mode
     except ValueError:
-        return 0
+        return 0, text_mode
 
 
 def _button(text: str, action: Action, id_: str = "") -> InlineKeyboardButton:
@@ -330,21 +341,29 @@ def _button(text: str, action: Action, id_: str = "") -> InlineKeyboardButton:
     )
 
 
-def build_guide_keyboard(index: int, total: int) -> InlineKeyboardMarkup:
-    """◀ N/M ▶ (wrapping round) and «🏠 В меню»; «N/M» redraws the slide it shows."""
+def build_guide_keyboard(
+    index: int, total: int, *, text_mode: bool = False, guest: bool = False
+) -> InlineKeyboardMarkup:
+    """◀ N/M ▶ (wrapping round) and «🏠 В меню»; «N/M» redraws the slide it shows. A `guest`
+    (no Role yet) gets no «🏠 В меню» - there is no menu for them, only the заявка below."""
+
+    def turn(to: int) -> str:
+        return slide_id(to % total, text_mode=text_mode)
+
     counter = _button(
-        GUIDE_COUNTER.format(number=index + 1, total=total), "guide_slide", str(index)
+        GUIDE_COUNTER.format(number=index + 1, total=total), "guide_slide", turn(index)
     )
     nav = [counter]
     if total > 1:
         nav = [
-            _button(GUIDE_PREV_BUTTON, "guide_slide", str((index - 1) % total)),
+            _button(GUIDE_PREV_BUTTON, "guide_slide", turn(index - 1)),
             counter,
-            _button(GUIDE_NEXT_BUTTON, "guide_slide", str((index + 1) % total)),
+            _button(GUIDE_NEXT_BUTTON, "guide_slide", turn(index + 1)),
         ]
-    return InlineKeyboardMarkup(
-        inline_keyboard=[nav, [_button(GUIDE_TO_MENU_BUTTON, "menu", FROM_GUIDE)]]
-    )
+    rows = [nav]
+    if not guest:
+        rows.append([_button(GUIDE_TO_MENU_BUTTON, "menu", FROM_GUIDE)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def guide_button(*, from_menu: bool = False) -> InlineKeyboardButton:
@@ -361,40 +380,46 @@ class Guide:
         self._bot = bot
         self._slides = tuple(slides)
 
-    def _screen(self, role: Role, index: int) -> tuple[Slide, InlineKeyboardMarkup]:
+    def _screen(
+        self, role: Role | None, index: int
+    ) -> tuple[Slide, InlineKeyboardMarkup, InlineKeyboardMarkup]:
+        """The slide, its photo-mode keyboard and its text-mode one."""
         slides = slides_for(role, self._slides)
         index = clamp_index(index, len(slides))
-        return slides[index], build_guide_keyboard(index, len(slides))
+        guest = role is None
+        return (
+            slides[index],
+            build_guide_keyboard(index, len(slides), guest=guest),
+            build_guide_keyboard(index, len(slides), text_mode=True, guest=guest),
+        )
 
-    async def send(self, chat_id: int, role: Role, index: int = 0) -> None:
+    async def send(self, chat_id: int, role: Role | None, index: int = 0) -> None:
         """The carousel as a new message, on slide `index`."""
-        slide, keyboard = self._screen(role, index)
-        await self._photos.send(chat_id, slide.key, slide.caption, keyboard)
+        slide, keyboard, text_keyboard = self._screen(role, index)
+        await self._photos.send(
+            chat_id, slide.key, slide.caption, keyboard, text_markup=text_keyboard
+        )
 
-    async def show(self, chat_id: int, message_id: int, role: Role, index: int) -> None:
-        """Turn the carousel `message_id` to slide `index`. A carousel that went out as text
-        (its picture couldn't be sent) is turned as text; one that can't be edited at all is
-        sent anew."""
-        slide, keyboard = self._screen(role, index)
-        if await self._photos.edit(chat_id, message_id, slide.key, slide.caption, keyboard):
+    async def show(self, chat_id: int, message_id: int, role: Role | None, id_: str) -> None:
+        """Turn the carousel `message_id` to the slide a `guide_slide` id names. A photo
+        carousel swaps its picture; one that went out as text (its buttons say so) is turned
+        as text; one that can't be edited at all is sent anew."""
+        index, text_mode = parse_slide_id(id_)
+        slide, keyboard, text_keyboard = self._screen(role, index)
+        if not text_mode and await self._photos.edit(
+            chat_id, message_id, slide.key, slide.caption, keyboard
+        ):
             return
         try:
             await self._bot.edit_message_text(
-                chat_id, message_id, slide.caption, reply_markup=keyboard
+                chat_id, message_id, slide.caption, reply_markup=text_keyboard
             )
             return
         except Exception:
             logger.info("could not turn guide message %s", message_id, exc_info=True)
-        await self._photos.send(chat_id, slide.key, slide.caption, keyboard)
-
-
-async def announce_plan_ready(photos: AssetPhotos, chat_id: int) -> None:
-    """«📋 План недели готов» with its picture, right under a newly sent Plan message. Pure
-    decoration: it never fails the Plan's delivery."""
-    try:
-        await photos.send(chat_id, "plan_ready", PLAN_READY)
-    except Exception:
-        logger.warning("could not announce the Plan in %s", chat_id, exc_info=True)
+        await self._photos.send(
+            chat_id, slide.key, slide.caption, keyboard, text_markup=text_keyboard
+        )
 
 
 class TeamNote:

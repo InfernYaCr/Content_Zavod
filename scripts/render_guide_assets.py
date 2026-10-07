@@ -13,6 +13,12 @@ A designer can replace any PNG by hand: keep the file name (the bot finds pictur
 and the size (slides 1280×960, banners 1280×640). The bot notices the new file by its hash and
 uploads it again on the next send.
 
+Next to the PNGs, `sources.json` keeps a hash of each picture's HTML - the texts, buttons and
+styles it was drawn from. `tests/telegram/test_guide.py` recomputes them, so a text changed in
+the code without re-rendering its picture fails the tests instead of drifting silently. (A
+designer's hand-made PNG keeps passing; re-rendering would overwrite it, so after a text change
+the designer's picture needs updating by hand too, then rerun with `--sources-only`.)
+
 Options: `--only welcome,niche` renders some pictures only; `--html DIR` also saves each
 picture's HTML, to tweak the design in a browser. Needs Playwright's Chromium: the
 `PLAYWRIGHT_BROWSERS_PATH` one, or `playwright install chromium`. Fonts: Liberation Sans or
@@ -23,7 +29,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import html
+import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,9 +77,11 @@ from content_zavod.telegram.texts import (
     MENU_TEXT,
     PLAN_GENERATE_BUTTON,
     PLAN_MISSING_TEXT,
+    UNREGISTERED_TEXT,
     WELCOME_TEXT,
     format_week_range,
     schedule_text,
+    steps_count_text,
 )
 from content_zavod.telegram.types import ArticleView, PlanItemView, PlanView
 
@@ -241,12 +252,6 @@ async def _slide_mockup(slide: Slide) -> Mockup:
     else:
         bubbles = []
     return Mockup(slide.title, note, bubbles)
-
-
-# What /start says to someone without a Role (entrypoints/bot.py).
-UNREGISTERED_TEXT = (
-    "Вы не зарегистрированы. Нажмите кнопку, чтобы отправить заявку на доступ владельцу."
-)
 
 
 def _sample_hub() -> PlanHubView:
@@ -470,25 +475,6 @@ def _art_team() -> str:
     )
 
 
-def _art_plan() -> str:
-    body = (
-        f'<circle cx="280" cy="280" r="250" fill="{MUSTARD}" opacity=".22"/>'
-        f'<rect x="138" y="78" width="300" height="420" rx="28" fill="{INK}" opacity=".12"/>'
-        f'<rect x="130" y="66" width="300" height="420" rx="28" fill="#fff"/>'
-        f'<rect x="220" y="46" width="120" height="44" rx="14" fill="{INK}"/>'
-    )
-    for index in range(3):
-        y = 150 + index * 104
-        body += (
-            f'<rect x="166" y="{y}" width="40" height="40" rx="10" fill="{TEAL}" opacity=".18"/>'
-            f'<text x="186" y="{y + 30}" text-anchor="middle" font-size="26" font-weight="700"'
-            f' fill="{TEAL}" font-family="Liberation Sans, DejaVu Sans">{index + 1}</text>'
-            f'<rect x="224" y="{y + 6}" width="170" height="12" rx="6" fill="{INK}" opacity=".25"/>'
-            f'<rect x="224" y="{y + 28}" width="120" height="12" rx="6" fill="{INK}" opacity=".15"/>'
-        )
-    return _svg(body + _check(430, 440, 48, CORAL))
-
-
 def _art_note() -> str:
     return _svg(
         f'<circle cx="280" cy="290" r="250" fill="{TEAL}" opacity=".15"/>'
@@ -520,7 +506,7 @@ def banners() -> dict[str, Banner]:
         ),
         "onboarding": Banner(
             "Настроим бота за пару минут",
-            "Пять коротких вопросов — и я составлю первый План",
+            f"{steps_count_text(len(labels))} — и я составлю первый План",
             _art_onboarding(labels),
         ),
         "cm_welcome": Banner(
@@ -528,12 +514,6 @@ def banners() -> dict[str, Banner]:
             "План живёт в чате команды, Статьи — в один тап",
             _art_team(),
             ("🔄 заменить", "✅ утвердить", "📖 читать"),
-        ),
-        "plan_ready": Banner(
-            "План недели готов",
-            "Согласуйте Темы — и я сяду за Статьи",
-            _art_plan(),
-            ("🔄 заменить", "🗑 убрать", "✅ утвердить"),
         ),
         "team_note": Banner(
             "Как мы работаем",
@@ -572,13 +552,20 @@ p {{ font-size: 30px; line-height: 1.3; color: {INK}; opacity: .78; max-width: 6
 """
 
 
+def _typograph(text: str) -> str:
+    """No dangling «в», «за» at a line's end, no last word alone on a line: Russian short
+    words and the final word are glued with non-breaking spaces."""
+    text = re.sub(r"(?<!\S)(\w{1,2}) ", "\\1\u00a0", text)
+    return re.sub(r" (\S{1,6})$", "\u00a0\\1", text)
+
+
 def banner_html(banner: Banner) -> str:
     chips = "".join(f"<div class='chip'>{_esc(chip)}</div>" for chip in banner.chips)
     return (
         f"<!doctype html><html lang='ru'><head><meta charset='utf-8'>"
         f"<style>{_BASE_CSS}{_BANNER_CSS}</style></head><body>"
         f"<div class='text'><div class='brand'>Content Zavod</div>"
-        f"<h1>{_esc(banner.title)}</h1><p>{_esc(banner.subtitle)}</p>"
+        f"<h1>{_esc(_typograph(banner.title))}</h1><p>{_esc(_typograph(banner.subtitle))}</p>"
         f"{f'<div class=chips>{chips}</div>' if chips else ''}</div>"
         f"<div class='art'>{banner.art}</div></body></html>"
     )
@@ -607,6 +594,25 @@ async def pictures(only: set[str] | None) -> list[Picture]:
     return [picture for picture in result if not only or picture.name in only]
 
 
+SOURCES_FILE = "sources.json"
+
+
+def source_digest(picture: Picture) -> str:
+    return hashlib.sha256(
+        f"{picture.size[0]}x{picture.size[1]}\n{picture.html}".encode()
+    ).hexdigest()
+
+
+def write_sources(items: Sequence[Picture], directory: Path, *, partial: bool) -> None:
+    """Record what `items` were drawn from; a `partial` run keeps the other pictures' entries."""
+    path = directory / SOURCES_FILE
+    sources = {}
+    if partial and path.is_file():
+        sources = json.loads(path.read_text(encoding="utf-8"))
+    sources.update({picture.name: source_digest(picture) for picture in items})
+    path.write_text(json.dumps(sources, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 async def screenshot(items: Sequence[Picture], paths: Sequence[Path]) -> None:
     from playwright.async_api import async_playwright  # a dev-time tool, not a bot dependency
 
@@ -631,6 +637,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--only", help="comma-separated picture names, e.g. welcome,niche")
     parser.add_argument("--out", type=Path, default=ASSETS_DIR, help="output directory")
     parser.add_argument("--html", type=Path, help="also save each picture's HTML here")
+    parser.add_argument(
+        "--sources-only",
+        action="store_true",
+        help=f"only refresh {SOURCES_FILE}, keeping the PNGs (hand-made ones, say)",
+    )
     args = parser.parse_args(argv)
     only = set(args.only.split(",")) if args.only else None
 
@@ -640,10 +651,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.html.mkdir(parents=True, exist_ok=True)
         for picture in items:
             (args.html / f"{picture.name}.html").write_text(picture.html, encoding="utf-8")
-    paths = [args.out / f"{picture.name}.png" for picture in items]
-    asyncio.run(screenshot(items, paths))
-    for path in paths:
-        print(f"{path} ({path.stat().st_size // 1024} KB)")
+    if not args.sources_only:
+        paths = [args.out / f"{picture.name}.png" for picture in items]
+        asyncio.run(screenshot(items, paths))
+        for path in paths:
+            print(f"{path} ({path.stat().st_size // 1024} KB)")
+    write_sources(items, args.out, partial=only is not None)
 
 
 if __name__ == "__main__":

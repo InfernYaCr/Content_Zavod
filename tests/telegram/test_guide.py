@@ -3,7 +3,10 @@ fallback, and the pinned «📌 Как мы работаем»."""
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import struct
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,6 +14,7 @@ from aiogram.types import BufferedInputFile
 
 from content_zavod.telegram.asset_photos import ASSETS_DIR, FILE_ID_KEY_PREFIX, AssetPhotos
 from content_zavod.telegram.callback_codec import CALLBACK_DATA_LIMIT
+from content_zavod.telegram.gateway import MessageGone
 from content_zavod.telegram.guide import (
     BANNERS,
     CAPTION_LIMIT,
@@ -18,12 +22,11 @@ from content_zavod.telegram.guide import (
     TEAM_NOTE_KEY,
     Guide,
     TeamNote,
-    announce_plan_ready,
     build_guide_keyboard,
     build_slides,
     clamp_index,
     example_of,
-    parse_index,
+    parse_slide_id,
     slides_for,
 )
 from content_zavod.telegram.guide_texts import (
@@ -154,8 +157,20 @@ def test_a_stale_index_is_clamped(index: int, expected: int) -> None:
     assert clamp_index(index, 5) == expected
 
 
-def test_garbage_index_is_the_first_slide() -> None:
-    assert parse_index("x") == 0 and parse_index("3") == 3
+def test_slide_ids_carry_the_text_mode_and_garbage_is_the_first_slide() -> None:
+    assert parse_slide_id("3") == (3, False)
+    assert parse_slide_id("3t") == (3, True)
+    assert parse_slide_id("x") == (0, False)
+
+
+def test_a_text_carousels_buttons_remember_it_is_text() -> None:
+    markup = build_guide_keyboard(1, 3, text_mode=True)
+
+    assert button_data(markup)[0] == ["gs:0t", "gs:1t", "gs:2t"]
+
+
+def test_a_guest_carousel_has_no_menu_button() -> None:
+    assert button_texts(build_guide_keyboard(0, 3, guest=True)) == [["◀", "1/3", "▶"]]
 
 
 # --- pictures: file_id cache and fallbacks ---
@@ -247,8 +262,8 @@ async def test_show_turns_the_page_in_place_with_the_cached_picture() -> None:
     bot, store = RecordingBot(), FakeStore()
     guide = make_guide(bot, store)
 
-    await guide.show(CHAT, 55, "owner", 2)
-    await guide.show(CHAT, 55, "owner", 2)
+    await guide.show(CHAT, 55, "owner", "2")
+    await guide.show(CHAT, 55, "owner", "2")
 
     (_, message_id, photo, caption, markup), (*_, again, _, _) = bot.edited_media
     assert message_id == 55 and isinstance(photo, BufferedInputFile)
@@ -261,33 +276,81 @@ async def test_show_turns_the_page_in_place_with_the_cached_picture() -> None:
 async def test_a_content_managers_stale_index_lands_on_their_last_slide() -> None:
     bot = RecordingBot()
 
-    await make_guide(bot).show(CHAT, 55, "content_manager", 9)
+    await make_guide(bot).show(CHAT, 55, "content_manager", "9")
 
     (_, _, photo, caption, _) = bot.edited_media[0]
     assert photo.filename == "faq.png"
     assert caption.startswith("❓")
 
 
-async def test_show_redraws_a_text_carousel_as_text() -> None:
+async def test_a_photo_that_cannot_go_sends_a_text_carousel_that_turns_as_text() -> None:
+    bot = FailingPhotosBot()
+    guide = make_guide(bot)
+
+    await guide.send(CHAT, "owner")
+    ((_, _, markup, _),) = bot.sent
+    next_id = button_data(markup)[0][2].removeprefix("gs:")
+    await guide.show(CHAT, 100, "owner", next_id)
+
+    assert next_id == "1t"
+    assert bot.edited_media == []  # no wasted editMessageMedia (and no upload) on a text one
+    ((_, message_id, text, turned),) = bot.edited
+    assert message_id == 100 and text.startswith("🗓")
+    assert button_data(turned)[0][1] == "gs:1t"
+
+
+async def test_a_photo_carousel_that_turned_out_text_is_redrawn_as_text() -> None:
     class TextOnlyBot(RecordingBot):
         async def edit_message_media(self, *args, **kwargs):
             raise RuntimeError("there is no media in the message to edit")
 
     bot = TextOnlyBot()
 
-    await make_guide(bot).show(CHAT, 55, "owner", 1)
+    await make_guide(bot).show(CHAT, 55, "owner", "1")
 
-    ((_, message_id, text, _),) = bot.edited
+    ((_, message_id, text, markup),) = bot.edited
     assert message_id == 55 and text.startswith("🗓")
+    assert button_data(markup)[0][1] == "gs:1t"  # from now on, turned as text
 
 
 async def test_show_sends_a_new_carousel_when_the_old_one_is_gone() -> None:
     bot = RecordingBot()
     bot.fail_edits = True
 
-    await make_guide(bot).show(CHAT, 55, "owner", 1)
+    await make_guide(bot).show(CHAT, 55, "owner", "1")
 
     assert bot.photos[0][2].startswith("🗓")
+
+
+async def test_a_gone_message_is_not_reuploaded_to(tmp_path: Path) -> None:
+    class GoneBot(RecordingBot):
+        def __init__(self) -> None:
+            super().__init__()
+            self.media_attempts = 0
+
+        async def edit_message_media(self, chat_id, message_id, *args, **kwargs):
+            self.media_attempts += 1
+            raise MessageGone(chat_id, message_id)
+
+    bot, store = GoneBot(), FakeStore()
+    directory = make_assets(tmp_path, about=b"png")
+    await AssetPhotos(RecordingBot(), store, directory=directory).send(CHAT, "about", "x")
+
+    edited = await AssetPhotos(bot, store, directory=directory).edit(CHAT, 55, "about", "x")
+
+    assert edited is False and bot.media_attempts == 1
+
+
+async def test_a_guest_sees_the_content_manager_slides_without_the_menu() -> None:
+    bot = RecordingBot()
+
+    await make_guide(bot).send(CHAT, None)
+    await make_guide(bot).show(CHAT, 55, None, "9")
+
+    ((_, _, _, markup),) = bot.photos
+    assert button_texts(markup) == [["◀", "1/5", "▶"]]
+    (_, _, photo, _, turned) = bot.edited_media[0]
+    assert photo.filename == "faq.png" and button_texts(turned) == [["◀", "5/5", "▶"]]
 
 
 # --- TeamNote ---
@@ -354,12 +417,29 @@ async def test_without_a_username_the_note_opens_the_guide_by_callback() -> None
     assert button_data(bot.photos[0][3]) == [["gd:"]]
 
 
-async def test_plan_ready_never_raises() -> None:
-    class DeadBot(RecordingBot):
-        async def send_message(self, *args, **kwargs):
-            raise RuntimeError("chat not found")
+# --- the pictures follow the texts ---
 
-        async def send_photo(self, *args, **kwargs):
-            raise RuntimeError("chat not found")
 
-    await announce_plan_ready(AssetPhotos(DeadBot(), FakeStore()), TEAM)
+def _render_script():
+    path = Path(__file__).resolve().parents[2] / "scripts" / "render_guide_assets.py"
+    spec = importlib.util.spec_from_file_location("render_guide_assets", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look their module up
+    spec.loader.exec_module(module)
+    return module
+
+
+async def test_every_picture_was_rendered_from_the_current_texts() -> None:
+    """A text, button or Настройка changed in the code but its picture not re-rendered: run
+    `uv run --with playwright==1.56.0 python scripts/render_guide_assets.py`."""
+    script = _render_script()
+    recorded = json.loads((ASSETS_DIR / script.SOURCES_FILE).read_text(encoding="utf-8"))
+
+    current = {
+        picture.name: script.source_digest(picture) for picture in await script.pictures(None)
+    }
+
+    stale = sorted(name for name in current if recorded.get(name) != current[name])
+    assert not stale, f"re-render these pictures: {', '.join(stale)}"
+    assert set(recorded) == set(current)
