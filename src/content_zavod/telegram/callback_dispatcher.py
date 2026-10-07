@@ -348,9 +348,7 @@ class CallbackDispatcher:
                 # (expired, already answered, someone else's question) a
                 # private chat's prompt is still theirs to clear; in a group it may be someone
                 # else's, so it stays.
-                cancelled = await self._prompts.cancel(
-                    chat_id, user_id, id_, message_id=message_id
-                )
+                cancelled = await self._prompts.cancel(chat_id, user_id, id_, message_id=message_id)
                 if not cancelled and chat_id == user_id:
                     await self._bot_client.delete_message(chat_id, message_id)
             case Page(plan_id=plan_id, page=page):

@@ -84,6 +84,7 @@ from ..telegram import (
     handle_members_command,
     handle_topic_command,
     render_help_text,
+    resync_member_commands,
     sync_commands,
     unpack_callback_query,
 )
@@ -733,6 +734,8 @@ async def main(settings: Settings | None = None) -> None:
         )
         # The default list - what a group chat, or a user /start hasn't synced yet, sees (#95).
         await bot.set_my_commands(MENU_COMMANDS, scope=BotCommandScopeDefault())
+        # Every Участник's own scope still holds the pre-#95 list until it is rewritten.
+        await resync_member_commands(bot_client, await membership.list_all())
 
         dispatcher = Dispatcher()
         dispatcher.include_router(

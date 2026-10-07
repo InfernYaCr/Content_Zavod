@@ -19,7 +19,7 @@ from .callback_dispatcher import (
     CallbackInput,
     unpack_callback_query,
 )
-from .commands import MENU_COMMANDS, sync_commands
+from .commands import MENU_COMMANDS, resync_member_commands, sync_commands
 from .comment_gated_regeneration import CommentGatedRegeneration, CommentPrompt
 from .gateway import (
     BotClient,
@@ -141,6 +141,7 @@ __all__ = [
     "handle_topic_command",
     "render_help_text",
     "render_plan_text",
+    "resync_member_commands",
     "sync_commands",
     "unpack_callback_query",
 ]

@@ -1,15 +1,24 @@
 import pytest
 from aiogram.types import BotCommand, BotCommandScopeChat
 
-from content_zavod.telegram.commands import MENU_COMMANDS, commands_for_role, sync_commands
+from content_zavod.access import MemberView
+from content_zavod.telegram.commands import (
+    MENU_COMMANDS,
+    commands_for_role,
+    resync_member_commands,
+    sync_commands,
+)
 from content_zavod.telegram.main_menu import render_help_text
 
 
 class FakeBot:
-    def __init__(self) -> None:
+    def __init__(self, failing: frozenset[int] = frozenset()) -> None:
         self.calls: list[tuple[list[BotCommand], BotCommandScopeChat]] = []
+        self.failing = failing
 
     async def set_my_commands(self, commands, *, scope) -> None:
+        if scope.chat_id in self.failing:
+            raise RuntimeError("Bad Request: chat not found")
         self.calls.append((commands, scope))
 
 
@@ -29,6 +38,19 @@ async def test_sync_commands_overwrites_the_users_own_scope(role) -> None:
     ((commands, scope),) = bot.calls
     assert commands == MENU_COMMANDS
     assert scope.chat_id == 7
+
+
+@pytest.mark.asyncio
+async def test_startup_resync_rewrites_every_members_scope_and_skips_failures() -> None:
+    """#95: a member who never sends /start again must not keep the pre-#95 16-command list;
+    one member the bot can't reach doesn't stop the others (or the bot's startup)."""
+    bot = FakeBot(failing=frozenset({8}))
+    members = [MemberView(7, "owner"), MemberView(8, "content_manager"), MemberView(9, "owner")]
+
+    await resync_member_commands(bot, members, pause=0)
+
+    assert [scope.chat_id for _commands, scope in bot.calls] == [7, 9]
+    assert all(commands == MENU_COMMANDS for commands, _scope in bot.calls)
 
 
 def test_help_for_content_manager_describes_the_shared_menu_only() -> None:
