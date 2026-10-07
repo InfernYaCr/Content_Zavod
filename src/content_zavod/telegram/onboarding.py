@@ -68,6 +68,7 @@ from .texts import (
     ONBOARDING_PLAN_HERE,
     ONBOARDING_PLAN_IN_TEAM,
     ONBOARDING_PROJECT_QUESTION,
+    ONBOARDING_REVIEW_DIRECTIONS_MISMATCH,
     ONBOARDING_REVIEW_HINT,
     ONBOARDING_REVIEW_TITLE,
     ONBOARDING_SKIP_BUTTON,
@@ -106,8 +107,14 @@ class OnboardingStep:
     """For a step with Пресеты: the first-run text above the Пресет buttons."""
 
 
+def _directions_mismatch(current: OwnerSettings) -> bool:
+    """The Направления are still the default marketing queries, but the Ниша isn't marketing -
+    left so, the first Plan comes out about marketing."""
+    return current.directions == DEFAULT_DIRECTIONS and current.niche != DEFAULT_NICHE
+
+
 def _directions_note(current: OwnerSettings) -> str | None:
-    if current.directions == DEFAULT_DIRECTIONS and current.niche != DEFAULT_NICHE:
+    if _directions_mismatch(current):
         return ONBOARDING_DIRECTIONS_MISMATCH.format(niche=current.niche)
     return None
 
@@ -208,7 +215,11 @@ def render_review_text(
     fields: Sequence[SettingField], current: OwnerSettings, *, notice: str | None = None
 ) -> str:
     lines = "\n".join(f"{setting.label}: {setting.show(current)}" for setting in fields)
-    return _with_notice(f"{ONBOARDING_REVIEW_TITLE}\n\n{lines}\n\n{ONBOARDING_REVIEW_HINT}", notice)
+    blocks = [ONBOARDING_REVIEW_TITLE, lines]
+    if any(setting.key == "directions" for setting in fields) and _directions_mismatch(current):
+        blocks.append(ONBOARDING_REVIEW_DIRECTIONS_MISMATCH.format(niche=current.niche))
+    blocks.append(ONBOARDING_REVIEW_HINT)
+    return _with_notice("\n\n".join(blocks), notice)
 
 
 def build_review_keyboard(fields: Sequence[SettingField]) -> InlineKeyboardMarkup:

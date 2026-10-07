@@ -323,7 +323,27 @@ async def test_directions_warn_when_the_niche_is_not_marketing() -> None:
 
     await env.press("directions")
 
-    assert "⚠️ Сейчас здесь запросы про маркетинг. Для Ниши «фитнес»" in env.last[1]
+    note = env.last[1]
+    assert "⚠️ Сейчас здесь стандартные запросы про маркетинг" in note
+    assert "Для Ниши «фитнес» напишите свои — то, что ищут ваши читатели" in note
+    assert "Если пропустить, Темы будут про маркетинг" in note
+
+
+async def test_review_warns_before_launch_when_directions_are_still_marketing() -> None:
+    env = Env({"niche": "фитнес"})
+
+    await env.press("review")
+
+    assert "⚠️ Направления — стандартные, про маркетинг, а Ниша — «фитнес»" in env.last[1]
+    assert "«✏️ Изменить Направления»" in env.last[1]
+
+
+async def test_review_has_no_warning_once_directions_are_own() -> None:
+    env = Env({"niche": "фитнес", "directions": "фитнес дома, йога"})
+
+    await env.press("review")
+
+    assert "⚠️" not in env.last[1]
 
 
 async def test_directions_have_no_warning_for_the_default_niche(env: Env) -> None:

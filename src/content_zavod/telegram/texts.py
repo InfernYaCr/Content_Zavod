@@ -400,8 +400,14 @@ ONBOARDING_PROJECT_QUESTION = (
 # Directions default to marketing queries: if the Ниша isn't marketing, say so before
 # the Владелец skips the step and gets a marketing Plan.
 ONBOARDING_DIRECTIONS_MISMATCH = (
-    "⚠️ Сейчас здесь запросы про маркетинг. Для Ниши «{niche}» лучше написать свои — "
-    "иначе Темы будут про маркетинг."
+    "⚠️ Сейчас здесь стандартные запросы про маркетинг (CRM, SEO, воронка продаж…). "
+    "Для Ниши «{niche}» напишите свои — то, что ищут ваши читатели. Если пропустить, "
+    "Темы будут про маркетинг."
+)
+# The same mismatch on «Проверьте вводные», right before «🚀 Запустить».
+ONBOARDING_REVIEW_DIRECTIONS_MISMATCH = (
+    "⚠️ Направления — стандартные, про маркетинг, а Ниша — «{niche}». Первый План будет "
+    "про маркетинг: лучше нажать «✏️ Изменить Направления» и написать свои."
 )
 ONBOARDING_REVIEW_TITLE = "🔎 Проверьте вводные"
 ONBOARDING_REVIEW_HINT = (
