@@ -70,6 +70,7 @@ from ..telegram import (
     InputPrompt,
     JoinRequestFlow,
     MainMenu,
+    MessageGone,
     PlanReview,
     SettingsScreen,
     TelegramCommentPrompt,
@@ -101,6 +102,21 @@ from ..telegraph import HttpxTelegraphClient, TelegraphPublisher, project_footer
 from ._process import register_shutdown
 
 logger = logging.getLogger(__name__)
+
+
+# Telegram's own error descriptions (aiogram keeps them in `TelegramBadRequest.message`, e.g.
+# "Bad Request: message to edit not found"): the edited message was deleted, or the bot may no
+# longer edit it (#106).
+_MESSAGE_GONE = ("message to edit not found", "message can't be edited")
+
+
+def _is_not_modified(exc: TelegramBadRequest) -> bool:
+    """An unchanged redraw - success (ADR-0014)."""
+    return "message is not modified" in exc.message
+
+
+def _is_message_gone(exc: TelegramBadRequest) -> bool:
+    return any(description in exc.message for description in _MESSAGE_GONE)
 
 
 class _AiogramBotClient:
@@ -143,7 +159,9 @@ class _AiogramBotClient:
                 text, chat_id=chat_id, message_id=message_id, reply_markup=reply_markup
             )
         except TelegramBadRequest as exc:
-            if "message is not modified" not in str(exc):
+            if _is_message_gone(exc):
+                raise MessageGone(chat_id, message_id) from exc
+            if not _is_not_modified(exc):
                 raise
 
     async def edit_message_reply_markup(
@@ -154,7 +172,9 @@ class _AiogramBotClient:
                 chat_id=chat_id, message_id=message_id, reply_markup=reply_markup
             )
         except TelegramBadRequest as exc:
-            if "message is not modified" not in str(exc):
+            if _is_message_gone(exc):
+                raise MessageGone(chat_id, message_id) from exc
+            if not _is_not_modified(exc):
                 raise
 
     async def delete_message(self, chat_id: int, message_id: int) -> None:

@@ -528,6 +528,18 @@ def build_article_keyboard(
     )
 
 
+class MessageGone(Exception):
+    """The message an edit addressed no longer exists for the bot to edit - someone deleted
+    it in the chat, or Telegram won't let it be edited any more (#106). Raised by a
+    `BotClient` edit so callers holding a stored message identity (the Plan message) can send
+    a fresh one instead of failing every later redraw."""
+
+    def __init__(self, chat_id: int, message_id: int) -> None:
+        super().__init__(f"message {message_id} in chat {chat_id} is gone")
+        self.chat_id = chat_id
+        self.message_id = message_id
+
+
 class BotClient(Protocol):
     async def send_message(
         self,
@@ -561,7 +573,9 @@ class BotClient(Protocol):
         message_id: int,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
-    ) -> None: ...
+    ) -> None:
+        """An unchanged redraw is success; a message that's gone raises `MessageGone`."""
+        ...
 
     async def edit_message_reply_markup(
         self,
