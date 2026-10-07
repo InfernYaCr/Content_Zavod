@@ -235,12 +235,20 @@ def test_candidate_policy_drops_homepages_files_blocked_and_duplicate_domains() 
         ("Доля 4%", "Доля выросла до 3.5% за год по данным отчёта.", False),
         ("Короткая цитата", "CRM", False),
         ("Кавычки другие", "Это «лучший» выбор для небольших команд продаж.", True),
+        # The page hyphenates with soft hyphens and writes «ё»; the model doesn't.
+        ("Без мягких переносов", "Еще 12 % компаний внедряют системы автоматизации.", True),
+        ("Многоточие", "Компании ждут… и теряют клиентов каждый месяц.", True),
+        ("Узкий пробел 2000000", "Рынок оценивается в 2 000 000 рублей ежегодно.", True),
+        ("Выдуманная цитата", "Рынок оценивается в 3 000 000 рублей ежегодно.", False),
     ],
 )
 def test_verified_facts_checks_quote_and_numbers(fact, quote, kept) -> None:
     page_text = (
         "Средняя стоимость — 1 500 рублей за пользователя. Доля выросла до 3.5% за год по "
-        'данным отчёта. Это "лучший" выбор для небольших команд продаж. CRM'
+        'данным отчёта. Это "лучший" выбор для небольших команд продаж. CRM\n'
+        "Ещё 12\u00a0% ком\u00adпаний внедряют си\u00adстемы автоматизации.\n"
+        "Компании ждут... и теряют клиентов каждый месяц.\n"
+        "Рынок оценивается в 2\u202f000\u202f000 рублей ежегодно."
     )
 
     facts = verified_facts(_facts((fact, quote)), page_text)
@@ -265,6 +273,22 @@ def test_verified_facts_checks_quote_and_numbers(fact, quote, kept) -> None:
 )
 def test_search_query_adds_new_words_of_the_top_two_keywords(brief, query) -> None:
     assert search_query(brief) == query
+
+
+@pytest.mark.asyncio
+async def test_stale_page_is_recognised_by_a_russian_date_too() -> None:
+    search = FakeSearch([_PAGE_A, _PAGE_B])
+    pages = {
+        _PAGE_A: page(_PAGE_A, _TEXT_A, published_at="01.03.2019"),
+        _PAGE_B: page(_PAGE_B, _TEXT_B, published_at="Опубликовано 5 марта 2025"),
+    }
+    steps = ScriptedSteps(
+        [_facts(("Внедрение CRM занимает от двух до шести недель", _TEXT_B)), "аутлайн"]
+    )
+
+    research = await _researcher(search, pages).prepare(_BRIEF, plan_item_id=None, steps=steps)
+
+    assert [source.url for source in research.bundle.sources] == [_PAGE_B]
 
 
 class _HangingSearch:

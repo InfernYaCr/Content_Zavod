@@ -254,7 +254,8 @@ class TopicResearcher:
         return pages
 
     def _is_stale(self, published_at: str | None) -> bool:
-        match = re.match(r"(\d{4})", published_at or "")
+        # ISO dates ("2022-03-01T...") and Russian ones ("01.03.2022") alike.
+        match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", published_at or "")
         if match is None:
             return False
         return int(match.group(1)) < self._now().year - MAX_SOURCE_AGE_YEARS
@@ -341,18 +342,25 @@ def _passes_url_policy(url: str) -> bool:
 
 
 _NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
-_QUOTE_CHARS = str.maketrans({"«": '"', "»": '"', "“": '"', "”": '"', "„": '"', "’": "'"})
-_DASHES = str.maketrans({"—": "-", "–": "-", "‑": "-", " ": " "})
+_QUOTE_CHARS = str.maketrans(
+    {"«": '"', "»": '"', "“": '"', "”": '"', "„": '"', "’": "'", "‘": "'", "`": "'"}
+)
+_DASHES = str.maketrans({"—": "-", "–": "-", "‑": "-", "‐": "-", "−": "-", "\xa0": " "})
+# Soft hyphens and zero-width characters are common in Russian page markup (hyphenation,
+# typographers) and invisible - a model never reproduces them in a quote.
+_INVISIBLE = dict.fromkeys(map(ord, "\u00ad\u200b\u200c\u200d\u2060\ufeff"))
 
 
 def _normalize(text: str) -> str:
-    text = text.translate(_QUOTE_CHARS).translate(_DASHES).lower().replace("ё", "е")
+    text = text.translate(_INVISIBLE).translate(_QUOTE_CHARS).translate(_DASHES)
+    text = text.replace("…", "...").lower().replace("ё", "е")
     return " ".join(text.split())
 
 
 def _numbers(text: str) -> set[str]:
-    # "1 500" and "1500" are the same number; "3,5" and "3.5" too.
-    joined = re.sub(r"(?<=\d)[   ](?=\d{3}\b)", "", text)
+    # "1 500" and "1500" are the same number (with a regular, no-break, thin or narrow
+    # no-break space as the thousands separator); "3,5" and "3.5" too.
+    joined = re.sub("(?<=\\d)[ \xa0\u2009\u202f](?=\\d{3}\\b)", "", text.translate(_INVISIBLE))
     return {match.replace(",", ".") for match in _NUMBER_RE.findall(joined)}
 
 
