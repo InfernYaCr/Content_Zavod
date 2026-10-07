@@ -4,6 +4,7 @@ import pytest
 
 from content_zavod.domain.errors import InvalidSettingValue
 from content_zavod.settings import (
+    AUDIENCE_MAX_LENGTH,
     PERSONAS,
     CustomPersona,
     Project,
@@ -229,3 +230,47 @@ async def test_set_project_dash_removes_the_project() -> None:
 
     assert await settings.set_project(" - ") is None
     assert (await settings.read()).project is None
+
+
+async def test_audience_is_unset_by_default() -> None:
+    current = await SettingsService(InMemoryStore()).read()
+
+    assert current.audience is None
+
+
+async def test_set_audience_strips_and_round_trips_keeping_line_breaks() -> None:
+    settings = SettingsService(InMemoryStore())
+
+    saved = await settings.set_audience("  Владельцы кофеен.\nБоль — нет времени на маркетинг.  ")
+
+    assert saved == "Владельцы кофеен.\nБоль — нет времени на маркетинг."
+    assert (await settings.read()).audience == saved
+
+
+@pytest.mark.parametrize("value", ["", "   ", "\n\t"])
+async def test_set_audience_rejects_empty_input_without_writing(value) -> None:
+    store = InMemoryStore()
+
+    with pytest.raises(InvalidSettingValue) as excinfo:
+        await SettingsService(store).set_audience(value)
+
+    assert excinfo.value.field == "audience"
+    assert (await SettingsService(store).read()).audience is None
+
+
+async def test_set_audience_rejects_an_overlong_portrait_without_writing() -> None:
+    store = InMemoryStore()
+
+    with pytest.raises(InvalidSettingValue) as excinfo:
+        await SettingsService(store).set_audience("я" * (AUDIENCE_MAX_LENGTH + 1))
+
+    assert excinfo.value.field == "audience_too_long"
+    assert (await SettingsService(store).read()).audience is None
+
+
+async def test_set_audience_dash_removes_the_audience() -> None:
+    settings = SettingsService(InMemoryStore())
+    await settings.set_audience("Владельцы кофеен")
+
+    assert await settings.set_audience(" - ") is None
+    assert (await settings.read()).audience is None

@@ -31,6 +31,9 @@ With a Проект set (#98), draft/rewrite are asked for one closing CTA to it
 itself is the code's job: `_ensure_project_link` keeps exactly one exact copy of the URL in
 the body (appending a CTA line when the model dropped or mangled it), and the foreign-URL
 filter never removes links into the Проект.
+
+The Аудитория (#100) is read fresh like the Персона and goes to draft/rewrite only, as
+INPUT_DATA: the outline is cached per Тема and stays reader-neutral (see `article_prompts`).
 """
 
 from __future__ import annotations
@@ -72,8 +75,8 @@ _SENSITIVE_KEYWORDS = frozenset(
 _PROMPT_VERSIONS = {
     "research_extract": "research-extract-v1",
     "outline": "outline-v4",
-    "draft": "draft-v5",
-    "rewrite": "rewrite-v5",
+    "draft": "draft-v6",
+    "rewrite": "rewrite-v6",
 }
 
 SOURCES_HEADING = "Источники:"
@@ -186,6 +189,7 @@ async def _run_pipeline(
         owner_settings = await settings.read()
         persona, custom_persona = owner_settings.persona, owner_settings.custom_persona
         project = owner_settings.project
+        audience = owner_settings.audience
         profile = platform_profile(platform)
         research = await researcher.prepare(brief, plan_item_id=plan_item_id, steps=steps)
         draft = await steps.llm(
@@ -202,6 +206,7 @@ async def _run_pipeline(
                 profile=profile,
                 project=project,
                 sensitive=_is_money_or_legal(title, brief.keywords),
+                audience=audience,
             ),
         )
         rewrite = await steps.llm(
@@ -213,6 +218,7 @@ async def _run_pipeline(
                 custom_persona=custom_persona,
                 profile=profile,
                 project=project,
+                audience=audience,
             ),
         )
         content = assemble_content(rewrite, research.bundle, project)
