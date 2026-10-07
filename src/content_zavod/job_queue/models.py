@@ -23,6 +23,18 @@ class JobResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class JobSnapshot:
+    """One Job as stored right now - for a caller that keeps a Job's result as the state behind
+    its buttons (the Направления suggestion, #113) instead of copying it elsewhere."""
+
+    job_id: JobId
+    job_type: str
+    status: JobStatus
+    payload: dict[str, Any]
+    output: dict[str, Any] | None = None
+
+
 class JobPartialFailure(Exception):
     """Raised by a Job Handler that wants a failure to still carry whatever
     JSON-serializable partial output it produced before failing - e.g. the

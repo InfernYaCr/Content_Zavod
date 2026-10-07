@@ -75,6 +75,12 @@ SETTING_STORE_KEYS: tuple[str, ...] = (
 )
 
 
+def directions_mismatch(current: OwnerSettings) -> bool:
+    """The Направления are still the default marketing queries, but the Ниша isn't marketing -
+    left so, every Plan comes out about marketing (#96, #113)."""
+    return current.directions == DEFAULT_DIRECTIONS and current.niche != DEFAULT_NICHE
+
+
 def parse_directions(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
