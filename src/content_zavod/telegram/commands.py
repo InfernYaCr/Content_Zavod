@@ -29,7 +29,7 @@ _RESYNC_PAUSE_SECONDS = 0.05
 
 MENU_COMMANDS: list[BotCommand] = [
     BotCommand(command="menu", description="Главное меню"),
-    BotCommand(command="help", description="Что умеет бот"),
+    BotCommand(command="help", description="Как пользоваться ботом"),
 ]
 
 

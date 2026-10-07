@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from aiogram.types import (
@@ -540,6 +541,15 @@ class MessageGone(Exception):
         self.message_id = message_id
 
 
+@dataclass(frozen=True)
+class SentPhoto:
+    """What `BotClient.send_photo` reports: the message's id and the largest size's `file_id`
+    (`None` if Telegram didn't say)."""
+
+    message_id: int
+    file_id: str | None = None
+
+
 class BotClient(Protocol):
     async def send_message(
         self,
@@ -563,9 +573,30 @@ class BotClient(Protocol):
     async def send_photo(
         self,
         chat_id: int,
-        photo: BufferedInputFile,
+        photo: BufferedInputFile | str,
         caption: str | None = None,
-    ) -> None: ...
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> SentPhoto:
+        """`photo` is a file to upload or a `file_id` Telegram already has (#114). Returns the
+        message id and the photo's `file_id`, so a caller can reuse it instead of re-uploading."""
+        ...
+
+    async def edit_message_media(
+        self,
+        chat_id: int,
+        message_id: int,
+        photo: BufferedInputFile | str,
+        caption: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> str | None:
+        """Swap a photo message's picture and caption in place (the Инструкция carousel, #114).
+        Returns the new photo's `file_id` when Telegram reports one. An unchanged redraw is
+        success; a message that's gone raises `MessageGone`."""
+        ...
+
+    async def pin_chat_message(self, chat_id: int, message_id: int) -> None:
+        """Pins silently. Raises when the bot may not pin there - callers treat it as optional."""
+        ...
 
     async def edit_message_text(
         self,

@@ -32,6 +32,7 @@ from aiogram.types import (
     CallbackQuery,
     ForceReply,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
     Message,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -89,19 +90,23 @@ from ..telegram import (
     unpack_callback_query,
 )
 from ..telegram.article_card import ArticlePagePublisher, send_article_card
+from ..telegram.asset_photos import AssetPhotos
 from ..telegram.direction_suggestions import (
     ONBOARDING_ORIGIN,
     SETTINGS_ORIGIN,
     SUGGEST_DIRECTIONS_JOB,
     DirectionSuggestions,
 )
-from ..telegram.gateway import format_week_range
+from ..telegram.gateway import SentPhoto, format_week_range
+from ..telegram.guide import DEEP_LINK as GUIDE_DEEP_LINK
+from ..telegram.guide import Guide, TeamNote
 from ..telegram.onboarding import Onboarding
 from ..telegram.pending_inputs import PendingInputs
 from ..telegram.texts import (
     BOT_DESCRIPTION,
     BOT_SHORT_DESCRIPTION,
     UNKNOWN_MESSAGE_TEXT,
+    UNREGISTERED_TEXT,
     job_failure_text,
 )
 from ..telegraph import HttpxTelegraphClient, TelegraphPublisher, project_footer
@@ -123,6 +128,11 @@ def _is_not_modified(exc: TelegramBadRequest) -> bool:
 
 def _is_message_gone(exc: TelegramBadRequest) -> bool:
     return any(description in exc.message for description in _MESSAGE_GONE)
+
+
+def _largest_photo_id(message: Message) -> str | None:
+    """The biggest size's `file_id` - the one worth caching for a re-send (#114)."""
+    return message.photo[-1].file_id if message.photo else None
 
 
 class _AiogramBotClient:
@@ -149,9 +159,42 @@ class _AiogramBotClient:
         await self._bot.send_document(chat_id, document, caption=caption)
 
     async def send_photo(
-        self, chat_id: int, photo: BufferedInputFile, caption: str | None = None
-    ) -> None:
-        await self._bot.send_photo(chat_id, photo, caption=caption)
+        self,
+        chat_id: int,
+        photo: BufferedInputFile | str,
+        caption: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> SentPhoto:
+        message = await self._bot.send_photo(
+            chat_id, photo, caption=caption, reply_markup=reply_markup
+        )
+        return SentPhoto(message.message_id, _largest_photo_id(message))
+
+    async def edit_message_media(
+        self,
+        chat_id: int,
+        message_id: int,
+        photo: BufferedInputFile | str,
+        caption: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> str | None:
+        try:
+            result = await self._bot.edit_message_media(
+                InputMediaPhoto(media=photo, caption=caption),
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=reply_markup,
+            )
+        except TelegramBadRequest as exc:
+            if _is_message_gone(exc):
+                raise MessageGone(chat_id, message_id) from exc
+            if not _is_not_modified(exc):
+                raise
+            return None
+        return _largest_photo_id(result) if isinstance(result, Message) else None
+
+    async def pin_chat_message(self, chat_id: int, message_id: int) -> None:
+        await self._bot.pin_chat_message(chat_id, message_id, disable_notification=True)
 
     async def edit_message_text(
         self,
@@ -211,6 +254,8 @@ def _build_router(
     queue: JobQueue,
     settings: Settings,
     onboarding: Onboarding,
+    guide: Guide,
+    team_note: TeamNote,
     *,
     publisher: ArticlePagePublisher | None = None,
     directions: DirectionSuggestions | None = None,
@@ -244,21 +289,29 @@ def _build_router(
         return decorator
 
     @router.message(Command("start"))
-    async def on_start(message: Message) -> None:
+    async def on_start(message: Message, command: CommandObject) -> None:
         if message.from_user is None:
             return
         chat_id = message.chat.id
         telegram_id = message.from_user.id
         role = await membership.role_for(telegram_id)
         if role is None:
+            if command.args == GUIDE_DEEP_LINK:
+                # A newcomer from the team chat's pinned note: the Инструкция first, so they
+                # see what they are asking access to, then the usual заявка (#114).
+                await guide.send(chat_id, None)
             await gateway.send_message(
                 chat_id,
-                "Вы не зарегистрированы. Нажмите кнопку, чтобы отправить заявку на доступ владельцу.",
+                UNREGISTERED_TEXT,
                 reply_markup=build_request_access_keyboard(telegram_id),
             )
             return
         await sync_commands(bot_client, telegram_id, role)
         await onboarding.interrupt(chat_id, telegram_id)
+        if command.args == GUIDE_DEEP_LINK:
+            # «📖 Инструкция» on the team chat's pinned note opens it here (#114).
+            await guide.send(chat_id, role)
+            return
         # A Владелец whose bot isn't set up yet gets the wizard's intro instead (#96) - in a
         # group only a pointer to the private chat, followed by the usual menu.
         if await onboarding.offer(chat_id, telegram_id, role):
@@ -276,9 +329,15 @@ def _build_router(
     @gated(COMMAND_ROLE["help"])
     async def on_help(message: Message) -> None:
         # gated() already confirmed message.from_user has a registered Role; re-fetch it here
-        # because the help text differs by Role.
+        # because the Инструкция's slides differ by Role (#114).
         role = await membership.role_for(message.from_user.id)
-        if role is not None:
+        if role is None:
+            return
+        try:
+            await guide.send(message.chat.id, role)
+        except Exception:
+            # Not even its text went out: the short help, so /help never stays silent.
+            logger.warning("could not send the guide", exc_info=True)
             await gateway.send_notice(
                 message.chat.id, render_help_text(role), reply_markup=build_open_menu_keyboard()
             )
@@ -364,6 +423,8 @@ def _build_router(
         main_menu,
         prompts,
         onboarding,
+        guide=guide,
+        team_note=team_note,
         publisher=publisher,
         directions=directions,
     )
@@ -648,6 +709,7 @@ def _make_notification_handler(
     notify_chat_id: int,
     *,
     publisher: ArticlePagePublisher | None = None,
+    team_note: TeamNote | None = None,
     directions: DirectionSuggestions | None = None,
 ):
     async def handle(result: JobResult) -> None:
@@ -656,7 +718,14 @@ def _make_notification_handler(
             # into the list (or says it failed) wherever it was asked (#113).
             await directions.deliver(result)
             return
-        for delivery in await _apply_result(plan, article, result):
+        deliveries = await _apply_result(plan, article, result)
+        if team_note is not None and any(
+            not isinstance(delivery, _PagePublishDelivery) for delivery in deliveries
+        ):
+            # The bot's first message in the team chat is preceded by the pinned «📌 Как мы
+            # работаем» (#114) - posted once, never failing the delivery itself.
+            await team_note.ensure()
+        for delivery in deliveries:
             await _deliver(plan, article, gateway, notify_chat_id, delivery, publisher)
 
     return handle
@@ -693,7 +762,18 @@ async def main(settings: Settings | None = None) -> None:
             pending_inputs,
             kind="article_comment",
         )
-        join_request_flow = JoinRequestFlow(join_requests, membership, gateway)
+        bot_username = (await bot.me()).username
+        # The Инструкция's pictures and the banners (#114), uploaded once and reused by file_id.
+        photos = AssetPhotos(bot_client, owner_settings)
+        guide = Guide(photos, bot_client)
+        team_note = TeamNote(
+            photos,
+            bot_client,
+            owner_settings,
+            team_chat_id=settings.telegram_notify_chat_id,
+            bot_username=bot_username,
+        )
+        join_request_flow = JoinRequestFlow(join_requests, membership, gateway, photos=photos)
         prompts = InputPrompt(bot_client, pending_inputs)
 
         # The scheduler must exist before _build_router so /set_schedule can reschedule its job.
@@ -741,6 +821,7 @@ async def main(settings: Settings | None = None) -> None:
             prompts,
             team_chat_id=settings.telegram_notify_chat_id,
             tz=settings.timezone,
+            photos=photos,
         )
         # The default list - what a group chat, or a user /start hasn't synced yet, sees (#95).
         await bot.set_my_commands(MENU_COMMANDS, scope=BotCommandScopeDefault())
@@ -754,8 +835,9 @@ async def main(settings: Settings | None = None) -> None:
             bot_client,
             main_menu,
             schedule_settings,
-            bot_username=(await bot.me()).username,
+            bot_username=bot_username,
             team_chat_id=settings.telegram_notify_chat_id,
+            photos=photos,
         )
         directions.attach(SETTINGS_ORIGIN, settings_screen)
         directions.attach(ONBOARDING_ORIGIN, onboarding)
@@ -787,6 +869,8 @@ async def main(settings: Settings | None = None) -> None:
                 queue,
                 settings,
                 onboarding,
+                guide,
+                team_note,
                 publisher=publisher,
                 directions=directions,
             )
@@ -801,6 +885,8 @@ async def main(settings: Settings | None = None) -> None:
             gateway,
             settings.telegram_notify_chat_id,
             publisher=publisher,
+            team_note=team_note,
+            photos=photos,
             directions=directions,
         )
         polling_task = asyncio.create_task(dispatcher.start_polling(bot, handle_signals=False))

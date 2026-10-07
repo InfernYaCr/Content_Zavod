@@ -4,12 +4,13 @@ Payload is a union of six types: five immutable dataclasses for the composite
 Действия that pack more than one field into their id (`Page`, `HistoryWeek`,
 `HistoryVersions`, `HistoryVersion`, `ExportArticle`), plus `SimpleAction` for
 the remaining Действия that carry a single opaque id (the Хаб's six, #91, the
-Главное меню and Экран Настроек ones, #95, the onboarding wizard's, #96, and the
-Направления suggestion's, #113, pack whatever they need into that id).
+Главное меню and Экран Настроек ones, #95, the onboarding wizard's, #96, the
+Инструкция's, #114, and the Направления suggestion's, #113, pack whatever they need
+into that id).
 
 `ACTION_ROLE` says which of the Действия need "owner" and which accept any
-registered Role - `request_access` is absent, same reasoning as `COMMAND_ROLE`
-omitting `start` (see ADR-0012). The callback dispatcher (`callback_dispatcher.py`)
+registered Role - `request_access` (and `guide_slide`, #114) is absent, same reasoning as
+`COMMAND_ROLE` omitting `start` (see ADR-0012). The callback dispatcher (`callback_dispatcher.py`)
 is what actually enforces it.
 
 `gateway.py` builds every keyboard through `encode_callback_data` here rather
@@ -76,6 +77,9 @@ Action = Literal[
     "onboarding_pick",
     "onboarding_later",
     "onboarding_launch",
+    "guide",
+    "guide_slide",
+    "guide_pin",
     "suggest_directions",
     "directions_take",
     "directions_more",
@@ -133,6 +137,10 @@ _ACTION_CODES: dict[Action, str] = {
     "onboarding_pick": "op",
     "onboarding_later": "ox",
     "onboarding_launch": "og",
+    # The Инструкция (#114): "g…".
+    "guide": "gd",
+    "guide_slide": "gs",
+    "guide_pin": "gp",
     # Направления suggested from the Ниша (#113): "d…". `ds`/`do`/`dc` carry where the
     # suggestion was asked from, `dt`/`dm` its Job id - the list itself stays server-side.
     "suggest_directions": "ds",
@@ -145,7 +153,8 @@ _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_COD
 
 # Role required to run each Action's callback branch, mirroring `access.COMMAND_ROLE` for
 # commands (see ADR-0012). `request_access` is deliberately absent - it works for
-# unregistered callers, so the callback dispatcher handles it before resolving a Role at all.
+# unregistered callers, so the callback dispatcher handles it before resolving a Role at all;
+# `guide_slide` likewise (see below).
 ACTION_ROLE: dict[Action, Role | None] = {
     "delete": None,
     "regenerate": None,
@@ -195,6 +204,12 @@ ACTION_ROLE: dict[Action, Role | None] = {
     "onboarding_pick": "owner",
     "onboarding_later": "owner",
     "onboarding_launch": "owner",
+    # The Инструкция is for everyone (its slides depend on the presser's Role); `guide_slide`
+    # is absent like `request_access`: a newcomer without a Role turns the carousel too
+    # (`/start guide`), so the dispatcher handles it before the gate. Posting the team chat's
+    # pinned note is a Владелец's call, like the rest of the bot's setup.
+    "guide": None,
+    "guide_pin": "owner",
     # Spends a model call and rewrites Направления: Владелец only, like Настройки.
     "suggest_directions": "owner",
     "directions_take": "owner",

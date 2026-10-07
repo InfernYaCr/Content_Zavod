@@ -49,8 +49,10 @@ from ..settings import (
     SettingsService,
     directions_mismatch,
 )
+from .asset_photos import AssetPhotos
 from .callback_codec import Action, SimpleAction, encode_callback_data
 from .gateway import BotClient
+from .guide import guide_button
 from .input_prompt import InputPrompt
 from .main_menu import build_open_menu_keyboard
 from .settings_screen import (
@@ -211,6 +213,7 @@ def build_intro_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [_button(ONBOARDING_START_BUTTON, "onboarding_step", START)],
             [_button(ONBOARDING_LATER_BUTTON, "onboarding_later")],
+            [guide_button()],
         ]
     )
 
@@ -232,6 +235,7 @@ def build_review_keyboard(fields: Sequence[SettingField]) -> InlineKeyboardMarku
         [_button(setting.change_button, "onboarding_step", StepRef(setting.key, True).encode())]
         for setting in fields
     ]
+    rows.append([guide_button()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -248,9 +252,12 @@ class Onboarding:
         bot_username: str | None = None,
         team_chat_id: int | None = None,
         fields: Sequence[SettingField] | None = None,
+        photos: AssetPhotos | None = None,
     ) -> None:
         """`team_chat_id` - where Plans are delivered (`TELEGRAM_NOTIFY_CHAT_ID`): the launch
-        says «в чат команды», or «сюда» when that is this very private chat."""
+        says «в чат команды», or «сюда» when that is this very private chat. `photos` - the
+        intro goes out with its picture (#114); without it, as text."""
+        self._photos = photos
         self._state = state
         self._settings = settings
         self._prompts = prompts
@@ -273,9 +280,7 @@ class Onboarding:
         if not _is_private(chat_id, user_id):
             await self._point_to_private(chat_id)
             return False
-        await self._bot.send_message(
-            chat_id, render_intro_text(self._fields), reply_markup=build_intro_keyboard()
-        )
+        await self._send_intro(chat_id)
         return True
 
     async def interrupt(self, chat_id: int, user_id: int) -> None:
@@ -423,9 +428,7 @@ class Onboarding:
         self, chat_id: int, user_id: int, step_id: str, *, notice: str | None = None
     ) -> None:
         if step_id == INTRO:
-            await self._bot.send_message(
-                chat_id, render_intro_text(self._fields), reply_markup=build_intro_keyboard()
-            )
+            await self._send_intro(chat_id)
             return
         ref = StepRef.decode(step_id)
         setting = self._field(ref.key)
@@ -507,6 +510,13 @@ class Onboarding:
         return text, rows
 
     # --- helpers ---
+
+    async def _send_intro(self, chat_id: int) -> None:
+        text, keyboard = render_intro_text(self._fields), build_intro_keyboard()
+        if self._photos is not None:
+            await self._photos.send(chat_id, "onboarding", text, keyboard)
+        else:
+            await self._bot.send_message(chat_id, text, reply_markup=keyboard)
 
     def _field(self, key: str) -> SettingField | None:
         return self._fields[self._keys.index(key)] if key in self._keys else None

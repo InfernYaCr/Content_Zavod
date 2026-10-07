@@ -14,6 +14,7 @@ from content_zavod.telegram import (
     PlanView,
     TelegramGateway,
 )
+from content_zavod.telegram.asset_photos import AssetPhotos
 from content_zavod.telegram.input_prompt import InputPrompt
 from content_zavod.telegram.main_menu import (
     TOPIC_INPUT_KIND,
@@ -120,18 +121,30 @@ def make_view(*statuses: str) -> PlanView:
     )
 
 
-def test_content_manager_menu_has_the_three_shared_buttons() -> None:
+def test_content_manager_menu_has_the_shared_buttons_and_the_guide() -> None:
     markup = build_main_menu_keyboard("content_manager")
 
-    assert button_texts(markup) == [["📋 План недели"], ["✍️ Предложить Тему"], ["🗂 История"]]
-    assert button_data(markup) == [["mp:"], ["mt:"], ["mh:"]]
+    assert button_texts(markup) == [
+        ["📋 План недели"],
+        ["✍️ Предложить Тему"],
+        ["🗂 История"],
+        ["📖 Как пользоваться"],
+    ]
+    # The carousel takes the menu's place (#114).
+    assert button_data(markup) == [["mp:"], ["mt:"], ["mh:"], ["gd:m"]]
 
 
-def test_owner_menu_adds_settings_members_and_schedule() -> None:
+def test_owner_menu_adds_settings_members_schedule_and_team_note() -> None:
     markup = build_main_menu_keyboard("owner")
 
-    assert button_texts(markup)[3:] == [["⚙️ Настройки"], ["👥 Участники"], ["🕘 Расписание"]]
-    assert button_data(markup)[3:] == [["st:"], ["mm:"], ["sc:m"]]
+    assert button_texts(markup)[3:] == [
+        ["⚙️ Настройки"],
+        ["👥 Участники"],
+        ["🕘 Расписание"],
+        ["📌 Памятка в чат команды"],
+        ["📖 Как пользоваться"],
+    ]
+    assert button_data(markup)[3:] == [["st:"], ["mm:"], ["sc:m"], ["gp:"], ["gd:m"]]
 
 
 async def test_start_menu_greets_then_shows_the_menu() -> None:
@@ -142,7 +155,7 @@ async def test_start_menu_greets_then_shows_the_menu() -> None:
     ((_, text, markup, _),) = env.bot.sent
     assert text.startswith("👋 Добро пожаловать!")
     assert text.endswith("🏠 Главное меню\nВыберите, что сделать:")
-    assert len(markup.inline_keyboard) == 6
+    assert len(markup.inline_keyboard) == 8
 
 
 async def test_show_edits_back_to_the_menu_in_place() -> None:
@@ -228,3 +241,50 @@ async def test_reply_without_a_topic_question_is_not_consumed() -> None:
     env = Env()
 
     assert await env.menu.handle_reply(USER, USER, "привет", None) is False
+
+
+class _GuideStore:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def set(self, key: str, value: str) -> None:
+        self.values[key] = value
+
+
+# --- #114: the welcome picture and a menu that can't replace a photo ---
+
+
+async def test_start_with_pictures_greets_with_a_photo_then_sends_the_menu() -> None:
+    env = Env()
+    menu = MainMenu(
+        env.plan,
+        FakeQueue(),
+        FakeSchedule(),
+        env.bot,
+        TelegramGateway(env.bot),
+        InputPrompt(env.bot, env.pending),
+        team_chat_id=TEAM_CHAT,
+        tz=MOSCOW,
+        photos=AssetPhotos(env.bot, _GuideStore()),
+    )
+
+    await menu.send(USER, "owner", welcome=True)
+
+    ((_, photo, caption, _),) = env.bot.photos
+    assert photo.filename == "welcome.png" and caption.startswith("👋 Добро пожаловать!")
+    ((_, text, markup, _),) = env.bot.sent
+    assert text == "🏠 Главное меню\nВыберите, что сделать:"
+    assert markup is not None
+
+
+async def test_show_on_a_photo_message_sends_the_menu_below_it() -> None:
+    env = Env()
+    env.bot.fail_edits = True  # a photo (the КМ welcome) can't become a text message
+
+    await env.menu.show(USER, 42, "content_manager")
+
+    ((_, text, _, _),) = env.bot.sent
+    assert text == "🏠 Главное меню\nВыберите, что сделать:"

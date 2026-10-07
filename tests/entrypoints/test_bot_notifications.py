@@ -609,6 +609,46 @@ async def test_failed_manual_cover_also_says_so_in_the_chat() -> None:
     ]
 
 
+# --- #114: the team chat's pinned note ---
+
+
+class FakeTeamNote:
+    def __init__(self) -> None:
+        self.ensured = 0
+
+    async def ensure(self) -> None:
+        self.ensured += 1
+
+
+_PLAN_RESULT = JobResult(
+    job_id=1,
+    job_type="generate_plan",
+    status="done",
+    output={"week_label": "Week 1", "topics": [{"title": "T1", "summary": "s", "keywords": []}]},
+)
+
+
+async def test_a_plan_delivery_is_preceded_by_the_team_note() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    note = FakeTeamNote()
+    handle = _make_notification_handler(plan, article, gateway, 42, team_note=note)
+
+    await handle(_PLAN_RESULT)
+    await handle(_PLAN_RESULT)
+
+    assert note.ensured == 2  # TeamNote itself posts only once
+
+
+async def test_nothing_for_the_chat_means_no_team_note() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    note = FakeTeamNote()
+    handle = _make_notification_handler(plan, article, gateway, 42, team_note=note)
+
+    await handle(JobResult(job_id=9, job_type="some_future_job", status="done", output={}))
+
+    assert note.ensured == 0
+
+
 class FakeDirections:
     def __init__(self) -> None:
         self.delivered: list[JobResult] = []

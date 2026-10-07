@@ -9,7 +9,8 @@ and `SimpleAction.action`, with `assert_never` on any `Action` the match doesn't
 
 `request_access` works for unregistered callers, so it is handled before the Role is even
 resolved and never reaches the match (`ACTION_ROLE` has no entry for it either - see
-`callback_codec.py`). Every other Действие calls `require_role(role,
+`callback_codec.py`); so does `guide_slide`, which turns the Инструкция by whatever Role
+(or none) the presser has. Every other Действие calls `require_role(role,
 ACTION_ROLE[action])` as the first thing its branch does, refusing via `answer(text,
 show_alert=True)` without touching any collaborator when it fails - same text `gated()` uses
 for command handlers in `entrypoints/bot.py`.
@@ -46,6 +47,8 @@ from .comment_gated_regeneration import CommentGatedRegeneration
 from .direction_suggestions import DirectionSuggestions
 from .gateway import ITEMS_PER_PAGE, BotClient, TelegramGateway
 from .generate_plan_command import handle_cancel_regenerate_plan, handle_confirm_regenerate_plan
+from .guide import FROM_GUIDE, FROM_MENU, Guide, TeamNote
+from .guide_texts import TEAM_NOTE_FAILED
 from .history_command import (
     handle_history_page,
     handle_history_version,
@@ -155,9 +158,13 @@ class CallbackDispatcher:
         prompts: InputPrompt,
         onboarding: Onboarding,
         *,
+        guide: Guide,
+        team_note: TeamNote,
         publisher: ArticlePagePublisher | None = None,
         directions: DirectionSuggestions | None = None,
     ) -> None:
+        self._guide = guide
+        self._team_note = team_note
         self._membership = membership
         self._plan = plan
         self._article = article
@@ -196,6 +203,14 @@ class CallbackDispatcher:
             return
 
         role = await self._membership.role_for(callback_input.user_id)
+        if isinstance(payload, SimpleAction) and payload.action == "guide_slide":
+            # Turning the Инструкция works without a Role too: `/start guide` shows a newcomer
+            # the Контент-менеджер's slides above the заявка (#114). Nothing on them is gated.
+            await answer()
+            await self._guide.show(
+                callback_input.chat_id, callback_input.message_id, role, payload.id_
+            )
+            return
         deny_text = ACCESS_DENIED_TEXT if role is None else OWNER_ONLY_TEXT
 
         try:
@@ -279,11 +294,32 @@ class CallbackDispatcher:
                 # A Пресет button from a pre-#95 /persona message: same as picking it on the
                 # Экран Настроек, which that message now turns into.
                 await self._settings_screen.pick(chat_id, message_id, "persona", int(id_))
-            case SimpleAction(action="menu"):
+            case SimpleAction(action="menu", id_=id_):
                 if not await self._authorized("menu", role, deny_text, answer):
                     return
                 await answer()
+                if id_ == FROM_GUIDE:
+                    # «🏠 В меню» on the Инструкция: the menu takes the carousel's place (#114).
+                    await self._bot_client.delete_message(chat_id, message_id)
+                    await self._main_menu.send(chat_id, role or "content_manager")
+                    return
                 await self._main_menu.show(chat_id, message_id, role or "content_manager")
+            case SimpleAction(action="guide", id_=id_):
+                if not await self._authorized("guide", role, deny_text, answer):
+                    return
+                await answer()
+                if id_ == FROM_MENU:  # the carousel takes the menu's place
+                    await self._bot_client.delete_message(chat_id, message_id)
+                await self._guide.send(chat_id, role or "content_manager")
+            case SimpleAction(action="guide_pin"):
+                if not await self._authorized("guide_pin", role, deny_text, answer):
+                    return
+                try:
+                    outcome = await self._team_note.post()
+                except Exception:
+                    logger.warning("could not post the team note", exc_info=True)
+                    outcome = TEAM_NOTE_FAILED
+                await answer(outcome, show_alert=True)
             case SimpleAction(action="menu_plan"):
                 if not await self._authorized("menu_plan", role, deny_text, answer):
                     return

@@ -40,8 +40,11 @@ from content_zavod.telegram import (
     TelegramGateway,
     decode_callback_data,
 )
+from content_zavod.telegram.asset_photos import AssetPhotos
 from content_zavod.telegram.callback_dispatcher import CallbackDispatcher, CallbackInput
 from content_zavod.telegram.direction_suggestions import DirectionSuggestions
+from content_zavod.telegram.gateway import SentPhoto
+from content_zavod.telegram.guide import Guide, TeamNote
 from content_zavod.telegram.input_prompt import InputPrompt
 from content_zavod.telegram.main_menu import MainMenu
 from content_zavod.telegram.onboarding import ONBOARDING_INPUT_KIND, Onboarding
@@ -66,7 +69,10 @@ class FakeBot:
         self.sent_documents: list[tuple[int, BufferedInputFile, str | None]] = []
         self.edited_messages: list[tuple[int, int, str, InlineKeyboardMarkup | None]] = []
         self.deleted_messages: list[tuple[int, int]] = []
-        self.sent_photos: list[tuple[int, BufferedInputFile, str | None]] = []
+        self.sent_photos: list[tuple[int, BufferedInputFile | str, str | None]] = []
+        self.edited_media: list[tuple[int, int, BufferedInputFile | str, str | None]] = []
+        self.pinned: list[tuple[int, int]] = []
+        self.fail_pin = False
 
     async def send_message(self, chat_id, text, reply_markup=None, parse_mode=None) -> int:
         self.sent_messages.append((chat_id, text, reply_markup))
@@ -75,8 +81,20 @@ class FakeBot:
     async def send_document(self, chat_id, document, caption=None) -> None:
         self.sent_documents.append((chat_id, document, caption))
 
-    async def send_photo(self, chat_id, photo, caption=None) -> None:
+    async def send_photo(self, chat_id, photo, caption=None, reply_markup=None) -> SentPhoto:
         self.sent_photos.append((chat_id, photo, caption))
+        return SentPhoto(1000 + len(self.sent_photos), f"file-{len(self.sent_photos)}")
+
+    async def edit_message_media(
+        self, chat_id, message_id, photo, caption=None, reply_markup=None
+    ) -> str | None:
+        self.edited_media.append((chat_id, message_id, photo, caption))
+        return None
+
+    async def pin_chat_message(self, chat_id, message_id) -> None:
+        if self.fail_pin:
+            raise RuntimeError("not enough rights to pin a message")
+        self.pinned.append((chat_id, message_id))
 
     async def edit_message_text(self, chat_id, message_id, text, reply_markup=None) -> None:
         self.edited_messages.append((chat_id, message_id, text, reply_markup))
@@ -482,6 +500,15 @@ class Fixtures:
             self.main_menu,
             self.schedule,
         )
+        self.photos = AssetPhotos(self.bot, self.owner_settings)
+        self.guide = Guide(self.photos, self.bot)
+        self.team_note = TeamNote(
+            self.photos,
+            self.bot,
+            self.owner_settings,
+            team_chat_id=-100500,
+            bot_username="zavod_bot",
+        )
         self.dispatcher = CallbackDispatcher(
             self.membership,
             self.plan,
@@ -496,6 +523,8 @@ class Fixtures:
             self.main_menu,
             self.prompts,
             self.onboarding,
+            guide=self.guide,
+            team_note=self.team_note,
             directions=self.directions,
         )
         self.directions.attach("s", self.settings_screen)
@@ -1172,8 +1201,8 @@ async def test_menu_redraws_the_main_menu_for_the_pressers_role(f: Fixtures) -> 
     await dispatch(f, SimpleAction("menu", ""), user_id=OWNER_ID)
 
     cm_menu, owner_menu = (edit[3] for edit in f.bot.edited_messages)
-    assert len(cm_menu.inline_keyboard) == 3
-    assert len(owner_menu.inline_keyboard) == 6
+    assert len(cm_menu.inline_keyboard) == 4  # + «📖 Как пользоваться» (#114)
+    assert len(owner_menu.inline_keyboard) == 8  # + «📌 Памятка в чат команды»
 
 
 async def test_menu_plan_shows_the_plan_screen_in_place(f: Fixtures) -> None:
@@ -1348,6 +1377,84 @@ async def test_cancelling_a_wizard_question_says_how_to_come_back(f: Fixtures) -
 
     assert (1, OWNER_ID) not in f.pending_inputs.rows
     assert "/start" in f.bot.sent_messages[-1][1]
+
+
+# --- the Инструкция (#114) ---
+
+
+async def test_guide_from_the_menu_replaces_it_with_the_carousel(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("guide", "m"))
+
+    assert answer.calls == [(None, None)]
+    assert f.bot.deleted_messages == [(1, 2)]
+    ((chat_id, photo, caption),) = f.bot.sent_photos
+    assert chat_id == 1 and photo.filename == "about.png"
+    assert caption.startswith("🤖 Что делает бот")
+
+
+async def test_guide_from_another_message_leaves_it_in_place(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("guide", ""))
+
+    assert f.bot.deleted_messages == []
+    assert len(f.bot.sent_photos) == 1
+
+
+async def test_guide_slide_turns_the_carousel_by_the_pressers_role(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("guide_slide", "2"), user_id=OWNER_ID)
+    await dispatch(f, SimpleAction("guide_slide", "2"), user_id=CM_ID)
+
+    (_, _, owner_photo, owner_caption), (_, _, cm_photo, _) = f.bot.edited_media
+    assert owner_photo.filename == "niche.png" and owner_caption.startswith("🎯 Ниша")
+    assert cm_photo.filename == "article.png"  # a Контент-менеджер has no settings slides
+
+
+async def test_a_guest_turns_the_carousel_too(f: Fixtures) -> None:
+    """`/start guide` shows a newcomer the Контент-менеджер's slides above the заявка."""
+    answer = await dispatch(f, SimpleAction("guide_slide", "2"), user_id=UNKNOWN_ID)
+
+    assert answer.calls == [(None, None)]
+    ((_, _, photo, _),) = f.bot.edited_media
+    assert photo.filename == "article.png"  # the third of the Контент-менеджер's slides
+
+
+async def test_other_guide_buttons_need_a_role(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("guide", ""), user_id=UNKNOWN_ID)
+
+    assert answer.calls == [(_ACCESS_DENIED_TEXT, True)]
+    assert f.bot.sent_photos == []
+
+
+async def test_to_menu_from_the_carousel_replaces_it_with_the_menu(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("menu", "g"))
+
+    assert f.bot.deleted_messages == [(1, 2)]
+    ((chat_id, text, _),) = f.bot.sent_messages
+    assert chat_id == 1 and text.startswith("🏠 Главное меню")
+
+
+async def test_team_note_is_posted_on_the_owners_request(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("guide_pin", ""), user_id=OWNER_ID)
+
+    assert answer.calls == [("📌 Памятка отправлена в чат команды и закреплена.", True)]
+    ((chat_id, _photo, caption),) = f.bot.sent_photos
+    assert chat_id == -100500 and caption.startswith("📌 Как мы работаем")
+    assert f.bot.pinned == [(-100500, 1001)]
+
+
+async def test_team_note_without_pin_rights_says_so(f: Fixtures) -> None:
+    f.bot.fail_pin = True
+
+    answer = await dispatch(f, SimpleAction("guide_pin", ""), user_id=OWNER_ID)
+
+    ((text, alert),) = answer.calls
+    assert alert and "закрепить её не вышло" in text
+
+
+async def test_team_note_is_owner_only(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("guide_pin", ""), user_id=CM_ID)
+
+    assert answer.calls == [(_OWNER_ONLY_TEXT, True)]
+    assert f.bot.sent_photos == []
 
 
 # --- Направления suggested from the Ниша (#113) ---
