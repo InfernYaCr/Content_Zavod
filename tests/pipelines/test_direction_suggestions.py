@@ -82,6 +82,14 @@ def test_niche_and_audience_are_input_data_never_instructions() -> None:
     assert user.text.rstrip().endswith("END_INPUT_DATA")
 
 
+def test_the_rules_ask_for_article_queries_not_shopping_ones() -> None:
+    system, _ = build_suggestion_messages("ремонт квартир")
+
+    assert "строчными" in system.text and "1–4 слова" in system.text
+    assert "статью" in system.text
+    assert "без брендов" in system.text and "купить" in system.text
+
+
 def test_without_audience_or_exclude_only_the_niche_is_sent() -> None:
     _, user = build_suggestion_messages("ремонт квартир")
 
@@ -130,6 +138,43 @@ def test_parse_drops_what_is_too_long_to_be_a_query() -> None:
     assert parse_suggested_queries(text) == ["ремонт кухни"]
 
 
+def test_parse_drops_chatter_around_the_list() -> None:
+    text = (
+        "Конечно! Вот запросы для ниши «домашняя выпечка»:\n"
+        "\n"
+        "### Запросы\n"
+        "1. **Рецепт домашнего хлеба**\n"
+        "2. дизайн тортов: идеи\n"
+        "3. как испечь торт?\n"
+        "\n"
+        "Эти запросы помогут найти темы для статей.\n"
+        "Надеюсь, это поможет!"
+    )
+
+    assert parse_suggested_queries(text) == ["рецепт домашнего хлеба", "дизайн тортов"]
+
+
+def test_parse_drops_near_duplicates_wordstat_counts_as_one() -> None:
+    text = (
+        "торт на заказ\nторты на заказ\nзаказ торта\nкак испечь торт\nиспечь торт\n"
+        "психолог для подростков\nпсихология подростков\nремонт кухни\nремонт квартиры"
+    )
+
+    assert parse_suggested_queries(text) == [
+        "торт на заказ",
+        "как испечь торт",
+        "психолог для подростков",
+        "ремонт кухни",
+        "ремонт квартиры",
+    ]
+
+
+def test_parse_drops_what_cannot_be_a_query() -> None:
+    text = "2024\nремонт (ванной)\nкризис 13 лет\nремонт & отделка"
+
+    assert parse_suggested_queries(text) == ["ремонт", "кризис 13 лет"]
+
+
 # --- the handler ---
 
 
@@ -161,6 +206,34 @@ async def test_queries_without_wordstat_demand_are_dropped() -> None:
     ]
     assert output["dropped"] == ["хлеб на кефире бабушкин секрет"]
     assert output["wordstat"] == "checked"
+
+
+async def test_thin_demand_is_dropped_when_enough_queries_have_real_demand() -> None:
+    answer = "торт\nэклеры\nзакваска\nхлеб на пиве\nкекс без глютена"
+    stats = FakeKeywordStats(
+        {"торт": 900, "эклеры": 500, "закваска": 300, "хлеб на пиве": 40, "кекс без глютена": 0}
+    )
+    handler = make_suggest_directions_handler(
+        FakeTextGenerator(answer), stats, SettingsService(FakeStore())
+    )
+
+    output = await handler({})
+
+    assert [item["query"] for item in output["queries"]] == ["торт", "эклеры", "закваска"]
+    assert output["dropped"] == ["хлеб на пиве", "кекс без глютена"]
+
+
+async def test_a_narrow_niche_keeps_thin_demand_rather_than_nothing() -> None:
+    answer = "торт\nхлеб на пиве\nкекс без глютена"
+    stats = FakeKeywordStats({"торт": 900, "хлеб на пиве": 40, "кекс без глютена": 0})
+    handler = make_suggest_directions_handler(
+        FakeTextGenerator(answer), stats, SettingsService(FakeStore())
+    )
+
+    output = await handler({})
+
+    assert [item["query"] for item in output["queries"]] == ["торт", "хлеб на пиве"]
+    assert output["dropped"] == ["кекс без глютена"]
 
 
 async def test_unavailable_wordstat_keeps_the_model_list_and_says_so() -> None:
@@ -214,14 +287,14 @@ async def test_more_variants_exclude_what_was_shown_and_read_the_audience() -> N
         SettingsService(FakeStore({"niche": "выпечка", "audience": "сладкоежки"})),
     )
 
-    output = await handler({"exclude": ["Торт"]})
+    output = await handler({"exclude": ["Торты"]})
 
     assert _input_data(generator.calls[0][1]) == {
         "niche": "выпечка",
         "audience": "сладкоежки",
-        "exclude": ["Торт"],
+        "exclude": ["Торты"],
     }
-    assert [item["query"] for item in output["queries"]] == ["эклер"]  # the repeat is dropped
+    assert [item["query"] for item in output["queries"]] == ["эклер"]  # a repeat, near enough
 
 
 async def test_at_most_eight_queries_are_kept() -> None:
@@ -246,7 +319,7 @@ async def test_the_llm_call_is_recorded_as_a_provenance_step() -> None:
 
     ((step),) = output["steps"]
     assert step["step_name"] == "directions_suggest"
-    assert step["prompt_template_version"] == "directions-suggest-v1"
+    assert step["prompt_template_version"] == "directions-suggest-v2"
     assert step["tokens"] == 42 and step["cost"] == 0.1
 
 
