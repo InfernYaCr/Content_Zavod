@@ -6,6 +6,7 @@ written without verified evidence (#94) gets a warning line - kept out of the te
 from __future__ import annotations
 
 import re
+from typing import Protocol
 
 from .texts import ARTICLE_CARD_NO_EVIDENCE, ARTICLE_CARD_PLATFORM, platform_name
 from .types import ArticleView
@@ -68,3 +69,29 @@ def _strip_inline(text: str) -> str:
 
 def _normalize(value: str) -> str:
     return re.sub(r"[\W_]+", " ", value).strip().casefold()
+
+
+class ArticlePagePublisher(Protocol):
+    """See `telegraph.TelegraphPublisher`: the Статья's page URL, `None` on failure."""
+
+    async def publish(self, article: ArticleView) -> str | None: ...
+
+
+class ArticleCardSender(Protocol):
+    async def send_article_ready(
+        self, chat_id: int, article: ArticleView, *, read_url: str | None = None
+    ) -> None: ...
+
+
+async def send_article_card(
+    gateway: ArticleCardSender,
+    chat_id: int,
+    view: ArticleView,
+    publisher: ArticlePagePublisher | None,
+) -> None:
+    """Publishes (or updates) the Статья's Страница для чтения first, so the card can carry
+    «📖 Читать» (#92). `publish` returns `None` on any Telegraph failure - the card still goes
+    out, just without that button. Shared by a «✏️ Доработать» result and the Хаб's «📄»
+    button (#91)."""
+    read_url = await publisher.publish(view) if publisher is not None else None
+    await gateway.send_article_ready(chat_id, view, read_url=read_url)

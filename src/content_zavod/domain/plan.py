@@ -31,6 +31,10 @@ recorded yet and edits otherwise, so a crash between a successful Telegram
 send and the caller's own delivered-mark no longer produces a second
 message on retry - `record_message_ref` runs, and is durable, before that
 mark is ever attempted.
+
+`get_hub` reads an approved Plan as its Хаб (#91, ADR-0014): each Тема's cover and
+per-Площадка Статья state, derived from current rows and the Jobs that own their
+generation rather than counted, so no notification replay or retry can skew it.
 """
 
 from __future__ import annotations
@@ -46,6 +50,12 @@ import asyncpg
 from ..job_queue import JobId, JobQueue
 from .errors import PlanItemNotEditable, PlanItemNotFound, PlanNotFound
 from .types import (
+    PLATFORMS,
+    ArticleId,
+    HubArticleCell,
+    HubCellState,
+    HubTopic,
+    PlanHubView,
     PlanId,
     PlanItemCoverView,
     PlanItemId,
@@ -136,76 +146,89 @@ class Plan:
             message_id,
         )
 
-    async def start_generation_batch(self, plan_id: PlanId, total: int) -> bool:
-        """Opens progress tracking for one approve_all fan-out's generate_cover/generate_article
-        Jobs (#91). First-writer-wins (`generation_total IS NULL`), like `record_message_ref`,
-        so a replayed fan-out (retried callback, or a crash between approving and enqueueing)
-        can't reset an in-progress or already-closed batch's count. Returns whether this call
-        was the one that opened it, so the caller knows whether to send the first progress
-        message."""
-        result = await self._pool.execute(
-            "UPDATE plans SET generation_total = $2, generation_done = 0 "
-            "WHERE id = $1 AND generation_total IS NULL",
-            plan_id,
-            total,
+    async def get_hub(self, plan_id: PlanId) -> PlanHubView:
+        """The Plan as its Хаб (#91): every approved Тема with its cover and per-Площадка Статья
+        state, derived right now from `plan_items`/`articles` and the `jobs` that currently own
+        their generation - no counter is kept anywhere, so a redelivered notification, a
+        «Повторить» or a manual re-request can never double-count. Rejected Темы are left out
+        and the rest renumbered 1..N, since nothing is generated for them."""
+        plan_row = await self._pool.fetchrow(
+            "SELECT id, week_label, status, hub_item_id FROM plans WHERE id = $1", plan_id
         )
-        return result == "UPDATE 1"
-
-    async def record_generation_progress(self, plan_id: PlanId) -> tuple[int, int] | None:
-        """Advances one open batch's done count by one finished Job (#91). `None` means no
-        batch is open for this Plan right now - the caller falls back to per-Job delivery.
-        Closes the batch (resets `generation_total`/`generation_done` back to NULL/0) in the
-        same transaction once `done` reaches `total`, so it can't be double-counted by a
-        notification replay and so a later fan-out replay can open a fresh batch instead of
-        finding one already at capacity."""
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                row = await conn.fetchrow(
-                    "UPDATE plans SET generation_done = generation_done + 1, updated_at = now() "
-                    "WHERE id = $1 AND generation_total IS NOT NULL "
-                    "RETURNING generation_done, generation_total",
-                    plan_id,
-                )
-                if row is None:
-                    return None
-                done, total = row["generation_done"], row["generation_total"]
-                if done >= total:
-                    await conn.execute(
-                        "UPDATE plans SET generation_total = NULL, generation_done = 0 WHERE id = $1",
-                        plan_id,
-                    )
-        return done, total
-
-    async def get_progress_message_ref(self, plan_id: PlanId) -> PlanMessageRef | None:
-        """The open batch's progress message identity, if one has been sent yet (#91) - the
-        same send-once/edit-after shape as `get_message_ref`, on its own pair of columns since
-        it's a distinct message from the Plan's own canonical one."""
-        row = await self._pool.fetchrow(
-            "SELECT progress_telegram_chat_id, progress_telegram_message_id FROM plans WHERE id = $1",
-            plan_id,
-        )
-        if row is None:
+        if plan_row is None:
             raise PlanNotFound(plan_id)
-        if row["progress_telegram_chat_id"] is None or row["progress_telegram_message_id"] is None:
-            return None
-        return PlanMessageRef(
-            chat_id=row["progress_telegram_chat_id"],
-            message_id=row["progress_telegram_message_id"],
-        )
-
-    async def record_progress_message_ref(
-        self, plan_id: PlanId, chat_id: int, message_id: int
-    ) -> None:
-        """First-writer-wins, mirroring `record_message_ref`."""
-        await self._pool.execute(
+        item_rows = await self._pool.fetch(
             """
-            UPDATE plans SET progress_telegram_chat_id = $2, progress_telegram_message_id = $3
-            WHERE id = $1 AND progress_telegram_message_id IS NULL
+            SELECT pi.id, pi.title, pi.cover_image IS NOT NULL AS has_cover,
+                   j.status AS job_status
+            FROM plan_items pi
+            LEFT JOIN jobs j ON j.id = pi.active_cover_job_id
+            WHERE pi.plan_id = $1 AND pi.status = 'approved'
+            ORDER BY pi.position
             """,
             plan_id,
-            chat_id,
-            message_id,
         )
+        article_rows = await self._pool.fetch(
+            """
+            SELECT a.id, a.plan_item_id, a.platform, a.status, a.active_generation_job_id,
+                   a.telegraph_path, j.status AS job_status,
+                   latest.id IS NOT NULL AS has_content,
+                   latest.research_status
+            FROM articles a
+            LEFT JOIN jobs j ON j.id = a.active_generation_job_id
+            LEFT JOIN LATERAL (
+                SELECT v.id, v.research_status FROM article_versions v
+                WHERE v.article_id = a.id
+                ORDER BY v.created_at DESC, v.id DESC LIMIT 1
+            ) latest ON true
+            WHERE a.plan_id = $1
+            """,
+            plan_id,
+        )
+        articles_by_item: dict[str, dict[str, HubArticleCell]] = {}
+        for row in article_rows:
+            articles_by_item.setdefault(row["plan_item_id"], {})[row["platform"]] = HubArticleCell(
+                platform=row["platform"],
+                state=_article_cell_state(row["status"], row["job_status"]),
+                article_id=ArticleId(row["id"]),
+                has_content=row["has_content"],
+                job_id=row["active_generation_job_id"],
+                telegraph_path=row["telegraph_path"],
+                research_status=row["research_status"],
+            )
+        topics = []
+        for number, row in enumerate(item_rows, start=1):
+            cells = articles_by_item.get(row["id"], {})
+            topics.append(
+                HubTopic(
+                    id=PlanItemId(row["id"]),
+                    number=number,
+                    title=row["title"],
+                    cover=_cover_cell_state(row["has_cover"], row["job_status"]),
+                    has_cover=row["has_cover"],
+                    articles=[
+                        cells.get(platform, HubArticleCell(platform=platform, state="pending"))
+                        for platform in PLATFORMS
+                    ],
+                )
+            )
+        hub_item_id = plan_row["hub_item_id"]
+        return PlanHubView(
+            id=PlanId(plan_row["id"]),
+            week_label=plan_row["week_label"],
+            status=plan_row["status"],
+            topics=topics,
+            open_item_id=PlanItemId(hub_item_id) if hub_item_id is not None else None,
+        )
+
+    async def set_hub_view(self, plan_id: PlanId, plan_item_id: PlanItemId | None) -> None:
+        """Which Тема's result card the Хаб message shows (`None` = the checklist), so a later
+        notification re-renders the same screen instead of throwing the reader back (#91)."""
+        result = await self._pool.execute(
+            "UPDATE plans SET hub_item_id = $2 WHERE id = $1", plan_id, plan_item_id
+        )
+        if result != "UPDATE 1":
+            raise PlanNotFound(plan_id)
 
     async def get_summary(self, plan_id: PlanId) -> PlanSummary:
         """A Plan's header only (no items join) - what /history's week-select screen resolves
@@ -431,24 +454,22 @@ class Plan:
             for row in rows
         ]
 
-    async def list_covers_for_plan(self, plan_id: PlanId) -> list[PlanItemCoverView]:
-        """Every approved Тема's generated cover for a batch-done burst (#91) - the individual
-        `generate_cover` Job result only has its own image in memory, so a delivery covering
-        the whole batch has to re-read every already-applied one back out."""
-        rows = await self._pool.fetch(
-            "SELECT id, title, cover_image, cover_mime_type FROM plan_items "
-            "WHERE plan_id = $1 AND cover_image IS NOT NULL ORDER BY position",
-            plan_id,
+    async def get_cover(self, plan_item_id: PlanItemId) -> PlanItemCoverView | None:
+        """A Тема's stored cover, for the Хаб's «🖼 Обложка» button (#91); `None` if none yet."""
+        row = await self._pool.fetchrow(
+            "SELECT id, title, cover_image, cover_mime_type FROM plan_items WHERE id = $1",
+            plan_item_id,
         )
-        return [
-            PlanItemCoverView(
-                plan_item_id=PlanItemId(row["id"]),
-                title=row["title"],
-                image=bytes(row["cover_image"]),
-                mime_type=row["cover_mime_type"],
-            )
-            for row in rows
-        ]
+        if row is None:
+            raise PlanItemNotFound(plan_item_id)
+        if row["cover_image"] is None:
+            return None
+        return PlanItemCoverView(
+            plan_item_id=PlanItemId(row["id"]),
+            title=row["title"],
+            image=bytes(row["cover_image"]),
+            mime_type=row["cover_mime_type"],
+        )
 
     async def archive(self, plan_id: PlanId) -> None:
         """Soft-archive a Plan and its items so /generate_plan can regenerate the week without data loss.
@@ -498,15 +519,25 @@ class Plan:
             raise PlanItemNotFound(plan_item_id)
         raise PlanItemNotEditable(plan_item_id, row["status"])
 
-    async def request_cover(self, plan_item_id: PlanItemId) -> None:
+    async def request_cover(self, plan_item_id: PlanItemId, *, manual: bool = False) -> None:
+        """`manual` marks a re-request someone made by hand (the Article card's «🖼 Обложка»):
+        its result is also sent to the chat as a photo, where the person who asked is looking,
+        not only reflected in the Хаб like the fan-out's covers (#91, `is_manual_cover_job`)."""
         row = await self._pool.fetchrow(
             "SELECT title, summary, updated_at FROM plan_items WHERE id = $1", plan_item_id
         )
         if row is None:
             raise PlanItemNotFound(plan_item_id)
+        payload: dict[str, object] = {
+            "plan_item_id": plan_item_id,
+            "title": row["title"],
+            "summary": row["summary"],
+        }
+        if manual:
+            payload["manual"] = True
         job_id = await self._queue.enqueue(
             "generate_cover",
-            {"plan_item_id": plan_item_id, "title": row["title"], "summary": row["summary"]},
+            payload,
             # Keyed on the item's current updated_at so a retried callback (same item,
             # unchanged since) collapses into the same job instead of enqueuing a duplicate.
             idempotency_key=f"generate_cover:{plan_item_id}:{row['updated_at'].isoformat()}",
@@ -534,17 +565,31 @@ class Plan:
         )
 
     async def mark_cover_generation_failed(self, source_job_id: int) -> PlanItemId | None:
-        """Resolves a failed `generate_cover` Job back to its Тема (#91) - unlike
-        `generate_article`'s output, a failure carries no `plan_item_id` of its own, so this
-        mirrors `Article.mark_generation_failed`'s active-job-id lookup instead. `None` means
-        this job_id isn't the item's current cover attempt (already superseded, e.g. by a later
-        re-request) - the caller drops the notification rather than reporting a stale failure."""
+        """Resolves a failed `generate_cover` Job back to its Тема - unlike `generate_article`'s
+        output, a failure carries no `plan_item_id` of its own, so this mirrors
+        `Article.mark_generation_failed`'s active-job-id lookup instead. `None` means this
+        job_id isn't the item's current cover attempt (already superseded, e.g. by a later
+        re-request) - the caller drops the notification rather than reporting a stale failure.
+
+        `active_cover_job_id` is kept (#91): the Хаб reads the cover's ❌ from that Job's
+        status, and «Повторить» re-queues the same Job, whose next result must still resolve
+        here. `updated_at` is bumped so a fresh `request_cover` gets a new idempotency key
+        instead of collapsing into this failed Job."""
         row = await self._pool.fetchrow(
-            "UPDATE plan_items SET active_cover_job_id = NULL, updated_at = now() "
-            "WHERE active_cover_job_id = $1 RETURNING id",
+            "UPDATE plan_items SET updated_at = now() WHERE active_cover_job_id = $1 RETURNING id",
             source_job_id,
         )
         return PlanItemId(row["id"]) if row is not None else None
+
+    async def is_manual_cover_job(self, job_id: int) -> bool:
+        """Whether this `generate_cover` Job was a by-hand re-request (`request_cover(...,
+        manual=True)`) rather than part of the approval fan-out."""
+        return bool(
+            await self._pool.fetchval(
+                "SELECT COALESCE((payload->>'manual')::boolean, false) FROM jobs WHERE id = $1",
+                job_id,
+            )
+        )
 
     async def recent_topic_titles(self, since: datetime) -> list[str]:
         rows = await self._pool.fetch(
@@ -557,6 +602,33 @@ class Plan:
         if row is None:
             raise PlanItemNotFound(plan_item_id)
         return row["status"]
+
+
+def _article_cell_state(status: str, job_status: str | None) -> HubCellState:
+    """A Статья's Хаб cell. The owning Job's status wins over a stale article status, so a
+    «Повторить» shows ⏳ at once and a failure shows ❌ even before its notification lands."""
+    if status in ("ready", "exported"):
+        return "ready"
+    if job_status in ("queued", "running"):
+        return "pending"
+    if job_status == "failed" or status == "error":
+        return "failed"
+    return "pending"
+
+
+def _cover_cell_state(has_cover: bool, job_status: str | None) -> HubCellState:
+    """A Тема's cover cell: an attempt in flight is ⏳ even over an older cover, and so is a
+    finished Job whose result isn't applied yet. No attempt and no cover is ❌ - an approved
+    Тема always had one requested by the fan-out."""
+    if job_status in ("queued", "running"):
+        return "pending"
+    if job_status == "failed":
+        return "failed"
+    if has_cover:
+        return "ready"
+    if job_status == "done":
+        return "pending"
+    return "failed"
 
 
 def _keywords_json(keywords: Sequence[str]) -> str:

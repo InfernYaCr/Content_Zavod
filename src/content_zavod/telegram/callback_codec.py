@@ -3,9 +3,9 @@
 Payload is a union of six types: five immutable dataclasses for the composite
 Действия that pack more than one field into their id (`Page`, `HistoryWeek`,
 `HistoryVersions`, `HistoryVersion`, `ExportArticle`), plus `SimpleAction` for
-the remaining fifteen Действия that carry a single opaque id.
+the remaining Действия that carry a single opaque id (the Хаб's six, #91, among them).
 
-`ACTION_ROLE` says which of the twenty Действия need "owner" and which accept any
+`ACTION_ROLE` says which of the Действия need "owner" and which accept any
 registered Role - `request_access` is absent, same reasoning as `COMMAND_ROLE`
 omitting `start` (see ADR-0012). The callback dispatcher (`callback_dispatcher.py`)
 is what actually enforces it.
@@ -50,6 +50,12 @@ Action = Literal[
     "history_version",
     "persona_template",
     "cancel_comment",
+    "hub_topic",
+    "hub_back",
+    "hub_cover",
+    "hub_article",
+    "hub_retry",
+    "hub_retry_topic",
 ]
 
 _ACTION_CODES: dict[Action, str] = {
@@ -76,6 +82,12 @@ _ACTION_CODES: dict[Action, str] = {
     "history_version": "hd",
     "persona_template": "pt",
     "cancel_comment": "cc",
+    "hub_topic": "ht",
+    "hub_back": "hb",
+    "hub_cover": "hc",
+    "hub_article": "ha",
+    "hub_retry": "hr",
+    "hub_retry_topic": "hrt",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
 
@@ -105,6 +117,12 @@ ACTION_ROLE: dict[Action, Role | None] = {
     "history_version": None,
     "persona_template": "owner",
     "cancel_comment": None,
+    "hub_topic": None,
+    "hub_back": None,
+    "hub_cover": None,
+    "hub_article": None,
+    "hub_retry": None,
+    "hub_retry_topic": None,
 }
 
 # The five composite Действия each get their own type below - see them out
@@ -164,8 +182,8 @@ class ExportArticle:
 
 @dataclass(frozen=True)
 class SimpleAction:
-    """Shared payload for the fifteen Действия with a single opaque id.
-    Carries `action` because one type covers fifteen different Действия -
+    """Shared payload for every Действие with a single opaque id.
+    Carries `action` because one type covers many different Действия -
     without this field they wouldn't be distinguishable."""
 
     action: Action

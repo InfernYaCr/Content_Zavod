@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 import pytest
 from aiogram.types import BufferedInputFile, ForceReply, InlineKeyboardMarkup
 
+from content_zavod.domain import HubArticleCell, HubTopic, PlanHubView
 from content_zavod.telegram import (
     ArticleId,
     ArticleSummary,
@@ -34,7 +35,6 @@ from content_zavod.telegram.gateway import (
     build_plan_keyboard,
     chunk_text,
     format_week_range,
-    render_generation_progress_text,
     render_history_articles_text,
     render_history_version_text,
     render_history_versions_text,
@@ -254,36 +254,60 @@ def test_build_plan_keyboard_is_none_once_nothing_is_left_to_review() -> None:
     )
 
 
-def test_render_generation_progress_text_shows_the_running_count() -> None:
-    text = render_generation_progress_text(4, 9)
-
-    assert "4/9" in text
-
-
-def test_render_generation_progress_text_points_to_history_once_done() -> None:
-    text = render_generation_progress_text(9, 9)
-
-    assert "9/9" in text
-    assert "/history" in text
-
-
-async def test_send_generation_progress_sends_a_plain_message_and_returns_its_id() -> None:
+async def test_send_hub_sends_the_checklist_and_returns_its_id() -> None:
     bot = FakeBot()
     gateway = TelegramGateway(bot)
+    hub = PlanHubView(
+        id=PlanId("plan-1"),
+        week_label="2026-W32",
+        status="approved",
+        topics=[
+            HubTopic(
+                id=PlanItemId("item-1"),
+                number=1,
+                title="Тема",
+                cover="pending",
+                has_cover=False,
+                articles=[HubArticleCell(platform="zen", state="pending")],
+            )
+        ],
+    )
 
-    message_id = await gateway.send_generation_progress(chat_id=1, done=0, total=9)
+    message_id = await gateway.send_hub(chat_id=1, hub=hub)
 
     assert message_id == 1
-    assert bot.sent_messages == [(1, "🔄 Готовлю материалы: 0/9", None)]
+    ((chat_id, text, keyboard),) = bot.sent_messages
+    assert chat_id == 1
+    assert "1. Тема" in text and "🖼 ⏳ · Дзен ⏳" in text
+    assert keyboard is None
 
 
-async def test_edit_generation_progress_calls_edit_message_text() -> None:
+async def test_edit_hub_shows_the_open_topic_card_in_the_same_message() -> None:
     bot = FakeBot()
     gateway = TelegramGateway(bot)
+    hub = PlanHubView(
+        id=PlanId("plan-1"),
+        week_label="2026-W32",
+        status="approved",
+        topics=[
+            HubTopic(
+                id=PlanItemId("item-1"),
+                number=1,
+                title="Тема",
+                cover="ready",
+                has_cover=True,
+                articles=[],
+            )
+        ],
+        open_item_id=PlanItemId("item-1"),
+    )
 
-    await gateway.edit_generation_progress(chat_id=1, message_id=99, done=4, total=9)
+    await gateway.edit_hub(chat_id=1, message_id=99, hub=hub)
 
-    assert bot.edited_messages == [(1, 99, "🔄 Готовлю материалы: 4/9", None)]
+    ((chat_id, message_id, text, keyboard),) = bot.edited_messages
+    assert (chat_id, message_id) == (1, 99)
+    assert "Тема 1 из 1" in text
+    assert keyboard is not None
 
 
 def test_format_week_range_within_single_month() -> None:

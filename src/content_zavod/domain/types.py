@@ -83,14 +83,89 @@ class PlanMessageRef:
 
 @dataclass(frozen=True)
 class PlanItemCoverView:
-    """One Тема's generated cover image, for the batch-done burst (#91) - the individual
-    generate_cover Job result only has the image bytes in memory for the one Job that just
-    finished, so a later delivery needs to re-read every already-applied cover back out."""
+    """One Тема's generated cover image, read back out of the DB when the Хаб's result card
+    asks for it (#91) - the Хаб itself is a text message, so the cover is sent on demand."""
 
     plan_item_id: PlanItemId
     title: str
     image: bytes
     mime_type: str
+
+
+# A Хаб cell's state (#91), derived from statuses on every render - never stored or counted.
+HubCellState = Literal["pending", "ready", "failed"]
+
+
+@dataclass(frozen=True)
+class HubArticleCell:
+    """One Площадка's Статья for a Тема in the Хаб. `article_id` is `None` only in the crash
+    window between approving and the fan-out creating the row (shown as ⏳). `has_content`
+    says whether a Версия exists to open - an `error` after a successful earlier Версия still
+    has one. `job_id` is the Job currently owning its generation, what «🔁 Повторить» retries.
+    `telegraph_path` is its Страница для чтения (#92), if published. `research_status` is the
+    latest Версия's (#94), so the result card can warn about a Статья written without sources."""
+
+    platform: str
+    state: HubCellState
+    article_id: ArticleId | None = None
+    has_content: bool = False
+    job_id: int | None = None
+    telegraph_path: str | None = None
+    research_status: str | None = None
+
+
+@dataclass(frozen=True)
+class HubTopic:
+    """One approved Тема as the Хаб shows it: its cover and one cell per Площадка.
+    `number` is the Тема's 1-based position among the Хаб's Темы."""
+
+    id: PlanItemId
+    number: int
+    title: str
+    cover: HubCellState
+    has_cover: bool
+    articles: Sequence[HubArticleCell]
+
+    @property
+    def cells(self) -> list[HubCellState]:
+        return [self.cover, *(cell.state for cell in self.articles)]
+
+    @property
+    def finished(self) -> bool:
+        """Nothing left ⏳ - every cell is ✅ or ❌, so the Тема's result card is worth opening."""
+        return "pending" not in self.cells
+
+    @property
+    def openable(self) -> bool:
+        """Whether the checklist offers this Тема's button: once it is finished, and also while
+        a Статья that already has a Версия is being redone (✏️ Доработать, 🔁 Повторить) - the
+        Тема stays reachable instead of its button vanishing until the new Версия lands."""
+        return self.finished or all(cell.has_content for cell in self.articles)
+
+    @property
+    def has_failures(self) -> bool:
+        return "failed" in self.cells
+
+
+@dataclass(frozen=True)
+class PlanHubView:
+    """An approved Plan as its Хаб (#91): progress per Тема, derived from `articles` and
+    `plan_items` cover state at read time. `open_item_id` is the Тема whose result card the
+    Plan message currently shows, `None` for the checklist."""
+
+    id: PlanId
+    week_label: str
+    status: str
+    topics: Sequence[HubTopic]
+    open_item_id: PlanItemId | None = None
+
+    @property
+    def open_topic(self) -> HubTopic | None:
+        return next((t for t in self.topics if t.id == self.open_item_id), None)
+
+    @property
+    def cells(self) -> list[HubCellState]:
+        return [cell for topic in self.topics for cell in topic.cells]
 
 
 @dataclass(frozen=True)

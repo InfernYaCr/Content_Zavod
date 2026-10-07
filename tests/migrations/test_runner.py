@@ -21,6 +21,7 @@ async def test_run_pending_applies_every_migration_once_and_is_idempotent(
         "0007_plan_item_active_cover_job",
         "0008_pending_inputs",
         "0009_article_telegraph_path",
+        "0010_plan_hub",
         "0011_topic_research",
     ]
 
@@ -38,6 +39,7 @@ async def test_run_pending_applies_every_migration_once_and_is_idempotent(
         "0007_plan_item_active_cover_job",
         "0008_pending_inputs",
         "0009_article_telegraph_path",
+        "0010_plan_hub",
         "0011_topic_research",
     ]
 
@@ -128,10 +130,11 @@ async def test_concurrent_run_pending_does_not_race_on_the_tracking_insert(
         "0007_plan_item_active_cover_job",
         "0008_pending_inputs",
         "0009_article_telegraph_path",
+        "0010_plan_hub",
         "0011_topic_research",
     }
     recorded = await isolated_pool.fetch("SELECT version FROM schema_migrations")
-    assert len(recorded) == 10
+    assert len(recorded) == 11
 
 
 async def test_rollback_of_0002_drops_only_the_index_without_losing_data(
@@ -177,6 +180,7 @@ async def test_rollback_of_0002_drops_only_the_index_without_losing_data(
         "0007_plan_item_active_cover_job",
         "0008_pending_inputs",
         "0009_article_telegraph_path",
+        "0010_plan_hub",
         "0011_topic_research",
     }
     statuses = {
@@ -184,3 +188,35 @@ async def test_rollback_of_0002_drops_only_the_index_without_losing_data(
         for row in await isolated_pool.fetch("SELECT id, status FROM plans")
     }
     assert statuses == {older_id: "archived", newer_id: "pending_review"}
+
+
+async def test_0010_drops_the_batch_counter_and_adds_the_hub_view_column(
+    isolated_pool: asyncpg.Pool,
+) -> None:
+    """#91: progress is derived from statuses now - the 0006 counter/progress-message columns
+    are gone, `active_cover_job_id` (0007) stays, and the Хаб's open-Тема column exists."""
+    await run_migrations(isolated_pool)
+
+    plan_columns = {
+        row["column_name"]
+        for row in await isolated_pool.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = 'plans'"
+        )
+    }
+    item_columns = {
+        row["column_name"]
+        for row in await isolated_pool.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = 'plan_items'"
+        )
+    }
+
+    assert not plan_columns & {
+        "generation_total",
+        "generation_done",
+        "progress_telegram_chat_id",
+        "progress_telegram_message_id",
+    }
+    assert "hub_item_id" in plan_columns
+    assert "active_cover_job_id" in item_columns

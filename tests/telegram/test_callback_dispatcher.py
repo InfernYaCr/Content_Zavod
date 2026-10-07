@@ -3,6 +3,7 @@ through hand-built `CallbackInput` values and fakes, no aiogram `CallbackQuery` 
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -10,6 +11,7 @@ from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
 
 from content_zavod.access import MemberNotFound
 from content_zavod.access.membership import MemberView, Role
+from content_zavod.domain import HubArticleCell, HubTopic, PlanHubView, PlanItemCoverView
 from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.telegram import (
     ArticleId,
@@ -33,6 +35,7 @@ from content_zavod.telegram import (
     PlanView,
     SimpleAction,
     TelegramGateway,
+    decode_callback_data,
 )
 from content_zavod.telegram.callback_dispatcher import CallbackDispatcher, CallbackInput
 from content_zavod.telegram.pending_inputs import PendingInput
@@ -54,6 +57,7 @@ class FakeBot:
         self.sent_messages: list[tuple[int, str, InlineKeyboardMarkup | None]] = []
         self.sent_documents: list[tuple[int, BufferedInputFile, str | None]] = []
         self.edited_messages: list[tuple[int, int, str, InlineKeyboardMarkup | None]] = []
+        self.sent_photos: list[tuple[int, BufferedInputFile, str | None]] = []
 
     async def send_message(self, chat_id, text, reply_markup=None) -> int:
         self.sent_messages.append((chat_id, text, reply_markup))
@@ -63,7 +67,7 @@ class FakeBot:
         self.sent_documents.append((chat_id, document, caption))
 
     async def send_photo(self, chat_id, photo, caption=None) -> None:
-        pass
+        self.sent_photos.append((chat_id, photo, caption))
 
     async def edit_message_text(self, chat_id, message_id, text, reply_markup=None) -> None:
         self.edited_messages.append((chat_id, message_id, text, reply_markup))
@@ -113,12 +117,41 @@ class FakeMembership:
 
 
 class FakePlan:
-    def __init__(self, *, start_generation_batch_returns: bool = True) -> None:
+    def __init__(self) -> None:
         self.cover_requests: list[PlanItemId] = []
+        self.manual_cover_requests: list[PlanItemId] = []
         self.replacement_requests: list[PlanId] = []
-        self.started_batches: list[tuple[PlanId, int]] = []
-        self.recorded_progress_refs: list[tuple[PlanId, int, int]] = []
-        self._start_generation_batch_returns = start_generation_batch_returns
+        self.hub_views: list[tuple[PlanId, PlanItemId | None]] = []
+        self.cover: PlanItemCoverView | None = None
+        self.hub = PlanHubView(
+            id=PlanId("plan-1"),
+            week_label="2026-W33",
+            status="approved",
+            topics=[
+                HubTopic(
+                    id=PlanItemId("item-1"),
+                    number=1,
+                    title="Тема",
+                    cover="failed",
+                    has_cover=False,
+                    articles=[
+                        HubArticleCell(
+                            platform="zen",
+                            state="ready",
+                            article_id=ArticleId("article-1"),
+                            has_content=True,
+                            job_id=11,
+                        ),
+                        HubArticleCell(
+                            platform="vc",
+                            state="failed",
+                            article_id=ArticleId("article-2"),
+                            job_id=12,
+                        ),
+                    ],
+                )
+            ],
+        )
         self.message_ref: PlanMessageRef | None = None
         self._view = PlanView(
             id=PlanId("plan-1"),
@@ -147,23 +180,24 @@ class FakePlan:
     async def list_page(self, *, page: int, page_size: int) -> tuple[list[PlanSummary], int]:
         return [self._summary], 1
 
-    async def request_cover(self, plan_item_id: PlanItemId) -> None:
-        self.cover_requests.append(plan_item_id)
+    async def request_cover(self, plan_item_id: PlanItemId, *, manual: bool = False) -> None:
+        (self.manual_cover_requests if manual else self.cover_requests).append(plan_item_id)
+
+    async def get_hub(self, plan_id: PlanId) -> PlanHubView:
+        open_item = self.hub_views[-1][1] if self.hub_views else None
+        return replace(self.hub, open_item_id=open_item)
+
+    async def set_hub_view(self, plan_id: PlanId, plan_item_id: PlanItemId | None) -> None:
+        self.hub_views.append((plan_id, plan_item_id))
+
+    async def get_cover(self, plan_item_id: PlanItemId) -> PlanItemCoverView | None:
+        return self.cover
 
     async def approved_items(self, plan_id: PlanId) -> list[PlanItemDetail]:
         return self._approved_items
 
     async def request_replacement(self, plan_id: PlanId) -> None:
         self.replacement_requests.append(plan_id)
-
-    async def start_generation_batch(self, plan_id: PlanId, total: int) -> bool:
-        self.started_batches.append((plan_id, total))
-        return self._start_generation_batch_returns
-
-    async def record_progress_message_ref(
-        self, plan_id: PlanId, chat_id: int, message_id: int
-    ) -> None:
-        self.recorded_progress_refs.append((plan_id, chat_id, message_id))
 
 
 class FakeArticle:
@@ -709,8 +743,9 @@ async def test_approve_refusal_is_the_only_answer(f: Fixtures) -> None:
 async def test_request_cover_requests_the_cover(f: Fixtures) -> None:
     answer = await dispatch(f, SimpleAction("request_cover", "item-1"))
 
-    assert answer.calls == [("Генерирую обложку...", None)]
-    assert f.plan.cover_requests == [PlanItemId("item-1")]
+    assert answer.calls == [("Генерирую обложку — пришлю её сюда.", None)]
+    # By hand from a Статья card: its result is sent back as a photo (#91).
+    assert f.plan.manual_cover_requests == [PlanItemId("item-1")]
 
 
 async def test_export_article_sends_the_document(f: Fixtures) -> None:
@@ -784,46 +819,114 @@ async def test_approve_all_approves_and_fans_out_generation(f: Fixtures) -> None
     assert len(f.article.requested_generations) > 0
 
 
-async def test_approve_all_starts_a_batch_sized_for_covers_and_articles(f: Fixtures) -> None:
-    """#91: one Тема is 1 generate_cover + one generate_article per Площадка (2)."""
-    await dispatch(f, SimpleAction("approve_all", "plan-1"))
-
-    assert f.plan.started_batches == [(PlanId("plan-1"), 3)]
-
-
-async def test_approve_all_sends_and_records_the_initial_progress_message(f: Fixtures) -> None:
-    await dispatch(f, SimpleAction("approve_all", "plan-1"))
-
-    assert f.bot.sent_messages[0] == (1, "🔄 Готовлю материалы: 0/3", None)
-    assert f.plan.recorded_progress_refs == [(PlanId("plan-1"), 1, 1)]
-
-
-async def test_approve_all_replay_does_not_resend_progress_message() -> None:
-    """A replayed fan-out (retried callback) finds the batch already started -
-    `start_generation_batch` returns False - so it must not send a second progress message."""
-    f = Fixtures(plan=FakePlan(start_generation_batch_returns=False))
-
+async def test_approve_all_turns_the_pressed_plan_message_into_the_hub(f: Fixtures) -> None:
+    """#81/#91: after approving, the pressed Plan message is redrawn from the DB as the Хаб -
+    no separate progress message, no review buttons left behind."""
     await dispatch(f, SimpleAction("approve_all", "plan-1"))
 
     assert f.bot.sent_messages == []
-    assert f.plan.recorded_progress_refs == []
+    chat_id, message_id, text, _keyboard = f.bot.edited_messages[-1]
+    assert (chat_id, message_id) == (1, 2)
+    assert "1. Тема" in text and "🖼 ❌ · Дзен ✅ · VC.ru ❌" in text
 
 
-async def test_approve_all_re_renders_the_plan_without_edit_buttons(f: Fixtures) -> None:
-    """#81: after approving, the pressed Plan message is redrawn from the DB - approved Темы
-    leave no 🔄/🗑/"Утвердить всё" behind."""
-    f.plan._view = PlanView(
-        id=PlanId("plan-1"),
-        week_label="2026-W33",
-        items=[PlanItemView(id=PlanItemId("item-1"), title="Тема", status="approved")],
-    )
+async def test_page_on_an_approved_plan_redraws_the_hub(f: Fixtures) -> None:
+    f.plan._summary = PlanSummary(id=PlanId("plan-1"), week_label="2026-W33", status="approved")
 
-    await dispatch(f, SimpleAction("approve_all", "plan-1"))
+    await dispatch(f, Page("plan-1", 1))
 
+    assert "🖼 ❌" in f.bot.edited_messages[-1][2]
+
+
+async def test_hub_topic_opens_the_result_card_in_the_same_message(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("hub_topic", "item-1"))
+
+    assert answer.calls == [(None, None)]
+    assert f.plan.hub_views == [(PlanId("plan-1"), PlanItemId("item-1"))]
     chat_id, message_id, text, keyboard = f.bot.edited_messages[-1]
     assert (chat_id, message_id) == (1, 2)
-    assert "Тема — утверждена" in text
-    assert keyboard is None
+    assert text.startswith("📂 Тема 1 из 1")
+    actions = [decode_callback_data(b.callback_data) for r in keyboard.inline_keyboard for b in r]
+    assert SimpleAction("hub_article", "article-1") in actions
+    assert actions[-1] == SimpleAction("hub_back", "plan-1")
+
+
+async def test_hub_back_returns_to_the_checklist(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("hub_topic", "item-1"))
+
+    await dispatch(f, SimpleAction("hub_back", "plan-1"))
+
+    assert f.plan.hub_views[-1] == (PlanId("plan-1"), None)
+    assert f.bot.edited_messages[-1][2].startswith("📋 План")
+
+
+async def test_hub_cover_sends_the_photo_on_demand(f: Fixtures) -> None:
+    f.plan.cover = PlanItemCoverView(
+        plan_item_id=PlanItemId("item-1"), title="Тема", image=b"img", mime_type="image/png"
+    )
+
+    answer = await dispatch(f, SimpleAction("hub_cover", "item-1"))
+
+    assert answer.calls == [(None, None)]
+    ((chat_id, _photo, caption),) = f.bot.sent_photos
+    assert chat_id == 1 and caption == "🖼 Обложка: Тема"
+
+
+async def test_hub_cover_without_a_cover_just_says_so(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("hub_cover", "item-1"))
+
+    assert answer.calls == [("Обложки пока нет.", None)]
+    assert f.bot.sent_photos == []
+
+
+async def test_hub_article_sends_the_usual_article_card_below(f: Fixtures) -> None:
+    f.article.telegraph_path = "Statya-10-07"
+
+    await dispatch(f, SimpleAction("hub_article", "article-1"))
+
+    ((chat_id, text, keyboard),) = f.bot.sent_messages
+    assert chat_id == 1 and "Статья" in text
+    urls = [b.url for r in keyboard.inline_keyboard for b in r if b.url]
+    assert urls == ["https://telegra.ph/Statya-10-07"]
+
+
+async def test_hub_article_publishes_a_missing_reading_page_first(f: Fixtures) -> None:
+    class Publisher:
+        async def publish(self, article):
+            return "https://telegra.ph/new"
+
+    f.dispatcher._publisher = Publisher()
+
+    await dispatch(f, SimpleAction("hub_article", "article-1"))
+
+    ((_chat_id, _text, keyboard),) = f.bot.sent_messages
+    assert [b.url for r in keyboard.inline_keyboard for b in r if b.url] == [
+        "https://telegra.ph/new"
+    ]
+
+
+async def test_hub_retry_reruns_every_failed_cell_and_redraws(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("hub_retry", "plan-1"))
+
+    assert answer.calls == [("Повторяю...", None)]
+    assert f.plan.cover_requests == [PlanItemId("item-1")]
+    assert f.queue.retried == [12]  # only the ❌ Статья, not the ✅ one
+    assert len(f.bot.edited_messages) == 1
+
+
+async def test_hub_retry_topic_reruns_that_topic(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("hub_retry_topic", "item-1"))
+
+    assert f.plan.cover_requests == [PlanItemId("item-1")]
+    assert f.queue.retried == [12]
+
+
+async def test_hub_retry_with_nothing_failed_says_so(f: Fixtures) -> None:
+    f.plan.hub = replace(f.plan.hub, topics=[])
+
+    answer = await dispatch(f, SimpleAction("hub_retry", "plan-1"))
+
+    assert answer.calls == [("Повторять нечего.", None)]
 
 
 async def test_delete_deletes_and_re_renders_the_plan(f: Fixtures) -> None:

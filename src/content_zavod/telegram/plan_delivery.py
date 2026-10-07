@@ -36,7 +36,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from .gateway import TelegramGateway
-from .types import PlanId, PlanMessageRef, PlanView
+from .types import PlanHubView, PlanId, PlanMessageRef, PlanView
 
 
 class PlanMessageRefs(Protocol):
@@ -58,3 +58,26 @@ async def deliver_plan_message(
     message_id = await gateway.send_plan(chat_id, view)
     await plan.record_message_ref(view.id, chat_id, message_id)
     return True
+
+
+class PlanHubSource(PlanMessageRefs, Protocol):
+    async def get_hub(self, plan_id: PlanId) -> PlanHubView: ...
+
+
+async def deliver_plan_hub(
+    plan: PlanHubSource, gateway: TelegramGateway, chat_id: int, plan_id: PlanId
+) -> None:
+    """Redraws an approved Plan's canonical message as its Хаб (#91), from statuses read
+    right now - so a redelivered or out-of-order notification just redraws the same state.
+    Same send-once/edit-after shape as `deliver_plan_message`: a Plan with no recorded message
+    yet gets one sent and recorded. A Plan that is no longer `approved` (archived by a
+    replacement) is left alone - its late Job results have nowhere meaningful to show."""
+    hub = await plan.get_hub(plan_id)
+    if hub.status != "approved":
+        return
+    ref = await plan.get_message_ref(plan_id)
+    if ref is not None:
+        await gateway.edit_hub(ref.chat_id, ref.message_id, hub)
+        return
+    message_id = await gateway.send_hub(chat_id, hub)
+    await plan.record_message_ref(plan_id, chat_id, message_id)
