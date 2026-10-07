@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 from ..domain import PlanId
 from ..job_queue import JobId, JobStatus
 from ..scheduling import week_label_for
-from .gateway import TelegramGateway, build_confirm_keyboard, format_week_range
+from .gateway import MessageGone, TelegramGateway, build_confirm_keyboard, format_week_range
 from .types import PlanMessageRef, PlanView
 
 
@@ -113,12 +113,16 @@ async def handle_confirm_regenerate_plan(
     plan: PlanGeneration, gateway: TelegramGateway, chat_id: int, message_id: int, plan_id: PlanId
 ) -> None:
     """Also re-renders the replaced Plan's own message from the DB (#81), so it reads
-    "в архиве" with no buttons left to press instead of keeping stale ones."""
+    "в архиве" with no buttons left to press instead of keeping stale ones. One deleted in
+    the chat (#106) is simply left gone: an archived Plan needs no replacement message."""
     await plan.request_replacement(plan_id)
     await gateway.edit_notice(chat_id, message_id, "Генерирую новый План...")
     ref = await plan.get_message_ref(plan_id)
     if ref is not None:
-        await gateway.edit_plan(ref.chat_id, ref.message_id, await plan.get(plan_id))
+        try:
+            await gateway.edit_plan(ref.chat_id, ref.message_id, await plan.get(plan_id))
+        except MessageGone:
+            pass
 
 
 async def handle_cancel_regenerate_plan(

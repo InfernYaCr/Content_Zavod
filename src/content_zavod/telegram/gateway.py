@@ -606,6 +606,10 @@ class TelegramGateway:
         this exact message later (e.g. editing a join-request broadcast)."""
         return await self._bot.send_message(chat_id, text, reply_markup=reply_markup)
 
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        """Best effort, like the bot client's: a message already gone is not an error."""
+        await self._bot.delete_message(chat_id, message_id)
+
     async def send_plan(self, chat_id: int, plan: PlanView, *, page: int = 0) -> int:
         """Returns the sent message's id, so callers can record it as the Plan's canonical
         Telegram identity (see `telegram.plan_delivery.deliver_plan_message`, #73)."""

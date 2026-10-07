@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from content_zavod.domain import PlanId, PlanItemId, PlanItemView, PlanMessageRef, PlanView
+from content_zavod.telegram import MessageGone
 from content_zavod.telegram.generate_plan_command import (
     handle_cancel_regenerate_plan,
     handle_confirm_regenerate_plan,
@@ -250,6 +251,28 @@ async def test_confirm_re_renders_the_replaced_plans_message() -> None:
     )
 
     assert gateway.edited_plans == [(-100, 9, active)]
+
+
+@pytest.mark.asyncio
+async def test_confirm_skips_the_replaced_plans_message_if_it_was_deleted() -> None:
+    """#106: an archived Plan whose message someone deleted has nothing left to redraw - the
+    confirmation still goes through, and no new message is sent for a Plan that's gone."""
+    active = PlanView(id=PlanId("plan-1"), week_label="2026-W32", items=[])
+    plan, gateway = FakePlan(active=active), FakeGateway()
+    plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=9)
+
+    async def gone(chat_id, message_id, view) -> None:
+        raise MessageGone(chat_id, message_id)
+
+    gateway.edit_plan = gone  # type: ignore[method-assign]
+
+    await handle_confirm_regenerate_plan(
+        plan, gateway, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
+    )
+
+    assert plan.replacements == [PlanId("plan-1")]
+    assert gateway.edited == [(1, 5, "Генерирую новый План...")]
+    assert gateway.sent_messages == []
 
 
 @pytest.mark.asyncio
