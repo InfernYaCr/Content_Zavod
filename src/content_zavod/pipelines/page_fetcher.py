@@ -8,7 +8,7 @@ fetch only what we should and get readable text out of it:
 - URL policy against SSRF: http(s) only, default ports only, and every address the host
   resolves to must be a public (`is_global`) IP - checked again on every redirect hop,
   since redirects are followed by hand (at most `_MAX_REDIRECTS`).
-- robots.txt is honoured per host (cached for the fetcher's lifetime); a robots.txt that
+- robots.txt is honoured per host (cached, up to `_ROBOTS_CACHE_SIZE` hosts); a robots.txt that
   can't be fetched counts as "allowed", 401/403 as "everything disallowed", as the
   stdlib parser does.
 - Only `text/html` is read, streamed and capped at `max_bytes`; anything else is skipped.
@@ -43,6 +43,9 @@ USER_AGENT = "ContentZavodBot/1.0 (research for article drafts)"
 _ROBOTS_AGENT = "ContentZavodBot"
 _MAX_REDIRECTS = 3
 _ROBOTS_MAX_BYTES = 100_000
+# The worker lives for weeks: the robots.txt cache is dropped once it holds this many
+# hosts, so it neither grows without bound nor keeps a site's old rules forever.
+_ROBOTS_CACHE_SIZE = 256
 
 Resolver = Callable[[str, int], Awaitable[list[str]]]
 
@@ -174,6 +177,8 @@ class HttpxPageFetcher:
         parser = self._robots.get(origin)
         if parser is None:
             parser = await self._load_robots(origin)
+            if len(self._robots) >= _ROBOTS_CACHE_SIZE:
+                self._robots.clear()
             self._robots[origin] = parser
         return parser.can_fetch(_ROBOTS_AGENT, url)
 
