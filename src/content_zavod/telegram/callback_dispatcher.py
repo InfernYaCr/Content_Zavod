@@ -55,6 +55,7 @@ from .input_prompt import InputPrompt
 from .join_request_flow import JoinRequestFlow
 from .main_menu import MainMenu
 from .members_command import redraw_members
+from .onboarding import ONBOARDING_INPUT_KIND, Onboarding
 from .plan_review import PlanReview
 from .settings_screen import BACK_TO_MENU, SettingsScreen
 from .texts import (
@@ -150,6 +151,7 @@ class CallbackDispatcher:
         queue: JobQueue,
         main_menu: MainMenu,
         prompts: InputPrompt,
+        onboarding: Onboarding,
         *,
         publisher: ArticlePagePublisher | None = None,
     ) -> None:
@@ -165,6 +167,7 @@ class CallbackDispatcher:
         self._queue = queue
         self._main_menu = main_menu
         self._prompts = prompts
+        self._onboarding = onboarding
         self._publisher = publisher
 
     async def dispatch(self, callback_input: CallbackInput, answer: CallbackAnswerer) -> None:
@@ -353,6 +356,28 @@ class CallbackDispatcher:
                 cancelled = await self._prompts.cancel(chat_id, user_id, id_, message_id=message_id)
                 if not cancelled and chat_id == user_id:
                     await self._bot_client.delete_message(chat_id, message_id)
+                if cancelled and id_ == ONBOARDING_INPUT_KIND:
+                    await self._onboarding.cancelled(chat_id)  # say how to come back (#96)
+            case SimpleAction(action="onboarding_step", id_=id_):
+                if not await self._authorized("onboarding_step", role, deny_text, answer):
+                    return
+                await answer()
+                await self._onboarding.go(chat_id, user_id, message_id, id_)
+            case SimpleAction(action="onboarding_pick", id_=id_):
+                if not await self._authorized("onboarding_pick", role, deny_text, answer):
+                    return
+                await answer()
+                await self._onboarding.pick(chat_id, user_id, message_id, id_)
+            case SimpleAction(action="onboarding_later"):
+                if not await self._authorized("onboarding_later", role, deny_text, answer):
+                    return
+                await answer()
+                await self._onboarding.later(chat_id, user_id, message_id)
+            case SimpleAction(action="onboarding_launch"):
+                if not await self._authorized("onboarding_launch", role, deny_text, answer):
+                    return
+                await answer()
+                await self._onboarding.launch(chat_id, user_id, message_id)
             case Page(plan_id=plan_id, page=page):
                 if not await self._authorized("page", role, deny_text, answer):
                     return

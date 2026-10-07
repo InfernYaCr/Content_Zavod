@@ -65,4 +65,4 @@ async def test_finished_stays_finished_even_with_settings_untouched() -> None:
 
 def test_setting_store_keys_cover_the_stored_settings() -> None:
     assert NICHE_KEY in SETTING_STORE_KEYS
-    assert {"niche", "directions", "voice", "project"} <= set(SETTING_STORE_KEYS)
+    assert {"niche", "audience", "directions", "voice", "project"} <= set(SETTING_STORE_KEYS)

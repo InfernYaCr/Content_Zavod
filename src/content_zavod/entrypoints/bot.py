@@ -58,7 +58,7 @@ from ..scheduling import (
     reconcile_weekly_plan,
     schedule_weekly_plan_trigger,
 )
-from ..settings import SettingsService
+from ..settings import OnboardingState, SettingsService
 from ..telegram import (
     ACCESS_DENIED_TEXT,
     MENU_COMMANDS,
@@ -89,8 +89,14 @@ from ..telegram import (
 )
 from ..telegram.article_card import ArticlePagePublisher, send_article_card
 from ..telegram.gateway import format_week_range
+from ..telegram.onboarding import Onboarding
 from ..telegram.pending_inputs import PendingInputs
-from ..telegram.texts import UNKNOWN_MESSAGE_TEXT, job_failure_text
+from ..telegram.texts import (
+    BOT_DESCRIPTION,
+    BOT_SHORT_DESCRIPTION,
+    UNKNOWN_MESSAGE_TEXT,
+    job_failure_text,
+)
 from ..telegraph import HttpxTelegraphClient, TelegraphPublisher, project_footer
 from ._process import register_shutdown
 
@@ -178,6 +184,7 @@ def _build_router(
     prompts: InputPrompt,
     queue: JobQueue,
     settings: Settings,
+    onboarding: Onboarding,
     *,
     publisher: ArticlePagePublisher | None = None,
 ) -> Router:
@@ -200,6 +207,9 @@ def _build_router(
                     text = ACCESS_DENIED_TEXT if actual is None else OWNER_ONLY_TEXT
                     await gateway.send_error(message.chat.id, text)
                     return
+                # Any command interrupts the onboarding wizard (#96): its open question is
+                # dropped, so the next message isn't taken for an answer - never blocked.
+                await onboarding.interrupt(message.chat.id, message.from_user.id)
                 await handler(message, **kwargs)
 
             return wrapper
@@ -221,6 +231,11 @@ def _build_router(
             )
             return
         await sync_commands(bot_client, telegram_id, role)
+        await onboarding.interrupt(chat_id, telegram_id)
+        # A Владелец whose bot isn't set up yet gets the wizard's intro instead (#96) - in a
+        # group only a pointer to the private chat, followed by the usual menu.
+        if await onboarding.offer(chat_id, telegram_id, role):
+            return
         await main_menu.send(chat_id, role, welcome=True)
 
     @router.message(Command("menu"))
@@ -321,6 +336,7 @@ def _build_router(
         queue,
         main_menu,
         prompts,
+        onboarding,
         publisher=publisher,
     )
 
@@ -369,6 +385,9 @@ def _build_router(
                 chat_id, user_id, text, reply_to_message_id, role=actual
             )
             or await main_menu.handle_reply(chat_id, user_id, text, reply_to_message_id)
+            or await onboarding.handle_reply(
+                chat_id, user_id, text, reply_to_message_id, role=actual
+            )
         )
         if not consumed and private and not await prompts.is_waiting(chat_id, user_id):
             # Nothing was asked: point at the menu rather than staying silent (#95). A live
@@ -688,6 +707,18 @@ async def main(settings: Settings | None = None) -> None:
         )
         # The default list - what a group chat, or a user /start hasn't synced yet, sees (#95).
         await bot.set_my_commands(MENU_COMMANDS, scope=BotCommandScopeDefault())
+        # What a new user sees before /start (#96): the empty-chat card and the profile.
+        await bot.set_my_description(BOT_DESCRIPTION)
+        await bot.set_my_short_description(BOT_SHORT_DESCRIPTION)
+        onboarding = Onboarding(
+            OnboardingState(owner_settings),
+            owner_settings_service,
+            prompts,
+            bot_client,
+            main_menu,
+            schedule_settings,
+            bot_username=(await bot.me()).username,
+        )
         # Every Участник's own scope still holds the pre-#95 list until it is rewritten.
         await resync_member_commands(bot_client, await membership.list_all())
 
@@ -715,6 +746,7 @@ async def main(settings: Settings | None = None) -> None:
                 prompts,
                 queue,
                 settings,
+                onboarding,
                 publisher=publisher,
             )
         )

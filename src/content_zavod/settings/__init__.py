@@ -5,6 +5,7 @@ from .audience import (
     audience_detail_text,
     audience_screen_text,
 )
+from .onboarding import ONBOARDING_KEY, OnboardingState
 from .persona import (
     DEFAULT_PERSONA_KEY,
     DEFAULT_PERSONA_TITLE,
@@ -22,7 +23,6 @@ from .persona import (
     resolve_persona,
     serialize_custom_persona,
 )
-from .onboarding import ONBOARDING_KEY, OnboardingState
 from .project import CLEAR_PROJECT, PROJECT_KEY, Project, normalize_project_url, project_detail_text
 from .service import (
     DEFAULT_DIRECTIONS,
