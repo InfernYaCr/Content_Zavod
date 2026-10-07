@@ -141,6 +141,17 @@ class InputPrompt:
         await self.close(chat_id, pending)
         return True
 
+    async def release(self, chat_id: int, user_id: int, kind: str, *, message_id: int) -> bool:
+        """Like `cancel`, but the question message stays for the caller to edit into something
+        else (the Направления question turning into «⏳ Подбираю…», #113); only a group's
+        force-reply prompt goes."""
+        pending = await self._pending.take(chat_id, user_id, kind, reply_to_message_id=message_id)
+        if pending is None:
+            return False
+        if pending.force_reply_message_id is not None:
+            await self._bot.delete_message(chat_id, pending.force_reply_message_id)
+        return True
+
     async def is_waiting(self, chat_id: int, user_id: int) -> bool:
         """Whether this user has a live wait in this chat, of any kind - so a message no
         handler took is still not "unsolicited" if some flow asked for it."""

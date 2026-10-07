@@ -23,6 +23,11 @@ ids and its wait's target (`StepRef`), never in memory. Any command - /menu incl
 the wizard's open question (`interrupt`), so the wizard never blocks the rest of the bot; /start
 offers it again until it's finished.
 
+The Направления step also offers «✨ Предложить по Нише» (#113): `DirectionSuggestions` picks
+them from the Ниша and Аудитория and comes back here (`suggestion_*`) with the step's
+`StepRef` as its origin `o:<StepRef>` - «✅ Взять» moves on like an answer, «✏️ Написать свои»
+and «Отмена» reopen the step.
+
 The wizard only runs in the private chat: a Владелец pressing /start in a group gets the usual
 menu plus a pointer to the private chat.
 """
@@ -39,17 +44,22 @@ from ..access import Role
 from ..domain.errors import InvalidSettingValue
 from ..scheduling import DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE
 from ..settings import (
-    DEFAULT_DIRECTIONS,
-    DEFAULT_NICHE,
     PERSONAS,
     OwnerSettings,
     SettingsService,
+    directions_mismatch,
 )
 from .callback_codec import Action, SimpleAction, encode_callback_data
 from .gateway import BotClient
 from .input_prompt import InputPrompt
 from .main_menu import build_open_menu_keyboard
-from .settings_screen import SETTING_FIELDS, ScheduleStore, SettingField, current_line
+from .settings_screen import (
+    SETTING_FIELDS,
+    ScheduleStore,
+    SettingField,
+    current_line,
+    suggest_rows,
+)
 from .texts import (
     BACK_BUTTON,
     ONBOARDING_ALREADY_LAUNCHED,
@@ -107,14 +117,8 @@ class OnboardingStep:
     """For a step with Пресеты: the first-run text above the Пресет buttons."""
 
 
-def _directions_mismatch(current: OwnerSettings) -> bool:
-    """The Направления are still the default marketing queries, but the Ниша isn't marketing -
-    left so, the first Plan comes out about marketing."""
-    return current.directions == DEFAULT_DIRECTIONS and current.niche != DEFAULT_NICHE
-
-
 def _directions_note(current: OwnerSettings) -> str | None:
-    if _directions_mismatch(current):
+    if directions_mismatch(current):
         return ONBOARDING_DIRECTIONS_MISMATCH.format(niche=current.niche)
     return None
 
@@ -216,7 +220,7 @@ def render_review_text(
 ) -> str:
     lines = "\n".join(f"{setting.label}: {setting.show(current)}" for setting in fields)
     blocks = [ONBOARDING_REVIEW_TITLE, lines]
-    if any(setting.key == "directions" for setting in fields) and _directions_mismatch(current):
+    if any(setting.key == "directions" for setting in fields) and directions_mismatch(current):
         blocks.append(ONBOARDING_REVIEW_DIRECTIONS_MISMATCH.format(niche=current.niche))
     blocks.append(ONBOARDING_REVIEW_HINT)
     return _with_notice("\n\n".join(blocks), notice)
@@ -355,6 +359,25 @@ class Onboarding:
         # The card above already says what is happening and where the Plan will land.
         await self._menu.generate_plan(chat_id, announce=False)
 
+    # --- Направления suggested from the Ниша (#113): the wizard as their origin ---
+
+    async def suggestion_opened(
+        self, chat_id: int, user_id: int, message_id: int, place: str
+    ) -> None:
+        """«✨» was pressed on the step's question: its wait goes - the question message itself
+        turns into «⏳ Подбираю…»."""
+        await self._prompts.release(chat_id, user_id, ONBOARDING_INPUT_KIND, message_id=message_id)
+
+    async def suggestion_taken(self, chat_id: int, user_id: int, place: str, notice: str) -> None:
+        """Saved as if typed: on to the next step (or back to «Проверьте вводные»)."""
+        await self._open(chat_id, user_id, self._after(StepRef.decode(place)), notice=notice)
+
+    async def suggestion_declined(
+        self, chat_id: int, user_id: int, place: str, *, write_own: bool
+    ) -> None:
+        """Both reopen the step: its question is where they are typed."""
+        await self._open(chat_id, user_id, place)
+
     # --- typed answers ---
 
     async def handle_reply(
@@ -475,6 +498,8 @@ class Onboarding:
                     )
                 ]
             )
+        if not chooser:
+            rows += suggest_rows(setting, f"o:{ref.encode()}")
         nav = [_button(BACK_BUTTON, "onboarding_step", self._before(ref))]
         if step.skippable and not ref.review:
             nav.append(_button(ONBOARDING_SKIP_BUTTON, "onboarding_step", self._after(ref)))

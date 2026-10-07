@@ -24,6 +24,7 @@ from ..job_queue import ClaimedJob, JobHandler, JobPartialFailure, JobQueue, run
 from ..migrations import run_migrations
 from ..owner_settings import OwnerSettingsStore
 from ..pipelines import (
+    SUGGEST_DIRECTIONS_JOB,
     HttpxPageFetcher,
     TopicResearcher,
     make_generate_article_handler,
@@ -31,6 +32,7 @@ from ..pipelines import (
     make_generate_plan_handler,
     make_regenerate_article_handler,
     make_regenerate_topic_handler,
+    make_suggest_directions_handler,
 )
 from ..settings import SettingsService
 from ..yandex import ImageGenerator, KeywordStats, TextGenerator, WebSearch
@@ -136,6 +138,9 @@ async def main(settings: Settings | None = None) -> None:
             "generate_cover": make_generate_cover_handler(image_generator),
             "regenerate_topic": make_regenerate_topic_handler(
                 plan, text_generator, owner_settings_service
+            ),
+            SUGGEST_DIRECTIONS_JOB: make_suggest_directions_handler(
+                text_generator, keyword_stats, owner_settings_service
             ),
         }
 

@@ -4,8 +4,8 @@ Payload is a union of six types: five immutable dataclasses for the composite
 Действия that pack more than one field into their id (`Page`, `HistoryWeek`,
 `HistoryVersions`, `HistoryVersion`, `ExportArticle`), plus `SimpleAction` for
 the remaining Действия that carry a single opaque id (the Хаб's six, #91, the
-Главное меню and Экран Настроек ones, #95, and the onboarding wizard's, #96, pack
-whatever they need into that id).
+Главное меню and Экран Настроек ones, #95, the onboarding wizard's, #96, and the
+Направления suggestion's, #113, pack whatever they need into that id).
 
 `ACTION_ROLE` says which of the Действия need "owner" and which accept any
 registered Role - `request_access` is absent, same reasoning as `COMMAND_ROLE`
@@ -76,6 +76,11 @@ Action = Literal[
     "onboarding_pick",
     "onboarding_later",
     "onboarding_launch",
+    "suggest_directions",
+    "directions_take",
+    "directions_more",
+    "directions_own",
+    "directions_cancel",
 ]
 
 _ACTION_CODES: dict[Action, str] = {
@@ -128,6 +133,13 @@ _ACTION_CODES: dict[Action, str] = {
     "onboarding_pick": "op",
     "onboarding_later": "ox",
     "onboarding_launch": "og",
+    # Направления suggested from the Ниша (#113): "d…". `ds`/`do`/`dc` carry where the
+    # suggestion was asked from, `dt`/`dm` its Job id - the list itself stays server-side.
+    "suggest_directions": "ds",
+    "directions_take": "dt",
+    "directions_more": "dm",
+    "directions_own": "do",
+    "directions_cancel": "dc",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
 
@@ -183,6 +195,12 @@ ACTION_ROLE: dict[Action, Role | None] = {
     "onboarding_pick": "owner",
     "onboarding_later": "owner",
     "onboarding_launch": "owner",
+    # Spends a model call and rewrites Направления: Владелец only, like Настройки.
+    "suggest_directions": "owner",
+    "directions_take": "owner",
+    "directions_more": "owner",
+    "directions_own": "owner",
+    "directions_cancel": "owner",
 }
 
 # The five composite Действия each get their own type below - see them out

@@ -55,8 +55,20 @@ class FakeScheduler:
         self.rescheduled.append((job_id, trigger))
 
 
+class FakeSuggester:
+    """Records what `DirectionSuggestions.request` was asked (#113)."""
+
+    def __init__(self) -> None:
+        self.requested: list[tuple[int, str, bool]] = []
+
+    async def request(self, chat_id: int, origin: str, *, niche_changed: bool = False) -> None:
+        self.requested.append((chat_id, origin, niche_changed))
+
+
 class Env:
-    def __init__(self, values: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, values: dict[str, str] | None = None, *, directions: FakeSuggester | None = None
+    ) -> None:
         self.store = FakeStore(values)
         self.schedule = FakeSchedule()
         self.scheduler = FakeScheduler()
@@ -69,6 +81,7 @@ class Env:
             self.bot,
             InputPrompt(self.bot, self.pending),
             tz=MOSCOW,
+            directions=directions,
         )
 
     async def reply(self, text: str, chat_id: int = PRIVATE, reply_to: int | None = None) -> bool:
@@ -403,3 +416,106 @@ async def test_set_schedule_alias_rejects_unknown_day(env: Env) -> None:
 
     assert env.bot.sent[0][1].startswith("Неизвестный день «xx»")
     assert env.scheduler.rescheduled == []
+
+
+# --- Направления suggested from the Ниша (#113) ---
+
+
+async def test_directions_question_offers_a_suggestion_by_niche(env: Env) -> None:
+    await env.screen.edit(PRIVATE, OWNER, SCREEN, "directions")
+
+    ((_, _, markup, _),) = env.bot.sent
+    assert button_texts(markup) == [["✨ Предложить по Нише"], ["Отмена"]]
+    assert button_data(markup)[0] == [f"ds:s:{SCREEN}"]
+
+
+async def test_a_rejected_directions_answer_keeps_the_suggestion_button(env: Env) -> None:
+    await env.screen.edit(PRIVATE, OWNER, SCREEN, "directions")
+
+    await env.reply(" , ")
+
+    assert button_data(env.bot.edited[-1][3])[0] == [f"ds:s:{SCREEN}"]
+
+
+async def test_other_questions_have_no_suggestion_button(env: Env) -> None:
+    await env.screen.edit(PRIVATE, OWNER, SCREEN, "niche")
+
+    assert button_texts(env.bot.sent[-1][2]) == [["Отмена"]]
+
+
+async def test_new_niche_with_default_directions_starts_a_suggestion_at_once() -> None:
+    suggester = FakeSuggester()
+    env = Env(directions=suggester)
+    await env.screen.edit(PRIVATE, OWNER, SCREEN, "niche")
+
+    await env.reply("домашняя выпечка")
+
+    assert suggester.requested == [(PRIVATE, f"s:{SCREEN}", True)]
+    assert "directions" not in env.store.values  # nothing saved until «✅ Взять»
+
+
+async def test_new_niche_with_own_directions_suggests_nothing() -> None:
+    suggester = FakeSuggester()
+    env = Env({"directions": "торт, хлеб"}, directions=suggester)
+    await env.screen.edit(PRIVATE, OWNER, SCREEN, "niche")
+
+    await env.reply("домашняя выпечка")
+
+    assert suggester.requested == []
+
+
+async def test_set_niche_alias_also_starts_a_suggestion_for_the_new_screen() -> None:
+    suggester = FakeSuggester()
+    env = Env(directions=suggester)
+
+    await env.screen.apply_command(PRIVATE, OWNER, "niche", "ремонт квартир")
+
+    assert suggester.requested == [(PRIVATE, "s:100", True)]  # the screen it just sent
+
+
+async def test_the_same_niche_sent_again_starts_no_second_suggestion() -> None:
+    suggester = FakeSuggester()
+    env = Env(directions=suggester)
+
+    await env.screen.apply_command(PRIVATE, OWNER, "niche", "ремонт квартир")
+    await env.screen.apply_command(PRIVATE, OWNER, "niche", "ремонт квартир")
+    await env.screen.edit(PRIVATE, OWNER, SCREEN, "niche")
+    await env.reply("ремонт квартир")
+
+    assert len(suggester.requested) == 1
+
+
+async def test_opening_a_suggestion_drops_the_directions_wait(env: Env) -> None:
+    await env.screen.edit(PRIVATE, OWNER, SCREEN, "directions")
+
+    await env.screen.suggestion_opened(PRIVATE, OWNER, 100, str(SCREEN))
+
+    assert env.pending.rows == {}
+    assert env.bot.deleted == []  # the question message becomes «⏳ Подбираю…»
+
+
+async def test_taken_suggestion_redraws_the_screen_with_the_notice(env: Env) -> None:
+    await env.screen.suggestion_taken(PRIVATE, OWNER, str(SCREEN), "Направления изменены: торт")
+
+    ((_, message_id, text, _),) = env.bot.edited
+    assert message_id == SCREEN
+    assert text.startswith("✅ Направления изменены: торт\n\n⚙️ Настройки")
+
+
+async def test_taken_suggestion_without_a_screen_sends_one(env: Env) -> None:
+    await env.screen.suggestion_taken(PRIVATE, OWNER, "0", "Направления изменены: торт")
+
+    assert env.bot.edited == []
+    assert env.bot.sent[-1][1].startswith("✅ Направления изменены: торт")
+
+
+async def test_write_own_asks_the_directions_question_again(env: Env) -> None:
+    await env.screen.suggestion_declined(PRIVATE, OWNER, str(SCREEN), write_own=True)
+
+    assert env.pending.rows[(PRIVATE, OWNER)].target_id == f"directions:{SCREEN}"
+
+
+async def test_cancelled_suggestion_leaves_the_screen_alone(env: Env) -> None:
+    await env.screen.suggestion_declined(PRIVATE, OWNER, str(SCREEN), write_own=False)
+
+    assert env.bot.sent == [] and env.bot.edited == [] and env.pending.rows == {}

@@ -325,8 +325,66 @@ async def test_directions_warn_when_the_niche_is_not_marketing() -> None:
 
     note = env.last[1]
     assert "⚠️ Сейчас здесь стандартные запросы про маркетинг" in note
-    assert "Для Ниши «фитнес» напишите свои — то, что ищут ваши читатели" in note
+    assert "Для Ниши «фитнес» нажмите «✨ Предложить по Нише»" in note
+    assert "или напишите свои — то, что ищут ваши читатели" in note
     assert "Если пропустить, Темы будут про маркетинг" in note
+
+
+async def test_directions_step_offers_a_suggestion_by_niche(env: Env) -> None:
+    """#113: «✨ Предложить по Нише» above the step's navigation, carrying the step as origin."""
+    await env.press("directions")
+
+    markup = env.last[2]
+    assert button_texts(markup)[0] == ["✨ Предложить по Нише"]
+    assert button_data(markup)[0] == ["ds:o:directions"]
+    assert button_data(markup)[1] == ["ob:persona", "ob:project"]
+
+
+async def test_directions_step_from_the_review_keeps_the_review_flag_in_the_origin(
+    env: Env,
+) -> None:
+    await env.press("directions:r")
+
+    assert button_data(env.last[2])[0] == ["ds:o:directions:r"]
+
+
+async def test_only_the_directions_step_offers_a_suggestion(env: Env) -> None:
+    for key in ("niche", "audience", "persona", "persona:c", "project"):
+        await env.press(key)
+        assert "✨ Предложить по Нише" not in [t for row in button_texts(env.last[2]) for t in row]
+
+
+async def test_opening_a_suggestion_drops_the_step_wait_but_keeps_its_message(env: Env) -> None:
+    await env.press("directions")
+    question = env.wait.prompt_message_id
+
+    await env.onboarding.suggestion_opened(PRIVATE, OWNER, question, "directions")
+
+    assert env.wait is None
+    assert (PRIVATE, question) not in env.bot.deleted  # it becomes «⏳ Подбираю…»
+
+
+async def test_taken_suggestion_moves_on_like_an_answer(env: Env) -> None:
+    await env.onboarding.suggestion_taken(
+        PRIVATE, OWNER, "directions", "Направления изменены: торт, хлеб"
+    )
+
+    assert env.last[1].startswith("✅ Направления изменены: торт, хлеб\n\nШаг 5 из 5 · Проект")
+    assert env.wait.target_id == "project"
+
+
+async def test_taken_suggestion_from_the_review_returns_to_it(env: Env) -> None:
+    await env.onboarding.suggestion_taken(PRIVATE, OWNER, "directions:r", "Направления изменены")
+
+    assert "🔎 Проверьте вводные" in env.last[1]
+
+
+@pytest.mark.parametrize("write_own", [True, False])
+async def test_declined_suggestion_reopens_the_step(env: Env, write_own: bool) -> None:
+    await env.onboarding.suggestion_declined(PRIVATE, OWNER, "directions", write_own=write_own)
+
+    assert env.last[1].startswith("Шаг 4 из 5 · Направления")
+    assert env.wait.target_id == "directions"
 
 
 async def test_review_warns_before_launch_when_directions_are_still_marketing() -> None:

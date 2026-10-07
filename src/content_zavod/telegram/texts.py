@@ -88,6 +88,7 @@ JOB_FAILURES = {
     "generate_article": "Не удалось написать Статью.",
     "regenerate_article": "Не удалось переписать Статью.",
     "generate_cover": "Не удалось сгенерировать обложку.",
+    "suggest_directions": "Не удалось подобрать Направления.",
 }
 JOB_FAILURE_FALLBACK = "Не удалось выполнить задачу."
 
@@ -402,13 +403,13 @@ ONBOARDING_PROJECT_QUESTION = (
 # the Владелец skips the step and gets a marketing Plan.
 ONBOARDING_DIRECTIONS_MISMATCH = (
     "⚠️ Сейчас здесь стандартные запросы про маркетинг (CRM, SEO, воронка продаж…). "
-    "Для Ниши «{niche}» напишите свои — то, что ищут ваши читатели. Если пропустить, "
-    "Темы будут про маркетинг."
+    "Для Ниши «{niche}» нажмите «✨ Предложить по Нише» — я подберу запросы сам, или "
+    "напишите свои — то, что ищут ваши читатели. Если пропустить, Темы будут про маркетинг."
 )
 # The same mismatch on «Проверьте вводные», right before «🚀 Запустить».
 ONBOARDING_REVIEW_DIRECTIONS_MISMATCH = (
     "⚠️ Направления — стандартные, про маркетинг, а Ниша — «{niche}». Первый План будет "
-    "про маркетинг: лучше нажать «✏️ Изменить Направления» и написать свои."
+    "про маркетинг: лучше нажать «✏️ Изменить Направления» и подобрать их по Нише."
 )
 ONBOARDING_REVIEW_TITLE = "🔎 Проверьте вводные"
 ONBOARDING_REVIEW_HINT = (
@@ -462,3 +463,43 @@ def steps_count_text(count: int) -> str:
     if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
         return f"{count} коротких шага"
     return f"{count} коротких шагов"
+
+
+# Направления suggested from the Ниша (#113): «✨ Предложить по Нише» on the Направления
+# question (Экран Настроек and onboarding), then a list the Владелец takes, rerolls or declines.
+DIRECTIONS_SUGGEST_BUTTON = "✨ Предложить по Нише"
+DIRECTIONS_TAKE_BUTTON = "✅ Взять"
+DIRECTIONS_MORE_BUTTON = "🔄 Ещё варианты"
+DIRECTIONS_RETRY_BUTTON = "🔄 Попробовать ещё"
+DIRECTIONS_OWN_BUTTON = "✏️ Написать свои"
+DIRECTIONS_WORKING = (
+    "⏳ Подбираю Направления для Ниши «{niche}» — запросы, по которым я буду искать в "
+    "Wordstat растущие Темы. Обычно это занимает до минуты."
+)
+# Said first when the suggestion started by itself, right after the Ниша changed.
+DIRECTIONS_NICHE_CHANGED = (
+    "Ниша сменилась, а Направления остались стандартными — про маркетинг. Без новых "
+    "Направлений Темы будут про маркетинг."
+)
+DIRECTIONS_SUGGESTED_TITLE = "✨ Направления для Ниши «{niche}»"
+DIRECTIONS_SUGGESTED_LINE = "• {query} — ищут {frequency} раз в месяц"
+DIRECTIONS_SUGGESTED_LINE_UNCHECKED = "• {query}"
+DIRECTIONS_DROPPED = "Убрал — их почти не ищут в Яндексе: {queries}."
+DIRECTIONS_WORDSTAT_UNAVAILABLE = (
+    "⚠️ Wordstat сейчас не ответил — спрос по этим запросам я не проверил."
+)
+DIRECTIONS_SUGGESTED_HINT = (
+    "«✅ Взять» — сохранить их как Направления (текущий список заменится целиком). "
+    "Пока не нажмёте, ничего не меняется."
+)
+DIRECTIONS_NONE_FOUND = (
+    "😕 Для Ниши «{niche}» не нашлось запросов, которые ищут в Яндексе. Попробуйте ещё "
+    "варианты или напишите свои."
+)
+DIRECTIONS_FAILED = "😕 Не получилось подобрать Направления. Попробуйте ещё раз или напишите свои."
+DIRECTIONS_STALE = "Эти варианты уже недоступны — подберите заново."
+
+
+def frequency_text(frequency: int) -> str:
+    """«12 400» - Wordstat's monthly count, grouped by thousands."""
+    return f"{frequency:,}".replace(",", " ")
