@@ -58,8 +58,26 @@ async def test_finish_is_true_only_the_first_time_and_ends_it() -> None:
 async def test_finished_stays_finished_even_with_settings_untouched() -> None:
     """«Позже» on a fresh install: no settings stored, but the wizard must not come back."""
     state = OnboardingState(Store())
-    await state.finish()
+    await state.skip()
 
+    assert await state.needed() is False
+
+
+async def test_a_launch_after_later_is_a_real_first_launch() -> None:
+    """A «🚀 Запустить» still on screen after «Позже» must start the Plan, not claim it did."""
+    state = OnboardingState(Store())
+    await state.begin()
+    await state.skip()
+
+    assert await state.finish() is True
+
+
+async def test_later_after_a_launch_does_not_re_arm_it() -> None:
+    state = OnboardingState(Store())
+    await state.finish()
+    await state.skip()
+
+    assert await state.finish() is False
     assert await state.needed() is False
 
 

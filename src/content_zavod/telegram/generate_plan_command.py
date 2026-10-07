@@ -62,12 +62,17 @@ async def handle_generate_plan_command(
     team_chat_id: int,
     tz: ZoneInfo,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    announce: bool = True,
 ) -> None:
+    """`announce=False`: the caller has already told the user what is happening (the
+    onboarding's «🚀 Запускаю!», #96), so a started generation adds no «Генерирую План…»."""
     week_label = week_label_for(now(), tz)
     week = format_week_range(week_label)
     active = await plan.find_active(week_label)
     if active is None:
         await _run_week_generation(plan, queue, week_label)
+        if not announce:
+            return
         if chat_id == team_chat_id:
             await gateway.send_notice(chat_id, f"Генерирую План на {week}...")
         else:

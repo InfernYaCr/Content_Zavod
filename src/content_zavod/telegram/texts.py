@@ -409,15 +409,21 @@ ONBOARDING_REVIEW_HINT = (
     "Что-то не так — поправьте кнопкой ниже."
 )
 ONBOARDING_LAUNCH_BUTTON = "🚀 Запустить"
+# Where the Plan lands: the team chat (`TELEGRAM_NOTIFY_CHAT_ID`), or this chat if that is it.
+ONBOARDING_PLAN_IN_TEAM = "в чат команды"
+ONBOARDING_PLAN_HERE = "сюда"
+# The first Plan is a Job: a Wordstat call per Направление, one after another, then an LLM call
+# per Тема - a few minutes, longer when Wordstat is slow (it can take a minute per request).
 ONBOARDING_LAUNCHED = (
-    "🚀 Запускаю! Ищу растущие запросы в Wordstat и подбираю по ним Темы — "
-    "обычно это занимает 2–5 минут.\n\n"
-    "План придёт в чат команды: там его согласуют, и я напишу по нему Статьи. "
-    "Дальше новый План будет приходить сам — {schedule}.\n\n"
+    "🚀 Запускаю! Смотрю в Wordstat, какие запросы по вашим Направлениям сейчас растут, "
+    "и подбираю по ним Темы. Обычно это 2–5 минут, иногда дольше — Wordstat бывает "
+    "медленным.\n\n"
+    "План придёт {where} одним сообщением: в нём Темы можно заменить, убрать или утвердить, "
+    "и по утверждённым я напишу Статьи. Дальше новый План будет приходить сам — {schedule}.\n\n"
     "Всё остальное — в меню: /menu"
 )
 ONBOARDING_ALREADY_LAUNCHED = (
-    "✅ Вводные сохранены. Первый План уже запущен — он появится в чате команды.\n\n"
+    "✅ Вводные сохранены. Первый План уже составляется — он придёт {where}.\n\n"
     "Всё остальное — в меню: /menu"
 )
 ONBOARDING_CANCELLED = (

@@ -55,12 +55,14 @@ class FakeMenu:
     def __init__(self) -> None:
         self.shown: list[tuple[int, int, str]] = []
         self.generated: list[int] = []
+        self.announced: list[bool] = []
 
     async def show(self, chat_id: int, message_id: int, role: str) -> None:
         self.shown.append((chat_id, message_id, role))
 
-    async def generate_plan(self, chat_id: int) -> None:
+    async def generate_plan(self, chat_id: int, *, announce: bool = True) -> None:
         self.generated.append(chat_id)
+        self.announced.append(announce)
 
 
 class Env:
@@ -390,13 +392,35 @@ async def test_launch_finishes_and_starts_the_first_plan_once(env: Env) -> None:
     await env.onboarding.launch(PRIVATE, OWNER, 77)  # double tap
 
     assert env.menu.generated == [PRIVATE]
+    # The card says it all - no second «Генерирую План…» under it.
+    assert env.menu.announced == [False]
     (_, _, launched, markup), (_, _, again, _) = env.bot.edited
     assert launched.startswith("🚀 Запускаю!")
-    assert "2–5 минут" in launched and "чат команды" in launched
+    assert "2–5 минут" in launched
+    assert "План придёт в чат команды одним сообщением" in launched
     assert "среда, 10:30" in launched
     assert button_data(markup) == [["mn:"]]
-    assert again.startswith("✅ Вводные сохранены. Первый План уже запущен")
+    assert again.startswith("✅ Вводные сохранены. Первый План уже составляется")
+    assert "придёт в чат команды" in again
     assert await env.state.needed() is False
+
+
+async def test_launch_says_here_when_plans_are_delivered_to_this_private_chat() -> None:
+    env = Env(team_chat_id=PRIVATE)
+
+    await env.onboarding.launch(PRIVATE, OWNER, 77)
+
+    assert "План придёт сюда одним сообщением" in env.bot.edited[0][2]
+
+
+async def test_a_review_card_left_after_later_still_launches(env: Env) -> None:
+    await env.press("review")
+    await env.onboarding.later(PRIVATE, OWNER, 100)
+
+    await env.onboarding.launch(PRIVATE, OWNER, 77)
+
+    assert env.menu.generated == [PRIVATE]
+    assert env.bot.edited[-1][2].startswith("🚀 Запускаю!")
 
 
 async def test_later_ends_the_wizard_and_shows_the_menu(env: Env) -> None:
@@ -461,4 +485,4 @@ async def test_a_stale_start_button_after_finishing_only_shows_the_menu(env: Env
     await env.onboarding.go(PRIVATE, OWNER, 100, "start")
 
     assert env.menu.shown == [(PRIVATE, 100, "owner")] * 2
-    assert env.store.values["onboarding"] == "done" and env.wait is None
+    assert env.store.values["onboarding"] == "later" and env.wait is None

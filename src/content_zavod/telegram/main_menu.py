@@ -172,7 +172,7 @@ class MainMenu:
             chat_id, message_id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
         )
 
-    async def generate_plan(self, chat_id: int) -> None:
+    async def generate_plan(self, chat_id: int, *, announce: bool = True) -> None:
         await handle_generate_plan_command(
             self._plan,
             self._gateway,
@@ -181,6 +181,7 @@ class MainMenu:
             team_chat_id=self._team_chat_id,
             tz=self._tz,
             now=self._now,
+            announce=announce,
         )
 
     async def ask_topic(self, chat_id: int, user_id: int) -> None:

@@ -718,6 +718,7 @@ async def main(settings: Settings | None = None) -> None:
             main_menu,
             schedule_settings,
             bot_username=(await bot.me()).username,
+            team_chat_id=settings.telegram_notify_chat_id,
         )
         # Every Участник's own scope still holds the pre-#95 list until it is rewritten.
         await resync_member_commands(bot_client, await membership.list_all())

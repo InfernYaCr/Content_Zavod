@@ -1299,7 +1299,7 @@ async def test_onboarding_launch_starts_the_first_plan_once(f: Fixtures) -> None
 async def test_onboarding_later_ends_it_and_shows_the_menu(f: Fixtures) -> None:
     await dispatch(f, SimpleAction("onboarding_later", ""), user_id=OWNER_ID)
 
-    assert f.owner_settings.values["onboarding"] == "done"
+    assert f.owner_settings.values["onboarding"] == "later"
     ((_, message_id, text, _),) = f.bot.edited_messages
     assert message_id == 2 and text.startswith("🏠 Главное меню")
 

@@ -65,6 +65,8 @@ from .texts import (
     ONBOARDING_NICHE_QUESTION,
     ONBOARDING_OPEN_PRIVATE_BUTTON,
     ONBOARDING_PERSONA_CHOOSE,
+    ONBOARDING_PLAN_HERE,
+    ONBOARDING_PLAN_IN_TEAM,
     ONBOARDING_PROJECT_QUESTION,
     ONBOARDING_REVIEW_HINT,
     ONBOARDING_REVIEW_TITLE,
@@ -159,7 +161,7 @@ class MenuEntry(Protocol):
 
     async def show(self, chat_id: int, message_id: int, role: Role) -> None: ...
 
-    async def generate_plan(self, chat_id: int) -> None: ...
+    async def generate_plan(self, chat_id: int, *, announce: bool = True) -> None: ...
 
 
 class OnboardingFlag(Protocol):
@@ -168,6 +170,8 @@ class OnboardingFlag(Protocol):
     async def begin(self) -> None: ...
 
     async def finish(self) -> bool: ...
+
+    async def skip(self) -> None: ...
 
 
 def _button(text: str, action: Action, id_: str = "") -> InlineKeyboardButton:
@@ -227,8 +231,11 @@ class Onboarding:
         schedule: ScheduleStore,
         *,
         bot_username: str | None = None,
+        team_chat_id: int | None = None,
         fields: Sequence[SettingField] | None = None,
     ) -> None:
+        """`team_chat_id` - where Plans are delivered (`TELEGRAM_NOTIFY_CHAT_ID`): the launch
+        says «в чат команды», or «сюда» when that is this very private chat."""
         self._state = state
         self._settings = settings
         self._prompts = prompts
@@ -236,6 +243,7 @@ class Onboarding:
         self._menu = menu
         self._schedule = schedule
         self._bot_username = bot_username
+        self._team_chat_id = team_chat_id
         self._fields = tuple(fields) if fields is not None else onboarding_fields()
         self._keys = [setting.key for setting in self._fields]
 
@@ -302,7 +310,7 @@ class Onboarding:
 
     async def later(self, chat_id: int, user_id: int, message_id: int) -> None:
         """«Позже — открыть меню»: the wizard is not offered again; Настройки are in the menu."""
-        await self._state.finish()
+        await self._state.skip()
         await self._menu.show(chat_id, message_id, "owner")
 
     async def launch(self, chat_id: int, user_id: int, message_id: int) -> None:
@@ -312,11 +320,12 @@ class Onboarding:
         if not _is_private(chat_id, user_id):
             await self._point_to_private(chat_id)
             return
+        where = ONBOARDING_PLAN_HERE if chat_id == self._team_chat_id else ONBOARDING_PLAN_IN_TEAM
         if not await self._state.finish():
             await self._bot.edit_message_text(
                 chat_id,
                 message_id,
-                ONBOARDING_ALREADY_LAUNCHED,
+                ONBOARDING_ALREADY_LAUNCHED.format(where=where),
                 reply_markup=build_open_menu_keyboard(),
             )
             return
@@ -329,10 +338,11 @@ class Onboarding:
         await self._bot.edit_message_text(
             chat_id,
             message_id,
-            ONBOARDING_LAUNCHED.format(schedule=when),
+            ONBOARDING_LAUNCHED.format(where=where, schedule=when),
             reply_markup=build_open_menu_keyboard(),
         )
-        await self._menu.generate_plan(chat_id)
+        # The card above already says what is happening and where the Plan will land.
+        await self._menu.generate_plan(chat_id, announce=False)
 
     # --- typed answers ---
 

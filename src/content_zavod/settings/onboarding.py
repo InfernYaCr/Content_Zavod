@@ -2,7 +2,9 @@
 
 "First run" is decided from what is stored, never from a session:
 
-- `onboarding` = `done` - finished («🚀 Запустить» or «Позже»): never offered again.
+- `onboarding` = `done` - launched («🚀 Запустить»): never offered again.
+- `onboarding` = `later` - «Позже»: never offered again either, but a «🚀 Запустить» still on
+  screen launches for real (it is not told «уже запущен»).
 - `onboarding` = `started` - «Начать настройку» was pressed but not finished: offered again,
   even though the wizard's answers are by now stored as Настройки.
 - no `onboarding` row - offered only while no Настройка is stored at all, so an install that
@@ -21,6 +23,7 @@ from .service import SETTING_STORE_KEYS
 ONBOARDING_KEY = "onboarding"
 _STARTED = "started"
 _DONE = "done"
+_LATER = "later"
 
 
 class OnboardingStore(Protocol):
@@ -48,6 +51,13 @@ class OnboardingState:
         await self._store.set(ONBOARDING_KEY, _STARTED)
 
     async def finish(self) -> bool:
-        """`True` only for the call that actually finished it - a double-tapped «🚀 Запустить»
-        or a second Владелец launching too gets `False` and starts no second Plan."""
+        """«🚀 Запустить»: `True` only for the call that actually launched - a double-tapped
+        «🚀 Запустить» or a second Владелец launching too gets `False` and starts no second
+        Plan. A launch after «Позже» (a review card still on screen) is a real first launch."""
         return await self._store.set_if_changed(ONBOARDING_KEY, _DONE)
+
+    async def skip(self) -> None:
+        """«Позже»: never offered again, but nothing was launched - a stale «🚀 Запустить»
+        still launches. Leaves an already launched wizard as it is."""
+        if await self._store.get(ONBOARDING_KEY) != _DONE:
+            await self._store.set(ONBOARDING_KEY, _LATER)
