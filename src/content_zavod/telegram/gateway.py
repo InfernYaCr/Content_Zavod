@@ -29,6 +29,7 @@ from .pending_inputs import PendingInput
 from .texts import (
     READ_BUTTON,
     REFINE_BUTTON,
+    TO_MENU_BUTTON,
     article_status,
     plan_status,
     platform_name,
@@ -234,7 +235,15 @@ def build_history_weeks_keyboard(
             )
         if nav_row:
             rows.append(nav_row)
+    rows.append([_to_menu_button()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _to_menu_button() -> InlineKeyboardButton:
+    """Back to the Главное меню (#95), which opens these screens in place of itself."""
+    return InlineKeyboardButton(
+        text=TO_MENU_BUTTON, callback_data=encode_callback_data(SimpleAction("menu", ""))
+    )
 
 
 # A Статья has a downloadable last Версия once it's left "queued"/"generating"/"error" -
@@ -518,6 +527,7 @@ def build_members_keyboard(
                 )
             ]
         )
+    rows.append([_to_menu_button()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

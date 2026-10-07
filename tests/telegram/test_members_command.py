@@ -41,7 +41,7 @@ async def test_lists_every_member_with_a_remove_button() -> None:
     chat_id, text, keyboard = gateway.sent_messages[0]
     assert chat_id == 99
     assert "1" in text and "2" in text
-    assert len(keyboard.inline_keyboard) == 2
+    assert len(keyboard.inline_keyboard) == 3  # a row per member, then «🏠 В меню»
 
 
 @pytest.mark.asyncio
@@ -61,6 +61,7 @@ async def test_shows_username_and_russian_role_falling_back_to_the_id() -> None:
     assert [row[0].text for row in keyboard.inline_keyboard] == [
         "❌ Удалить 1",
         "❌ Удалить @alice",
+        "🏠 В меню",
     ]
 
 

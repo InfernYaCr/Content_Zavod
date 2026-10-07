@@ -44,7 +44,6 @@ from .comment_gated_regeneration import CommentGatedRegeneration
 from .gateway import ITEMS_PER_PAGE, BotClient, TelegramGateway
 from .generate_plan_command import handle_cancel_regenerate_plan, handle_confirm_regenerate_plan
 from .history_command import (
-    handle_history_command,
     handle_history_page,
     handle_history_version,
     handle_history_versions,
@@ -53,7 +52,7 @@ from .history_command import (
 from .input_prompt import InputPrompt
 from .join_request_flow import JoinRequestFlow
 from .main_menu import MainMenu
-from .members_command import handle_members_command, redraw_members
+from .members_command import redraw_members
 from .plan_review import PlanReview
 from .settings_screen import BACK_TO_MENU, SettingsScreen
 from .texts import error_alert_text
@@ -295,12 +294,13 @@ class CallbackDispatcher:
                 if not await self._authorized("menu_history", role, deny_text, answer):
                     return
                 await answer()
-                await handle_history_command(self._plan, self._gateway, chat_id)
+                # In place of the menu; its «🏠 В меню» comes back.
+                await handle_history_page(self._plan, self._gateway, chat_id, message_id, 0)
             case SimpleAction(action="menu_members"):
                 if not await self._authorized("menu_members", role, deny_text, answer):
                     return
                 await answer()
-                await handle_members_command(self._membership, self._gateway, chat_id)
+                await redraw_members(self._membership, self._bot_client, chat_id, message_id)
             case SimpleAction(action="settings"):
                 if not await self._authorized("settings", role, deny_text, answer):
                     return

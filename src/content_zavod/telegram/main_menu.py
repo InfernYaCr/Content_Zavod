@@ -9,8 +9,8 @@ Every Role gets «📋 План недели», «✍️ Предложить Т
 ADR-0005): it says how far the week's Plan is and links to that message, or - with no Plan yet -
 says when the next one is due and offers «🪄 Составить План» (the same path as /generate_plan).
 «✍️ Предложить Тему» asks for the Тема through `InputPrompt` and hands the answer to the same
-handler as /topic. «🗂 История» and «👥 Участники» send their existing screens as new messages,
-leaving the menu where it is.
+handler as /topic. «🗂 История» and «👥 Участники» turn the menu message into their existing
+screens, whose «🏠 В меню» row turns it back.
 """
 
 from __future__ import annotations

@@ -573,7 +573,12 @@ async def test_remove_member_asks_for_confirmation_instead_of_removing(f: Fixtur
     chat_id, message_id, text, keyboard = f.bot.edited_messages[-1]
     assert (chat_id, message_id) == (1, 2)
     assert "@user2 — Контент-менеджер" in text
-    assert _button_labels(keyboard) == ["❌ Удалить @user1", "✅ Да, удалить @user2", "↩️ Отмена"]
+    assert _button_labels(keyboard) == [
+        "❌ Удалить @user1",
+        "✅ Да, удалить @user2",
+        "↩️ Отмена",
+        "🏠 В меню",
+    ]
 
 
 async def test_remove_member_refuses_yourself_up_front(f: Fixtures) -> None:
@@ -590,7 +595,7 @@ async def test_confirm_remove_member_removes_and_redraws_the_list(f: Fixtures) -
     assert f.membership.removed == [CM_ID]
     _, _, text, keyboard = f.bot.edited_messages[-1]
     assert "@user2" not in text
-    assert _button_labels(keyboard) == ["❌ Удалить @user1"]
+    assert _button_labels(keyboard) == ["❌ Удалить @user1", "🏠 В меню"]
 
 
 async def test_confirm_remove_member_refusal_is_the_only_answer(f: Fixtures) -> None:
@@ -615,7 +620,7 @@ async def test_confirm_remove_member_already_removed_alerts_and_redraws(f: Fixtu
 
     assert answer.calls == [("Участник не найден.", True)]
     _, _, _, keyboard = f.bot.edited_messages[-1]
-    assert _button_labels(keyboard) == ["❌ Удалить @user1", "❌ Удалить @user2"]
+    assert _button_labels(keyboard) == ["❌ Удалить @user1", "❌ Удалить @user2", "🏠 В меню"]
 
 
 async def test_cancel_remove_member_redraws_the_plain_list(f: Fixtures) -> None:
@@ -624,7 +629,7 @@ async def test_cancel_remove_member_redraws_the_plain_list(f: Fixtures) -> None:
     assert answer.calls == [(None, None)]
     assert f.membership.removed == []
     _, _, _, keyboard = f.bot.edited_messages[-1]
-    assert _button_labels(keyboard) == ["❌ Удалить @user1", "❌ Удалить @user2"]
+    assert _button_labels(keyboard) == ["❌ Удалить @user1", "❌ Удалить @user2", "🏠 В меню"]
 
 
 @pytest.mark.parametrize("action", ["confirm_remove_member", "cancel_remove_member"])
@@ -1041,16 +1046,24 @@ async def test_menu_topic_asks_for_a_topic(f: Fixtures) -> None:
     assert f.pending_inputs.rows[(1, CM_ID)].kind == "topic_input"
 
 
-async def test_menu_history_sends_the_history(f: Fixtures) -> None:
+async def test_menu_history_opens_the_history_in_place_of_the_menu(f: Fixtures) -> None:
     await dispatch(f, SimpleAction("menu_history", ""))
 
-    assert f.bot.sent_messages[0][1].startswith("🗂 История")
+    assert f.bot.sent_messages == []
+    chat_id, message_id, text, keyboard = f.bot.edited_messages[-1]
+    assert (chat_id, message_id) == (1, 2)
+    assert text.startswith("🗂 История")
+    assert keyboard.inline_keyboard[-1][0].callback_data == "mn:"
 
 
-async def test_menu_members_sends_the_member_list(f: Fixtures) -> None:
+async def test_menu_members_opens_the_member_list_in_place_of_the_menu(f: Fixtures) -> None:
     await dispatch(f, SimpleAction("menu_members", ""), user_id=OWNER_ID)
 
-    assert f.bot.sent_messages[0][1].startswith("👥 Участники")
+    assert f.bot.sent_messages == []
+    chat_id, message_id, text, keyboard = f.bot.edited_messages[-1]
+    assert (chat_id, message_id) == (1, 2)
+    assert text.startswith("👥 Участники")
+    assert keyboard.inline_keyboard[-1][0].callback_data == "mn:"
 
 
 async def test_settings_and_edit_setting_work_for_owner(f: Fixtures) -> None:

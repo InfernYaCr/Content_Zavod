@@ -188,6 +188,9 @@ MENU_SETTINGS_BUTTON = "⚙️ Настройки"
 MENU_MEMBERS_BUTTON = "👥 Участники"
 MENU_SCHEDULE_BUTTON = "🕘 Расписание"
 OPEN_MENU_BUTTON = "🏠 Открыть меню"
+# Under the История and Участники screens, which the menu edits in place (their own
+# «◀ Назад» already means "previous page").
+TO_MENU_BUTTON = "🏠 В меню"
 
 HELP_TEXT = (
     "Я составляю для команды План Тем на неделю и пишу по нему Статьи для Дзена и VC.ru.\n\n"

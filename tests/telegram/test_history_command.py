@@ -115,7 +115,7 @@ async def test_history_command_sends_first_page_of_weeks() -> None:
     chat_id, text, keyboard = gateway._bot.sent_messages[0]
     assert chat_id == 1
     assert "на согласовании" in text
-    assert len(keyboard.inline_keyboard) == 1
+    assert len(keyboard.inline_keyboard) == 2  # the week, then «🏠 В меню»
 
 
 @pytest.mark.asyncio
@@ -127,7 +127,7 @@ async def test_history_command_includes_current_unfinished_week_like_any_other()
 
     _, text, keyboard = gateway._bot.sent_messages[0]
     assert "на согласовании" in text and "в архиве" in text
-    assert len(keyboard.inline_keyboard) == 2
+    assert len(keyboard.inline_keyboard) == 3
 
 
 @pytest.mark.asyncio
@@ -139,7 +139,7 @@ async def test_history_command_empty_still_sends_a_message_not_a_notice() -> Non
 
     _, text, keyboard = gateway._bot.sent_messages[0]
     assert "Планов пока нет" in text
-    assert keyboard.inline_keyboard == []
+    assert [[button.text for button in row] for row in keyboard.inline_keyboard] == [["🏠 В меню"]]
 
 
 @pytest.mark.asyncio
@@ -153,8 +153,8 @@ async def test_history_page_edits_the_message_with_the_requested_page() -> None:
     chat_id, message_id, text, keyboard = gateway._bot.edited_messages[0]
     assert (chat_id, message_id) == (1, 5)
     assert "Страница 2/2" in text
-    # one leftover week's row, plus a nav row with only "Назад" (no next page)
-    assert len(keyboard.inline_keyboard) == 2
+    # one leftover week's row, a nav row with only "Назад" (no next page), «🏠 В меню»
+    assert len(keyboard.inline_keyboard) == 3
     assert len(keyboard.inline_keyboard[1]) == 1
 
 
