@@ -9,6 +9,7 @@ from content_zavod.pipelines.provenance import StepRecord
 from content_zavod.pipelines.topic_research import (
     TopicBrief,
     TopicResearcher,
+    search_query,
     select_candidates,
     verified_facts,
 )
@@ -243,3 +244,22 @@ def test_verified_facts_checks_quote_and_numbers(fact, quote, kept) -> None:
     facts = verified_facts(_facts((fact, quote)), page_text)
 
     assert bool(facts) is kept
+
+
+@pytest.mark.parametrize(
+    ("brief", "query"),
+    [
+        (TopicBrief("Как выбрать CRM", "", ("crm",)), "Как выбрать CRM"),
+        (
+            TopicBrief(
+                "5 ошибок при выборе CRM",
+                "длинное описание темы",
+                ("crm для малого бизнеса", "выбор crm системы", "внедрение crm"),
+            ),
+            "5 ошибок при выборе CRM для малого бизнеса системы",
+        ),
+        (TopicBrief("  Налоговый   вычет  ", "", ()), "Налоговый вычет"),
+    ],
+)
+def test_search_query_adds_new_words_of_the_top_two_keywords(brief, query) -> None:
+    assert search_query(brief) == query

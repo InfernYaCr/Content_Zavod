@@ -172,7 +172,7 @@ class TopicResearcher:
         return research
 
     async def _research(self, brief: TopicBrief, steps: StepRunner) -> ResearchBundle:
-        query = brief.title
+        query = search_query(brief)
         if self._search is None:
             return ResearchBundle(query=query, status="search_unavailable")
         try:
@@ -270,6 +270,31 @@ class TopicResearcher:
             logger.warning("research: fact extraction failed for %s", page.url, exc_info=True)
             return []
         return verified_facts(answer, page_text)[:MAX_FACTS_PER_PAGE]
+
+
+# Top Wordstat keywords of the Тема whose words are added to the search query.
+MAX_QUERY_KEYWORDS = 2
+_WORD_RE = re.compile(r"\w+")
+
+
+def search_query(brief: TopicBrief) -> str:
+    """The one search request of a Тема: its title plus the words of its top keywords that
+    the title doesn't already contain.
+
+    Titles are headlines ("5 ошибок при выборе CRM, которые стоят денег") - their catchy
+    words dilute the search; the Wordstat keywords are what people actually search for on
+    the subject, so they pull results towards real material. A word already in the title
+    (compared by its first 5 letters, to absorb Russian inflection) is not repeated. The
+    summary is left out: it is a whole sentence and would only blur the query."""
+    seen = {word[:5].lower() for word in _WORD_RE.findall(brief.title)}
+    extra: list[str] = []
+    for keyword in brief.keywords[:MAX_QUERY_KEYWORDS]:
+        for word in _WORD_RE.findall(keyword):
+            stem = word[:5].lower()
+            if stem not in seen:
+                seen.add(stem)
+                extra.append(word)
+    return " ".join([" ".join(brief.title.split()), *extra])
 
 
 def select_candidates(urls: Sequence[str]) -> list[str]:

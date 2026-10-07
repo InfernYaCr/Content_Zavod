@@ -62,6 +62,8 @@ async def test_search_decodes_xml_results_into_hits() -> None:
     assert body["folderId"] == "folder-1"
     assert body["responseFormat"] == "FORMAT_XML"
     assert body["groupSpec"]["groupsOnPage"] == "5"
+    assert body["region"] == "225"
+    assert body["l10n"] == "LOCALIZATION_RU"
 
 
 @pytest.mark.asyncio

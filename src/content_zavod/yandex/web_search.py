@@ -108,6 +108,9 @@ class WebSearch:
                 "docsInGroup": "1",
             },
             "maxPassages": "3",
+            # Rank for a reader in Russia (Yandex region 225), not for wherever the worker
+            # runs - the Статьи are for Дзен/VC.ru.
+            "region": "225",
             "l10n": "LOCALIZATION_RU",
             "folderId": self._folder_id,
             "responseFormat": "FORMAT_XML",
