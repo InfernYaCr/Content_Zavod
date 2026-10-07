@@ -14,6 +14,8 @@ question is edited to say what was wrong and the same wait is stored again.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from aiogram.types import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup
 
 from .callback_codec import SimpleAction, encode_callback_data
@@ -32,17 +34,17 @@ from .texts import (
 _PLACEHOLDER_LIMIT = 64
 
 
-def build_cancel_input_keyboard(kind: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=CANCEL_BUTTON,
-                    callback_data=encode_callback_data(SimpleAction("cancel_input", kind)),
-                )
-            ]
-        ]
+ButtonRows = Sequence[Sequence[InlineKeyboardButton]]
+
+
+def build_cancel_input_keyboard(kind: str, buttons: ButtonRows = ()) -> InlineKeyboardMarkup:
+    """«Отмена», under the caller's own `buttons` rows if any (the onboarding wizard's
+    «◀ Назад» / «Пропустить», #96)."""
+    cancel = InlineKeyboardButton(
+        text=CANCEL_BUTTON,
+        callback_data=encode_callback_data(SimpleAction("cancel_input", kind)),
     )
+    return InlineKeyboardMarkup(inline_keyboard=[*(list(row) for row in buttons), [cancel]])
 
 
 def _is_private(chat_id: int, user_id: int) -> bool:
@@ -68,6 +70,7 @@ class InputPrompt:
         question: str,
         *,
         placeholder: str,
+        buttons: ButtonRows = (),
     ) -> None:
         """Send `question` and wait for this user's answer under `kind`/`target_id`; an
         earlier wait of this user in this chat, of any kind, is dropped with its prompt."""
@@ -75,7 +78,7 @@ class InputPrompt:
         prompt_message_id = await self._bot.send_message(
             chat_id,
             _question_text(question, private),
-            reply_markup=build_cancel_input_keyboard(kind),
+            reply_markup=build_cancel_input_keyboard(kind, buttons),
         )
         force_reply_message_id = None
         if not private:
@@ -105,7 +108,14 @@ class InputPrompt:
         )
 
     async def ask_again(
-        self, chat_id: int, user_id: int, pending: PendingInput, problem: str, question: str
+        self,
+        chat_id: int,
+        user_id: int,
+        pending: PendingInput,
+        problem: str,
+        question: str,
+        *,
+        buttons: ButtonRows = (),
     ) -> None:
         """A taken answer was rejected: say why on the same question and wait again."""
         text = f"{SETTINGS_INVALID.format(text=problem)}\n\n{question}"
@@ -113,7 +123,7 @@ class InputPrompt:
             chat_id,
             pending.prompt_message_id,
             _question_text(text, _is_private(chat_id, user_id)),
-            reply_markup=build_cancel_input_keyboard(pending.kind),
+            reply_markup=build_cancel_input_keyboard(pending.kind, buttons),
         )
         replaced = await self._pending.put(chat_id, user_id, pending)
         if replaced is not None:  # only if another ask slipped in between take and put

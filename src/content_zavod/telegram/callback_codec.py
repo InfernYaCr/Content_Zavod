@@ -3,8 +3,9 @@
 Payload is a union of six types: five immutable dataclasses for the composite
 Действия that pack more than one field into their id (`Page`, `HistoryWeek`,
 `HistoryVersions`, `HistoryVersion`, `ExportArticle`), plus `SimpleAction` for
-the remaining Действия that carry a single opaque id (the Хаб's six, #91, and the
-Главное меню and Экран Настроек ones, #95, pack whatever they need into that id).
+the remaining Действия that carry a single opaque id (the Хаб's six, #91, the
+Главное меню and Экран Настроек ones, #95, and the onboarding wizard's, #96, pack
+whatever they need into that id).
 
 `ACTION_ROLE` says which of the Действия need "owner" and which accept any
 registered Role - `request_access` is absent, same reasoning as `COMMAND_ROLE`
@@ -71,6 +72,10 @@ Action = Literal[
     "hub_article",
     "hub_retry",
     "hub_retry_topic",
+    "onboarding_step",
+    "onboarding_pick",
+    "onboarding_later",
+    "onboarding_launch",
 ]
 
 _ACTION_CODES: dict[Action, str] = {
@@ -118,6 +123,11 @@ _ACTION_CODES: dict[Action, str] = {
     "hub_article": "ha",
     "hub_retry": "hr",
     "hub_retry_topic": "hrt",
+    # The Владелец's first-run wizard (#96): "o…".
+    "onboarding_step": "ob",
+    "onboarding_pick": "op",
+    "onboarding_later": "ox",
+    "onboarding_launch": "og",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
 
@@ -168,6 +178,11 @@ ACTION_ROLE: dict[Action, Role | None] = {
     "hub_article": None,
     "hub_retry": None,
     "hub_retry_topic": None,
+    # The wizard writes Настройки and starts the first Plan: Владелец only, like Настройки.
+    "onboarding_step": "owner",
+    "onboarding_pick": "owner",
+    "onboarding_later": "owner",
+    "onboarding_launch": "owner",
 }
 
 # The five composite Действия each get their own type below - see them out

@@ -244,7 +244,7 @@ def _with_notice(text: str, notice: str | None) -> str:
     return f"{SETTINGS_SAVED.format(text=notice)}\n\n{text}" if notice else text
 
 
-def _current_line(value: str) -> str:
+def current_line(value: str) -> str:
     return SETTINGS_CURRENT.format(value=f"\n{value}" if "\n" in value else value)
 
 
@@ -273,7 +273,7 @@ def build_settings_keyboard() -> InlineKeyboardMarkup:
 
 def render_chooser_text(setting: SettingField, current: OwnerSettings) -> str:
     value = (setting.detail or setting.show)(current)
-    return f"{setting.label} — {setting.purpose}.\n\n{_current_line(value)}\n\n{SETTINGS_CHOOSE}"
+    return f"{setting.label} — {setting.purpose}.\n\n{current_line(value)}\n\n{SETTINGS_CHOOSE}"
 
 
 def build_chooser_keyboard(setting: SettingField, current: OwnerSettings) -> InlineKeyboardMarkup:
@@ -295,7 +295,7 @@ def build_chooser_keyboard(setting: SettingField, current: OwnerSettings) -> Inl
 
 def render_schedule_text(schedule: ScheduleConfig, *, notice: str | None = None) -> str:
     now = schedule_text(schedule.day_of_week, schedule.hour, schedule.minute)
-    return _with_notice(f"{SCHEDULE_TITLE}\n\n{_current_line(now)}\n\n{SCHEDULE_HOW}", notice)
+    return _with_notice(f"{SCHEDULE_TITLE}\n\n{current_line(now)}\n\n{SCHEDULE_HOW}", notice)
 
 
 def build_schedule_keyboard(schedule: ScheduleConfig, back: str) -> InlineKeyboardMarkup:
@@ -550,12 +550,12 @@ class SettingsScreen:
     async def _question(self, setting: SettingField) -> str:
         current = await self._settings.read()
         value = (setting.detail or setting.show)(current)
-        return f"{setting.question}\n\n{_current_line(value)}"
+        return f"{setting.question}\n\n{current_line(value)}"
 
     async def _time_question(self) -> str:
         schedule = await self._schedule_config()
         now = schedule_text(schedule.day_of_week, schedule.hour, schedule.minute)
-        return f"{SCHEDULE_TIME_QUESTION}\n\n{_current_line(now)}"
+        return f"{SCHEDULE_TIME_QUESTION}\n\n{current_line(now)}"
 
     async def _schedule_config(self) -> ScheduleConfig:
         return await self._schedule.get() or ScheduleConfig(

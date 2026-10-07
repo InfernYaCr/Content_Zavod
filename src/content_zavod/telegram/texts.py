@@ -337,3 +337,87 @@ SCHEDULE_TIME_INVALID = "Не понял время «{text}». Нужно ЧЧ:
 def schedule_text(day: str, hour: int, minute: int) -> str:
     """«понедельник, 09:00» - the one way a schedule is shown on every screen."""
     return f"{weekday_name(day)}, {hour:02d}:{minute:02d}"
+
+
+# --- Описание бота и онбординг (#96) ---
+# Per-step questions, examples and validation come from `settings_screen.SETTING_FIELDS` - the
+# wizard asks exactly what the Экран Настроек asks; these are only the wizard's own frame.
+
+# setMyShortDescription (≤ 120) - the profile and the share card; setMyDescription (≤ 512) - the
+# «What can this bot do?» card a new user sees before pressing «Начать».
+BOT_SHORT_DESCRIPTION = (
+    "Нахожу растущие Темы в Wordstat и пишу по ним Статьи для Дзена и VC.ru — для вашей команды."
+)
+BOT_DESCRIPTION = (
+    "Контент-план и Статьи для вашей команды.\n\n"
+    "📈 Каждую неделю нахожу в Wordstat растущие запросы по вашей Нише и составляю План "
+    "из 2–4 Тем.\n"
+    "✅ Команда согласует План прямо в чате.\n"
+    "✍️ По каждой Теме пишу Статьи для Дзена и VC.ru — с обложкой и проверенными источниками.\n"
+    "📄 Готовое читайте прямо в Telegram или скачивайте .docx/.md.\n\n"
+    "Нажмите «Начать», чтобы настроить бота или запросить доступ."
+)
+
+ONBOARDING_INTRO = (
+    "👋 Здравствуйте! Я помогаю команде вести блог на Дзене и VC.ru.\n\n"
+    "Каждую неделю я нахожу в Wordstat растущие запросы по вашей теме, составляю План "
+    "из 2–4 Тем, а после согласования пишу по нему Статьи — с обложками и источниками.\n\n"
+    "Настроим меня под вас: {count} — {steps}. Сразу после этого я составлю первый План.\n\n"
+    "Выйти в меню можно в любой момент: /menu"
+)
+ONBOARDING_START_BUTTON = "▶ Начать настройку"
+ONBOARDING_LATER_BUTTON = "Позже — открыть меню"
+ONBOARDING_STEP_HEADER = "Шаг {number} из {total} · {label}\n↳ {purpose}"
+ONBOARDING_SKIP_BUTTON = "Пропустить ⏭"
+# Directions default to marketing queries: if the Ниша isn't marketing, say so before
+# the Владелец skips the step and gets a marketing Plan.
+ONBOARDING_DIRECTIONS_MISMATCH = (
+    "⚠️ Сейчас здесь запросы про маркетинг. Для Ниши «{niche}» лучше написать свои — "
+    "иначе Темы будут про маркетинг."
+)
+ONBOARDING_REVIEW_TITLE = "🔎 Проверьте вводные"
+ONBOARDING_REVIEW_HINT = (
+    "Всё верно? Нажмите «🚀 Запустить» — я сразу составлю первый План. "
+    "Что-то не так — поправьте кнопкой ниже."
+)
+ONBOARDING_LAUNCH_BUTTON = "🚀 Запустить"
+ONBOARDING_LAUNCHED = (
+    "🚀 Запускаю! Ищу растущие запросы в Wordstat и подбираю по ним Темы — "
+    "обычно это занимает 2–5 минут.\n\n"
+    "План придёт в чат команды: там его согласуют, и я напишу по нему Статьи. "
+    "Дальше новый План будет приходить сам — {schedule}.\n\n"
+    "Всё остальное — в меню: /menu"
+)
+ONBOARDING_ALREADY_LAUNCHED = (
+    "✅ Вводные сохранены. Первый План уже запущен — он появится в чате команды.\n\n"
+    "Всё остальное — в меню: /menu"
+)
+ONBOARDING_CANCELLED = (
+    "Хорошо, настройку можно продолжить в любой момент: /start\n"
+    "Всё остальное — в меню: /menu"
+)
+ONBOARDING_IN_PRIVATE = (
+    "⚙️ Бот ещё не настроен. Настройка займёт пару минут, и её лучше пройти в личном чате "
+    "со мной: откройте его и нажмите /start."
+)
+ONBOARDING_OPEN_PRIVATE_BUTTON = "💬 Открыть личный чат"
+
+# Sent to a Контент-менеджер the moment their заявка is approved.
+CONTENT_MANAGER_WELCOME = (
+    "🎉 Доступ выдан — вы Контент-менеджер.\n\n"
+    "Что я делаю: раз в неделю составляю План — 2–4 Темы, а после согласования пишу по ним "
+    "Статьи для Дзена и VC.ru.\n\n"
+    "Где План: в чате команды, одним сообщением. Там же его согласуют: 🔄 — заменить Тему, "
+    "🗑 — убрать, «✅ Утвердить всё» — запустить Статьи. После утверждения это же сообщение "
+    "показывает, что готово, и открывает обложки и Статьи.\n\n"
+    "Что нажимать: /menu — План недели, своя Тема, История."
+)
+
+
+def steps_count_text(count: int) -> str:
+    """«5 коротких шагов», «3 коротких шага», «1 короткий шаг»."""
+    if count % 10 == 1 and count % 100 != 11:
+        return f"{count} короткий шаг"
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return f"{count} коротких шага"
+    return f"{count} коротких шагов"
