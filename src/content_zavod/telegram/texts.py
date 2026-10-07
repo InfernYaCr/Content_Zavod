@@ -70,6 +70,15 @@ WEEKDAYS = {
 
 # The ready-Статья card (#92).
 ARTICLE_CARD_PLATFORM = "Площадка: {platform}"
+# #94: the Версия was written without verified evidence - the warning lives on the card,
+# never in the Статья text (that one is exported and published as is).
+ARTICLE_CARD_NO_EVIDENCE = {
+    "no_evidence": "⚠️ Источники не найдены — проверьте факты перед публикацией",
+    "search_unavailable": (
+        "⚠️ Поиск источников был недоступен — проверьте факты перед публикацией "
+        "или запросите Перегенерацию позже"
+    ),
+}
 READ_BUTTON = "📖 Читать"
 REFINE_BUTTON = "✏️ Доработать"
 

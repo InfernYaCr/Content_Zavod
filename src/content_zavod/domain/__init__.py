@@ -13,6 +13,15 @@ from .errors import (
 from .export import build_export_document, build_export_filename
 from .generation_steps import GenerationSteps, GenerationStepView, JobCostSummary
 from .plan import Plan, PlanItemDetail
+from .research import (
+    Evidence,
+    ResearchBundle,
+    ResearchSource,
+    ResearchStatus,
+    TopicResearch,
+    TopicResearchStore,
+    topic_fingerprint,
+)
 from .types import (
     PLATFORMS,
     ArticleFormat,
@@ -54,6 +63,7 @@ __all__ = [
     "ArticleVersionView",
     "ArticleView",
     "DomainError",
+    "Evidence",
     "GeneratedVersion",
     "GenerationStepView",
     "GenerationSteps",
@@ -77,7 +87,13 @@ __all__ = [
     "PlanStatus",
     "PlanSummary",
     "PlanView",
+    "ResearchBundle",
+    "ResearchSource",
+    "ResearchStatus",
     "TopicDraft",
+    "TopicResearch",
+    "TopicResearchStore",
     "build_export_document",
     "build_export_filename",
+    "topic_fingerprint",
 ]
