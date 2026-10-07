@@ -414,3 +414,12 @@ async def test_without_audience_the_wizard_has_four_steps() -> None:
     await env.answer("фитнес")
 
     assert env.last[1].startswith("✅ Ниша изменена: фитнес\n\nШаг 2 из 4 · Персона")
+
+
+async def test_a_stale_start_button_after_finishing_only_shows_the_menu(env: Env) -> None:
+    await env.onboarding.later(PRIVATE, OWNER, 100)
+
+    await env.onboarding.go(PRIVATE, OWNER, 100, "start")
+
+    assert env.menu.shown == [(PRIVATE, 100, "owner")] * 2
+    assert env.store.values["onboarding"] == "done" and env.wait is None

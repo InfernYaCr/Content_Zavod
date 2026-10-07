@@ -249,6 +249,10 @@ class Onboarding:
         if not _is_private(chat_id, user_id):
             await self._point_to_private(chat_id)
             return
+        if step_id == START and not await self._state.needed():
+            # A stale intro, after «Позже» or a launch: it must not re-arm the wizard.
+            await self._menu.show(chat_id, message_id, "owner")
+            return
         await self._leave(chat_id, user_id, message_id)
         if step_id == START:
             await self._state.begin()
