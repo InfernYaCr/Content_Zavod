@@ -2,7 +2,7 @@
 
 After «Утвердить всё» the Plan message stops being a review list and becomes a checklist of
 each Тема's cover and Статьи (⏳/✅/❌), redrawn from the DB on every generation notification.
-A Тема whose cells are all finished gets a button that opens its result card in the same
+A Тема whose cells are all finished (or whose Статьи all have a Версия already) gets a button that opens its result card in the same
 message; «◀ К Плану» goes back. Which screen is open lives in `plans.hub_item_id`, so a
 notification redraws the screen the team is actually looking at.
 
@@ -21,6 +21,7 @@ from ..domain import HubTopic, PlanHubView
 from ..telegraph import page_url
 from .callback_codec import SimpleAction, encode_callback_data
 from .texts import (
+    ARTICLE_CARD_NO_EVIDENCE,
     HUB_BUTTON_ARTICLE,
     HUB_BUTTON_BACK,
     HUB_BUTTON_COVER,
@@ -78,13 +79,13 @@ def render_hub_text(hub: PlanHubView) -> str:
     for topic in hub.topics:
         lines += ["", f"{topic.number}. {_shorten(topic.title, _TITLE_LIMIT)}"]
         lines.append(_topic_checklist_line(topic))
-    if "pending" in cells and any(topic.finished for topic in hub.topics):
+    if "pending" in cells and any(topic.openable for topic in hub.topics):
         lines += ["", HUB_PROGRESS_HINT]
     return _fit("\n".join(lines))
 
 
 def build_hub_keyboard(hub: PlanHubView) -> InlineKeyboardMarkup | None:
-    """One button per finished Тема (nothing ⏳ left in it), then «Повторить неудавшееся»
+    """One button per openable Тема (`HubTopic.openable`), then «Повторить неудавшееся»
     while anything is ❌. `None` while nothing is clickable yet, so the edit drops the
     review keyboard instead of leaving a stale one."""
     rows: list[list[InlineKeyboardButton]] = [
@@ -95,7 +96,7 @@ def build_hub_keyboard(hub: PlanHubView) -> InlineKeyboardMarkup | None:
             )
         ]
         for topic in hub.topics
-        if topic.finished
+        if topic.openable
     ]
     if "failed" in hub.cells:
         rows.append(
@@ -121,9 +122,13 @@ def render_hub_topic_text(hub: PlanHubView, topic: HubTopic) -> str:
             HUB_TOPIC_ARTICLE_LINE.format(
                 platform=platform_name(cell.platform),
                 mark=hub_mark(cell.state),
-                state=hub_article_state(cell.state),
+                state=hub_article_state(cell.state, has_content=cell.has_content),
             )
         )
+        # The same ⚠️ the Статья card carries (#94), so it isn't missed on the way to it.
+        warning = ARTICLE_CARD_NO_EVIDENCE.get(cell.research_status or "")
+        if warning and cell.has_content:
+            lines.append(warning)
     if any(cell.has_content for cell in topic.articles):
         lines += ["", HUB_TOPIC_HINT]
     return _fit("\n".join(lines))

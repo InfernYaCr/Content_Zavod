@@ -103,6 +103,8 @@ _COVER_JOB_FAILURE = "Не удалось сгенерировать облож�
 # then a table of contents into each Тема's result card.
 HUB_MARKS = {"pending": "⏳", "ready": "✅", "failed": "❌"}
 HUB_ARTICLE_STATES = {"pending": "пишется", "ready": "готова", "failed": "не получилась"}
+# A Статья whose redo (✏️ Доработать / 🔁 Повторить) failed still has its previous Версия.
+HUB_ARTICLE_FAILED_KEPT = "не получилась, открыта прежняя версия"
 HUB_COVER_STATES = {"pending": "рисуется", "ready": "готова", "failed": "не получилась"}
 HUB_COVER_SHORT = "🖼"
 HUB_PROGRESS = "⏳ Готовлю обложки и Статьи: готово {done} из {total}"
@@ -234,7 +236,9 @@ def hub_mark(state: str) -> str:
     return HUB_MARKS.get(state, state)
 
 
-def hub_article_state(state: str) -> str:
+def hub_article_state(state: str, *, has_content: bool = False) -> str:
+    if state == "failed" and has_content:
+        return HUB_ARTICLE_FAILED_KEPT
     return HUB_ARTICLE_STATES.get(state, state)
 
 

@@ -102,7 +102,8 @@ class HubArticleCell:
     window between approving and the fan-out creating the row (shown as ⏳). `has_content`
     says whether a Версия exists to open - an `error` after a successful earlier Версия still
     has one. `job_id` is the Job currently owning its generation, what «🔁 Повторить» retries.
-    `telegraph_path` is its Страница для чтения (#92), if published."""
+    `telegraph_path` is its Страница для чтения (#92), if published. `research_status` is the
+    latest Версия's (#94), so the result card can warn about a Статья written without sources."""
 
     platform: str
     state: HubCellState
@@ -110,6 +111,7 @@ class HubArticleCell:
     has_content: bool = False
     job_id: int | None = None
     telegraph_path: str | None = None
+    research_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +134,13 @@ class HubTopic:
     def finished(self) -> bool:
         """Nothing left ⏳ - every cell is ✅ or ❌, so the Тема's result card is worth opening."""
         return "pending" not in self.cells
+
+    @property
+    def openable(self) -> bool:
+        """Whether the checklist offers this Тема's button: once it is finished, and also while
+        a Статья that already has a Версия is being redone (✏️ Доработать, 🔁 Повторить) - the
+        Тема stays reachable instead of its button vanishing until the new Версия lands."""
+        return self.finished or all(cell.has_content for cell in self.articles)
 
     @property
     def has_failures(self) -> bool:

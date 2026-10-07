@@ -172,10 +172,15 @@ class Plan:
             """
             SELECT a.id, a.plan_item_id, a.platform, a.status, a.active_generation_job_id,
                    a.telegraph_path, j.status AS job_status,
-                   EXISTS (SELECT 1 FROM article_versions v WHERE v.article_id = a.id)
-                       AS has_content
+                   latest.id IS NOT NULL AS has_content,
+                   latest.research_status
             FROM articles a
             LEFT JOIN jobs j ON j.id = a.active_generation_job_id
+            LEFT JOIN LATERAL (
+                SELECT v.id, v.research_status FROM article_versions v
+                WHERE v.article_id = a.id
+                ORDER BY v.created_at DESC, v.id DESC LIMIT 1
+            ) latest ON true
             WHERE a.plan_id = $1
             """,
             plan_id,
@@ -189,6 +194,7 @@ class Plan:
                 has_content=row["has_content"],
                 job_id=row["active_generation_job_id"],
                 telegraph_path=row["telegraph_path"],
+                research_status=row["research_status"],
             )
         topics = []
         for number, row in enumerate(item_rows, start=1):

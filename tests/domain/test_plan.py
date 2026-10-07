@@ -665,13 +665,21 @@ async def test_get_hub_derives_ready_from_applied_results(
     await article.record_version(
         zen.article_id,
         GeneratedVersion(
-            content="body", prompt="p", model="m", tokens=1, cost=0.0, source_job_id=zen.job_id
+            content="body",
+            prompt="p",
+            model="m",
+            tokens=1,
+            cost=0.0,
+            source_job_id=zen.job_id,
+            research_status="no_evidence",
         ),
     )
 
     topic = (await plan.get_hub(plan_id)).topics[0]
     assert topic.cover == "ready" and topic.has_cover
     assert topic.articles[0].state == "ready" and topic.articles[0].has_content
+    assert topic.articles[0].research_status == "no_evidence"
+    assert topic.articles[1].research_status is None
     assert topic.articles[1].state == "pending" and not topic.articles[1].has_content
     assert not topic.finished
 

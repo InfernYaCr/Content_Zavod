@@ -138,6 +138,66 @@ def test_topic_card_lists_cells_and_offers_cover_articles_retry_and_back() -> No
     ]
 
 
+def test_topic_being_redone_keeps_its_button_and_shows_the_kept_version() -> None:
+    """✏️ Доработать / 🔁 Повторить on a Статья that already has a Версия: the Тема stays
+    reachable from the checklist, and a failed redo says the previous Версия is still there."""
+    topic = HubTopic(
+        id=PlanItemId("item-1"),
+        number=1,
+        title="Тема 1",
+        cover="ready",
+        has_cover=True,
+        articles=[
+            HubArticleCell(platform="zen", state="pending", article_id="zen-1", has_content=True),
+            HubArticleCell(platform="vc", state="failed", article_id="vc-1", has_content=True),
+        ],
+    )
+    hub = _hub(topic)
+
+    assert _buttons(build_hub_keyboard(hub))[0] == (
+        "📂 1. Тема 1",
+        SimpleAction("hub_topic", "item-1"),
+    )
+    text = render_hub_topic_text(hub, topic)
+    assert "📄 Дзен — ⏳ пишется" in text
+    assert "📄 VC.ru — ❌ не получилась, открыта прежняя версия" in text
+    assert ("📄 VC.ru", SimpleAction("hub_article", "vc-1")) in _buttons(
+        build_hub_topic_keyboard(hub, topic)
+    )
+
+
+def test_topic_card_warns_about_a_version_written_without_sources() -> None:
+    """#94's ⚠️ is on the result card too, not only on the Статья card behind «📄»."""
+    topic = HubTopic(
+        id=PlanItemId("item-1"),
+        number=1,
+        title="Тема 1",
+        cover="ready",
+        has_cover=True,
+        articles=[
+            HubArticleCell(
+                platform="zen",
+                state="ready",
+                article_id="zen-1",
+                has_content=True,
+                research_status="no_evidence",
+            ),
+            HubArticleCell(
+                platform="vc",
+                state="ready",
+                article_id="vc-1",
+                has_content=True,
+                research_status="ok",
+            ),
+        ],
+    )
+
+    text = render_hub_topic_text(_hub(topic), topic)
+
+    assert "📄 Дзен — ✅ готова\n⚠️ Источники не найдены" in text
+    assert text.count("⚠️") == 1
+
+
 def test_screen_follows_the_open_topic_and_falls_back_to_the_checklist() -> None:
     open_text, _ = render_hub_screen(_hub(_topic(1), open_item_id="item-1"))
     gone_text, _ = render_hub_screen(_hub(_topic(1), open_item_id="item-9"))
