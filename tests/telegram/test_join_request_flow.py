@@ -85,10 +85,12 @@ class FakeGateway:
     def __init__(self) -> None:
         self._next_message_id = 1
         self.sent_messages: list[tuple[int, str]] = []
+        self.markups: list[object] = []
         self.edited: list[tuple[int, int, str]] = []
 
     async def send_message(self, chat_id: int, text: str, reply_markup=None) -> int:
         self.sent_messages.append((chat_id, text))
+        self.markups.append(reply_markup)
         message_id = self._next_message_id
         self._next_message_id += 1
         return message_id
@@ -134,7 +136,8 @@ async def test_new_request_is_allowed_once_the_previous_one_is_resolved() -> Non
 
 
 @pytest.mark.asyncio
-async def test_approve_grants_content_manager_and_notifies_requester() -> None:
+async def test_approve_grants_content_manager_and_welcomes_them() -> None:
+    """#96: what the bot does, where the Plan lives, what to press - and the menu button."""
     requests, membership, gateway = FakeRequests(), FakeMembership([10]), FakeGateway()
     flow = JoinRequestFlow(requests, membership, gateway)
     await flow.request_access(telegram_id=100, username="alice")
@@ -142,10 +145,12 @@ async def test_approve_grants_content_manager_and_notifies_requester() -> None:
     await flow.handle_approve(resolver_id=10, resolver_name="Owner10", join_request_id=1)
 
     assert membership.added == [(100, "content_manager")]
-    assert (
-        100,
-        "Доступ выдан. Нажмите /start ещё раз, чтобы увидеть доступные команды.",
-    ) in gateway.sent_messages
+    chat_id, text = gateway.sent_messages[-1]
+    assert chat_id == 100
+    assert text.startswith("🎉 Доступ выдан — вы Контент-менеджер.")
+    assert "в чате команды" in text and "/menu" in text
+    markup = gateway.markups[-1]
+    assert markup.inline_keyboard[0][0].callback_data == "mn:"
 
 
 @pytest.mark.asyncio

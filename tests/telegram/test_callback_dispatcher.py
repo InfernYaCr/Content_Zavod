@@ -15,7 +15,7 @@ from content_zavod.access.membership import MemberView, Role
 from content_zavod.domain import HubArticleCell, HubTopic, PlanHubView, PlanItemCoverView
 from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.scheduling import ScheduleConfig
-from content_zavod.settings import SettingsService
+from content_zavod.settings import OnboardingState, SettingsService
 from content_zavod.telegram import (
     ArticleId,
     ArticleSummary,
@@ -43,6 +43,7 @@ from content_zavod.telegram import (
 from content_zavod.telegram.callback_dispatcher import CallbackDispatcher, CallbackInput
 from content_zavod.telegram.input_prompt import InputPrompt
 from content_zavod.telegram.main_menu import MainMenu
+from content_zavod.telegram.onboarding import ONBOARDING_INPUT_KIND, Onboarding
 from content_zavod.telegram.pending_inputs import PendingInput
 from content_zavod.telegram.settings_screen import SETTING_INPUT_KIND, SettingsScreen
 
@@ -382,6 +383,11 @@ class FakeOwnerSettingsStore:
     async def set(self, key: str, value: str) -> None:
         self.values[key] = value
 
+    async def set_if_changed(self, key: str, value: str) -> bool:
+        changed = self.values.get(key) != value
+        self.values[key] = value
+        return changed
+
 
 class FakeSchedule:
     def __init__(self) -> None:
@@ -463,6 +469,14 @@ class Fixtures:
             team_chat_id=-100500,
             tz=ZoneInfo("Europe/Moscow"),
         )
+        self.onboarding = Onboarding(
+            OnboardingState(self.owner_settings),
+            SettingsService(self.owner_settings),
+            self.prompts,
+            self.bot,
+            self.main_menu,
+            self.schedule,
+        )
         self.dispatcher = CallbackDispatcher(
             self.membership,
             self.plan,
@@ -476,6 +490,7 @@ class Fixtures:
             self.queue,
             self.main_menu,
             self.prompts,
+            self.onboarding,
         )
 
 
@@ -1091,6 +1106,11 @@ _OWNER_ONLY_MENU_ACTIONS = [
     SimpleAction("schedule", "m"),
     SimpleAction("schedule_day", "fri:m"),
     SimpleAction("schedule_time", "m"),
+    SimpleAction("onboarding_step", "start"),
+    SimpleAction("onboarding_step", "niche"),
+    SimpleAction("onboarding_pick", "persona:0"),
+    SimpleAction("onboarding_later", ""),
+    SimpleAction("onboarding_launch", ""),
 ]
 
 
@@ -1249,3 +1269,56 @@ async def test_stale_cancel_in_a_private_chat_removes_the_prompt(f: Fixtures) ->
     await f.dispatcher.dispatch(callback_input, answer)
 
     assert f.bot.deleted_messages == [(CM_ID, 9)]
+
+
+# --- onboarding (#96) ---
+
+
+async def test_onboarding_start_asks_the_first_step_for_the_owner(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("onboarding_step", "start"), user_id=OWNER_ID)
+
+    assert f.owner_settings.values["onboarding"] == "started"
+    assert f.pending_inputs.rows[(1, OWNER_ID)].kind == ONBOARDING_INPUT_KIND
+    assert f.bot.deleted_messages == [(1, 2)]  # the intro the button was on
+
+
+async def test_onboarding_pick_saves_the_preset(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("onboarding_pick", "persona:0"), user_id=OWNER_ID)
+
+    assert "voice" in f.owner_settings.values
+
+
+async def test_onboarding_launch_starts_the_first_plan_once(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("onboarding_launch", ""), user_id=OWNER_ID)
+    await dispatch(f, SimpleAction("onboarding_launch", ""), user_id=OWNER_ID)
+
+    assert len(f.plan.requested_weeks) == 1
+    assert f.owner_settings.values["onboarding"] == "done"
+
+
+async def test_onboarding_later_ends_it_and_shows_the_menu(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("onboarding_later", ""), user_id=OWNER_ID)
+
+    assert f.owner_settings.values["onboarding"] == "later"
+    ((_, message_id, text, _),) = f.bot.edited_messages
+    assert message_id == 2 and text.startswith("🏠 Главное меню")
+
+
+async def test_cancelling_a_wizard_question_says_how_to_come_back(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("onboarding_step", "niche"), user_id=OWNER_ID)
+    question = f.pending_inputs.rows[(1, OWNER_ID)].prompt_message_id
+    answer = FakeAnswerer()
+
+    await f.dispatcher.dispatch(
+        CallbackInput(
+            chat_id=1,
+            message_id=question,
+            user_id=OWNER_ID,
+            username=None,
+            payload=SimpleAction("cancel_input", ONBOARDING_INPUT_KIND),
+        ),
+        answer,
+    )
+
+    assert (1, OWNER_ID) not in f.pending_inputs.rows
+    assert "/start" in f.bot.sent_messages[-1][1]

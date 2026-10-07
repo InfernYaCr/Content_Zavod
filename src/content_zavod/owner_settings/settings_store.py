@@ -31,3 +31,21 @@ class OwnerSettingsStore:
             key,
             value,
         )
+
+    async def set_if_changed(self, key: str, value: str) -> bool:
+        """`set`, reporting whether it changed anything - atomically, so of two concurrent
+        calls with the same value exactly one gets `True` (a double-tapped «🚀 Запустить»
+        must start one first Plan, not two)."""
+        row = await self._pool.fetchrow(
+            """
+            INSERT INTO owner_settings (key, value)
+            VALUES ($1, $2)
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value, updated_at = now()
+            WHERE owner_settings.value IS DISTINCT FROM EXCLUDED.value
+            RETURNING key
+            """,
+            key,
+            value,
+        )
+        return row is not None

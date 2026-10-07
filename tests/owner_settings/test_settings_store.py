@@ -24,3 +24,13 @@ async def test_keys_are_independent(owner_settings: OwnerSettingsStore) -> None:
     await owner_settings.set("niche", "b2b saas")
 
     assert await owner_settings.get("voice") is None
+
+
+async def test_set_if_changed_reports_whether_the_value_changed(
+    owner_settings: OwnerSettingsStore,
+) -> None:
+    assert await owner_settings.set_if_changed("onboarding", "done") is True
+    assert await owner_settings.set_if_changed("onboarding", "done") is False
+    assert await owner_settings.set_if_changed("onboarding", "started") is True
+
+    assert await owner_settings.get("onboarding") == "started"

@@ -64,6 +64,16 @@ DEFAULT_DIRECTIONS: tuple[str, ...] = (
     "маркетинговая стратегия",
 )
 
+# Every key a Настройка is stored under: any of them present means the Владелец has already
+# configured something, so the first-run wizard isn't forced on them (see `onboarding.py`).
+SETTING_STORE_KEYS: tuple[str, ...] = (
+    NICHE_KEY,
+    AUDIENCE_KEY,
+    DIRECTIONS_KEY,
+    PERSONA_KEY,
+    PROJECT_KEY,
+)
+
 
 def parse_directions(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]

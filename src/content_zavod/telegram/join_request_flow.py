@@ -15,6 +15,8 @@ from typing import Protocol
 
 from ..access import JoinRequestBroadcast, JoinRequestView, Role
 from .gateway import TelegramGateway, build_join_request_keyboard
+from .main_menu import build_open_menu_keyboard
+from .texts import CONTENT_MANAGER_WELCOME
 
 
 class JoinRequestOperations(Protocol):
@@ -86,9 +88,12 @@ class JoinRequestFlow:
             return None  # another Owner won the atomic pending -> resolved transition
         if view.status == "approved":
             await self._membership.add_member(view.telegram_id, "content_manager")
+            # The newcomer's first look at the bot (#96): what it does, where the Plan
+            # lives and what to press - with the menu one tap away.
             await self._gateway.send_message(
                 view.telegram_id,
-                "Доступ выдан. Нажмите /start ещё раз, чтобы увидеть доступные команды.",
+                CONTENT_MANAGER_WELCOME,
+                reply_markup=build_open_menu_keyboard(),
             )
 
         verdict = "одобрена" if view.status == "approved" else "отклонена"

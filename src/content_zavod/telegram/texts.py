@@ -337,3 +337,128 @@ SCHEDULE_TIME_INVALID = "Не понял время «{text}». Нужно ЧЧ:
 def schedule_text(day: str, hour: int, minute: int) -> str:
     """«понедельник, 09:00» - the one way a schedule is shown on every screen."""
     return f"{weekday_name(day)}, {hour:02d}:{minute:02d}"
+
+
+# --- Описание бота и онбординг (#96) ---
+# Per-step questions, examples and validation come from `settings_screen.SETTING_FIELDS` - the
+# wizard asks exactly what the Экран Настроек asks; these are only the wizard's own frame.
+
+# setMyShortDescription (≤ 120) - the profile and the share card; setMyDescription (≤ 512) - the
+# «What can this bot do?» card a new user sees before pressing «Начать».
+BOT_SHORT_DESCRIPTION = (
+    "Нахожу растущие Темы в Wordstat и пишу по ним Статьи для Дзена и VC.ru — для вашей команды."
+)
+BOT_DESCRIPTION = (
+    "Контент-план и Статьи для вашей команды.\n\n"
+    "📈 Каждую неделю нахожу в Wordstat растущие запросы по вашей Нише и составляю по ним "
+    "План — до трёх Тем.\n"
+    "✅ Команда согласует План прямо в чате.\n"
+    "✍️ По каждой Теме пишу Статьи для Дзена и VC.ru — с обложкой и проверенными источниками.\n"
+    "📄 Готовое читайте прямо в Telegram или скачивайте .docx/.md.\n\n"
+    "Нажмите «Начать», чтобы настроить бота или запросить доступ."
+)
+
+ONBOARDING_INTRO = (
+    "👋 Здравствуйте! Я помогаю команде вести блог на Дзене и VC.ru.\n\n"
+    "Каждую неделю я нахожу в Wordstat растущие запросы по вашей Нише и составляю по ним "
+    "План — до трёх Тем. Когда команда его согласует, пишу по каждой Теме Статьи — "
+    "с обложками и источниками.\n\n"
+    "Настроим меня под вас: {count} — {steps}. Сразу после этого я составлю первый План.\n\n"
+    "Выйти в меню можно в любой момент: /menu"
+)
+ONBOARDING_START_BUTTON = "▶ Начать настройку"
+ONBOARDING_LATER_BUTTON = "Позже — открыть меню"
+ONBOARDING_STEP_HEADER = "Шаг {number} из {total} · {label}\n↳ {purpose}"
+ONBOARDING_SKIP_BUTTON = "Пропустить ⏭"
+# First-run wording of each step's question (#96): the Экран Настроек asks to *change* a value
+# («Напишите новую Нишу»), the wizard asks for it for the first time. The step header already
+# says what the value drives, so these don't repeat it; the examples match the Экран Настроек.
+ONBOARDING_NICHE_QUESTION = (
+    "✏️ Какая у вас Ниша — о чём ваш блог? Напишите своими словами.\n\n"
+    "Например: фитнес и здоровое питание"
+)
+ONBOARDING_AUDIENCE_QUESTION = (
+    "✏️ Кто ваш читатель? Опишите его своими словами: кто он, что его беспокоит, чего хочет "
+    "добиться и насколько разбирается в теме.\n\n"
+    "Например: владельцы небольших кофеен и пекарен, 30–45 лет. Маркетингом занимаются сами, "
+    "по вечерам. Боятся слить деньги на рекламу, не понимают, что работает. Хотят стабильный "
+    "поток гостей без агентства. В терминах не разбираются — нужны простые шаги и примеры."
+)
+ONBOARDING_PERSONA_CHOOSE = (
+    "Выберите автора кнопкой ниже или опишите своего — «✏️ Своя Персона».\n\n{presets}"
+)
+ONBOARDING_DIRECTIONS_QUESTION = (
+    "✏️ Что ваши читатели ищут в Яндексе? Напишите 3–8 запросов через запятую — я буду "
+    "смотреть в Wordstat, какие из них растут, и предлагать по ним Темы.\n\n"
+    "Например: фитнес дома, правильное питание, похудение после родов"
+)
+ONBOARDING_PROJECT_QUESTION = (
+    "✏️ Есть канал или сайт, куда приводить читателей? Пришлите ссылку и через пробел — "
+    "пару слов о нём. Ссылка будет в конце каждой Статьи.\n\n"
+    "Например: @my_channel Канал о маркетинге для малого бизнеса\n\n"
+    "Нет канала — просто нажмите «Пропустить ⏭»."
+)
+# Directions default to marketing queries: if the Ниша isn't marketing, say so before
+# the Владелец skips the step and gets a marketing Plan.
+ONBOARDING_DIRECTIONS_MISMATCH = (
+    "⚠️ Сейчас здесь стандартные запросы про маркетинг (CRM, SEO, воронка продаж…). "
+    "Для Ниши «{niche}» напишите свои — то, что ищут ваши читатели. Если пропустить, "
+    "Темы будут про маркетинг."
+)
+# The same mismatch on «Проверьте вводные», right before «🚀 Запустить».
+ONBOARDING_REVIEW_DIRECTIONS_MISMATCH = (
+    "⚠️ Направления — стандартные, про маркетинг, а Ниша — «{niche}». Первый План будет "
+    "про маркетинг: лучше нажать «✏️ Изменить Направления» и написать свои."
+)
+ONBOARDING_REVIEW_TITLE = "🔎 Проверьте вводные"
+ONBOARDING_REVIEW_HINT = (
+    "Всё верно? Нажмите «🚀 Запустить» — я сразу составлю первый План. "
+    "Что-то не так — поправьте кнопкой ниже."
+)
+ONBOARDING_LAUNCH_BUTTON = "🚀 Запустить"
+# Where the Plan lands: the team chat (`TELEGRAM_NOTIFY_CHAT_ID`), or this chat if that is it.
+ONBOARDING_PLAN_IN_TEAM = "в чат команды"
+ONBOARDING_PLAN_HERE = "сюда"
+# The first Plan is a Job: a Wordstat call per Направление, one after another, then an LLM call
+# per Тема - a few minutes, longer when Wordstat is slow (it can take a minute per request).
+ONBOARDING_LAUNCHED = (
+    "🚀 Запускаю! Смотрю в Wordstat, какие запросы по вашим Направлениям сейчас растут, "
+    "и подбираю по ним Темы. Обычно это 2–5 минут, иногда дольше — Wordstat бывает "
+    "медленным.\n\n"
+    "План придёт {where} одним сообщением: в нём Темы можно заменить, убрать или утвердить, "
+    "и по утверждённым я напишу Статьи. Дальше новый План будет приходить сам — {schedule}.\n\n"
+    "Всё остальное — в меню: /menu"
+)
+ONBOARDING_ALREADY_LAUNCHED = (
+    "✅ Вводные сохранены. Первый План уже составляется — он придёт {where}.\n\n"
+    "Всё остальное — в меню: /menu"
+)
+ONBOARDING_CANCELLED = (
+    "Хорошо, настройку можно продолжить в любой момент: /start\nВсё остальное — в меню: /menu"
+)
+ONBOARDING_IN_PRIVATE = (
+    "⚙️ Бот ещё не настроен. Настройка займёт пару минут, и её лучше пройти в личном чате "
+    "со мной: откройте его и нажмите /start."
+)
+ONBOARDING_OPEN_PRIVATE_BUTTON = "💬 Открыть личный чат"
+
+# Sent to a Контент-менеджер the moment their заявка is approved.
+CONTENT_MANAGER_WELCOME = (
+    "🎉 Доступ выдан — вы Контент-менеджер.\n\n"
+    "Что я делаю: раз в неделю составляю План — до трёх Тем, а после согласования пишу по ним "
+    "Статьи для Дзена и VC.ru.\n\n"
+    "Где План: в чате команды, одним сообщением. Там же его согласуют: 🔄 — заменить Тему, "
+    "🗑 — убрать, «✅ Утвердить всё» — запустить Статьи. После утверждения это же сообщение "
+    "показывает, что готово, и открывает обложки и Статьи. Если вас ещё нет в чате команды — "
+    "попросите Владельца добавить.\n\n"
+    "Что нажимать: /menu — План недели, Предложить Тему, История."
+)
+
+
+def steps_count_text(count: int) -> str:
+    """«5 коротких шагов», «3 коротких шага», «1 короткий шаг»."""
+    if count % 10 == 1 and count % 100 != 11:
+        return f"{count} короткий шаг"
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return f"{count} коротких шага"
+    return f"{count} коротких шагов"

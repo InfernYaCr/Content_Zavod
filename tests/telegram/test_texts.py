@@ -43,3 +43,42 @@ def test_job_failure_text_names_the_tema_and_platform_when_known() -> None:
     )
     assert job_failure_text("generate_article") == "Не удалось написать Статью."
     assert job_failure_text("generate_plan", title="Тренды") == "Не удалось составить План."
+
+
+def test_bot_descriptions_fit_telegrams_limits() -> None:
+    from content_zavod.telegram.texts import BOT_DESCRIPTION, BOT_SHORT_DESCRIPTION
+
+    assert 0 < len(BOT_SHORT_DESCRIPTION) <= 120
+    assert 0 < len(BOT_DESCRIPTION) <= 512
+
+
+def test_steps_count_text_agrees_with_the_number() -> None:
+    from content_zavod.telegram.texts import steps_count_text
+
+    assert steps_count_text(1) == "1 короткий шаг"
+    assert steps_count_text(4) == "4 коротких шага"
+    assert steps_count_text(5) == "5 коротких шагов"
+    assert steps_count_text(11) == "11 коротких шагов"
+    assert steps_count_text(22) == "22 коротких шага"
+
+
+def test_plan_size_promised_to_newcomers_matches_the_pipeline() -> None:
+    """A Plan has at most `TOPICS_PER_PLAN` Темы (and may have fewer) - never «2–4»."""
+    from content_zavod.pipelines.plan_pipeline import TOPICS_PER_PLAN
+    from content_zavod.telegram.texts import (
+        BOT_DESCRIPTION,
+        CONTENT_MANAGER_WELCOME,
+        ONBOARDING_INTRO,
+    )
+
+    assert TOPICS_PER_PLAN == 3
+    for text in (BOT_DESCRIPTION, CONTENT_MANAGER_WELCOME, ONBOARDING_INTRO):
+        assert "до трёх Тем" in text
+        assert "2–4" not in text
+
+
+def test_content_manager_welcome_says_how_to_reach_the_team_chat() -> None:
+    from content_zavod.telegram.texts import CONTENT_MANAGER_WELCOME
+
+    assert "в чате команды" in CONTENT_MANAGER_WELCOME
+    assert "попросите Владельца добавить" in CONTENT_MANAGER_WELCOME

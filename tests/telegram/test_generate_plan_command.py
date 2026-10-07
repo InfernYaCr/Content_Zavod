@@ -113,6 +113,26 @@ async def _run(
 
 
 @pytest.mark.asyncio
+async def test_unannounced_run_starts_the_generation_without_a_notice() -> None:
+    """The onboarding's «🚀 Запускаю!» card already says what happens (#96)."""
+    plan, gateway = FakePlan(active=None), FakeGateway()
+
+    await handle_generate_plan_command(
+        plan,
+        gateway,
+        chat_id=5,
+        queue=FakeQueue(),
+        team_chat_id=TEAM_CHAT_ID,
+        tz=MOSCOW,
+        now=lambda: FIXED_NOW,
+        announce=False,
+    )
+
+    assert plan.requested == ["2026-W32"]
+    assert gateway.sent_notices == [] and gateway.sent_messages == []
+
+
+@pytest.mark.asyncio
 async def test_no_active_plan_requests_new_directly() -> None:
     plan, gateway, queue = FakePlan(active=None), FakeGateway(), FakeQueue()
 

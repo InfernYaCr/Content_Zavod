@@ -91,3 +91,20 @@ async def test_is_waiting_sees_a_live_wait_of_any_kind() -> None:
     await prompts.ask(PRIVATE, USER, "some_other_flow", "t", "Вопрос?", placeholder="p")
 
     assert await prompts.is_waiting(PRIVATE, USER) is True
+
+
+async def test_extra_button_rows_go_above_cancel_and_survive_a_rejected_answer() -> None:
+    """The onboarding wizard (#96) asks through the same prompt, with «◀ Назад» and
+    «Пропустить» on the question."""
+    from aiogram.types import InlineKeyboardButton
+
+    bot, _pending, prompts = make()
+    extra = [[InlineKeyboardButton(text="◀ Назад", callback_data="ob:intro")]]
+    await prompts.ask(PRIVATE, USER, "k", "t", "Вопрос?", placeholder="p", buttons=extra)
+    taken = await prompts.take(PRIVATE, USER, "k", None)
+
+    await prompts.ask_again(PRIVATE, USER, taken, "Плохо.", "Вопрос?", buttons=extra)
+
+    ((_, _, asked, _),) = bot.sent
+    ((_, _, _, again),) = bot.edited
+    assert button_data(asked) == button_data(again) == [["ob:intro"], ["ci:k"]]
