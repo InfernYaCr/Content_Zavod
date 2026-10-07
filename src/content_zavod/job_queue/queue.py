@@ -19,7 +19,7 @@ from typing import Any
 import asyncpg
 
 from .errors import JobNotFound, JobQueueError
-from .models import JobId, JobResult, JobStatus
+from .models import JobId, JobResult, JobSnapshot, JobStatus
 
 
 def _exponential_delay(base_delay: float, attempts: int) -> float:
@@ -82,6 +82,21 @@ class JobQueue:
         if row is None:
             raise JobNotFound(job_id)
         return row["status"]
+
+    async def get_job(self, job_id: JobId) -> JobSnapshot | None:
+        """The Job as stored now, or `None` if there is no such Job."""
+        row = await self._pool.fetchrow(
+            "SELECT id, job_type, status, payload, output FROM jobs WHERE id = $1", job_id
+        )
+        if row is None:
+            return None
+        return JobSnapshot(
+            job_id=JobId(row["id"]),
+            job_type=row["job_type"],
+            status=row["status"],
+            payload=json.loads(row["payload"]),
+            output=json.loads(row["output"]) if row["output"] is not None else None,
+        )
 
     async def claim_next(self) -> ClaimedJob | None:
         lease_token = uuid.uuid4().hex

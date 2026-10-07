@@ -32,6 +32,7 @@ from .service import (
     SETTING_STORE_KEYS,
     SettingsReader,
     SettingsService,
+    directions_mismatch,
     parse_directions,
 )
 from .values import OwnerSettings
@@ -63,6 +64,7 @@ __all__ = [
     "audience_detail_text",
     "audience_screen_text",
     "custom_persona_label",
+    "directions_mismatch",
     "format_custom_persona",
     "normalize_project_url",
     "parse_custom_persona",

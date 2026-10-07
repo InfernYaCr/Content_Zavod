@@ -20,6 +20,12 @@ The Расписание screen has day-of-week buttons (save at once, keeping t
 immediately via its stable `JOB_ID`, as `/set_schedule` always did (and still does, as a
 hidden alias). Its «◀ Назад» returns to wherever it was opened from - Главное меню or Настройки -
 which rides along in its callback ids as `m`/`s`.
+
+A field with `suggest` (Направления, #113) also gets «✨ Предложить по Нише» under its question:
+`DirectionSuggestions` picks them from the Ниша and comes back here (`suggestion_*`), the
+screen being its origin `s:<screen message id>`. A changed Ниша while the Направления are still
+the default marketing ones starts that suggestion by itself, so the Владелец doesn't keep
+marketing Направления unnoticed - still saved only on «✅ Взять».
 """
 
 from __future__ import annotations
@@ -44,6 +50,7 @@ from ..settings import (
     SettingsService,
     audience_detail_text,
     audience_screen_text,
+    directions_mismatch,
     persona_detail_text,
     persona_display_title,
     persona_setting_value,
@@ -55,6 +62,7 @@ from .gateway import BotClient
 from .input_prompt import InputPrompt
 from .texts import (
     BACK_BUTTON,
+    DIRECTIONS_SUGGEST_BUTTON,
     SCHEDULE_CHANGE_BUTTON,
     SCHEDULE_DAY_SAVED,
     SCHEDULE_HOW,
@@ -116,6 +124,8 @@ class SettingField:
     """(button title, value passed to `save`): ready-made variants. Non-empty makes
     «Изменить» open a chooser with these plus `custom_button` instead of asking at once."""
     custom_button: str = "✏️ Свой вариант"
+    suggest: bool = False
+    """Offer «✨ Предложить по Нише» under the question (Направления, #113)."""
 
 
 async def _save_niche(settings: SettingsService, text: str) -> str:
@@ -224,6 +234,7 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
         ),
         placeholder="Через запятую: запрос 1, запрос 2",
         invalid="Нужно хотя бы одно Направление — пишите через запятую.",
+        suggest=True,
     ),
     SettingField(
         key="project",
@@ -265,6 +276,24 @@ class ScheduleStore(Protocol):
     async def set(self, day_of_week: str, hour: int, minute: int) -> None: ...
 
 
+class DirectionsSuggester(Protocol):
+    """What the screen needs from `DirectionSuggestions` (#113)."""
+
+    async def request(self, chat_id: int, origin: str, *, niche_changed: bool = False) -> None: ...
+
+
+def suggest_rows(setting: SettingField, origin: str) -> list[list[InlineKeyboardButton]]:
+    """«✨ Предложить по Нише» as a button row, for a field with `suggest`; `origin` says
+    where the suggestion comes back to (see `direction_suggestions`)."""
+    if not setting.suggest:
+        return []
+    return [[_button(DIRECTIONS_SUGGEST_BUTTON, "suggest_directions", origin)]]
+
+
+def _settings_origin(screen_message_id: int | None) -> str:
+    return f"s:{screen_message_id or 0}"
+
+
 class Rescheduler(Protocol):
     def reschedule_job(self, job_id: str, *, trigger: CronTrigger) -> None: ...
 
@@ -274,6 +303,10 @@ def _button(text: str, action: Action, id_: str = "") -> InlineKeyboardButton:
         text=text,
         callback_data=encode_callback_data(SimpleAction(action, id_)),
     )
+
+
+def _place_id(place: str) -> int | None:
+    return int(place) or None if place.isdigit() else None
 
 
 def _with_notice(text: str, notice: str | None) -> str:
@@ -368,8 +401,10 @@ class SettingsScreen:
         prompts: InputPrompt,
         *,
         tz: ZoneInfo,
+        directions: DirectionsSuggester | None = None,
     ) -> None:
         self._settings = settings
+        self._directions = directions
         self._schedule = schedule
         self._scheduler = scheduler
         self._bot = bot
@@ -378,9 +413,9 @@ class SettingsScreen:
 
     # --- Настройки ---
 
-    async def send(self, chat_id: int, *, notice: str | None = None) -> None:
+    async def send(self, chat_id: int, *, notice: str | None = None) -> int:
         text = await self._settings_text(notice)
-        await self._bot.send_message(chat_id, text, reply_markup=build_settings_keyboard())
+        return await self._bot.send_message(chat_id, text, reply_markup=build_settings_keyboard())
 
     async def show(self, chat_id: int, message_id: int, *, notice: str | None = None) -> None:
         await self._redraw(
@@ -417,6 +452,7 @@ class SettingsScreen:
             f"{key}:{screen_message_id or 0}",
             await self._question(setting),
             placeholder=setting.placeholder,
+            buttons=suggest_rows(setting, _settings_origin(screen_message_id)),
         )
 
     async def pick(self, chat_id: int, message_id: int, key: str, index: int) -> None:
@@ -436,13 +472,16 @@ class SettingsScreen:
         if not args.strip():
             await self.ask(chat_id, user_id, key, screen_message_id=None)
             return
+        niche_before = (await self._settings.read()).niche
         try:
             notice = await setting.save(self._settings, args)
         except InvalidSettingValue as exc:
             problem = setting.invalid_by_field.get(exc.field, setting.invalid)
             await self._bot.send_message(chat_id, f"⚠️ {problem}\n\n{setting.question}")
             return
-        await self.send(chat_id, notice=notice)
+        screen_message_id = await self.send(chat_id, notice=notice)
+        if key == "niche":
+            await self._offer_directions(chat_id, screen_message_id, niche_before)
 
     # --- Расписание ---
 
@@ -559,12 +598,18 @@ class SettingsScreen:
         if setting is None:
             await self._prompts.close(chat_id, pending)
             return True
+        niche_before = (await self._settings.read()).niche
         try:
             notice = await setting.save(self._settings, text)
         except InvalidSettingValue as exc:
             problem = setting.invalid_by_field.get(exc.field, setting.invalid)
             await self._prompts.ask_again(
-                chat_id, user_id, pending, problem, await self._question(setting)
+                chat_id,
+                user_id,
+                pending,
+                problem,
+                await self._question(setting),
+                buttons=suggest_rows(setting, _settings_origin(screen_message_id)),
             )
             return True
         await self._prompts.close(chat_id, pending)
@@ -574,7 +619,48 @@ class SettingsScreen:
             await self._settings_text(notice),
             build_settings_keyboard(),
         )
+        if key == "niche":
+            await self._offer_directions(chat_id, screen_message_id, niche_before)
         return True
+
+    # --- Направления suggested from the Ниша (#113): this screen as their origin ---
+
+    async def suggestion_opened(
+        self, chat_id: int, user_id: int, message_id: int, place: str
+    ) -> None:
+        """«✨» was pressed on the Направления question: drop its wait - the question message
+        itself turns into «⏳ Подбираю…»."""
+        await self._prompts.release(chat_id, user_id, SETTING_INPUT_KIND, message_id=message_id)
+
+    async def suggestion_taken(self, chat_id: int, user_id: int, place: str, notice: str) -> None:
+        await self._redraw(
+            chat_id, _place_id(place), await self._settings_text(notice), build_settings_keyboard()
+        )
+
+    async def suggestion_declined(
+        self, chat_id: int, user_id: int, place: str, *, write_own: bool
+    ) -> None:
+        """«✏️ Написать свои» asks the Направления question again; «Отмена» leaves the screen
+        as it is."""
+        if write_own:
+            await self.ask(chat_id, user_id, "directions", screen_message_id=_place_id(place))
+
+    async def _offer_directions(
+        self, chat_id: int, screen_message_id: int | None, niche_before: str
+    ) -> None:
+        """A new Ниша with the default marketing Направления: start the suggestion at once.
+        Only on an actual change - the same Ниша sent again (a repeated /set_niche) doesn't
+        start another round."""
+        current = await self._settings.read()
+        if (
+            self._directions is None
+            or current.niche == niche_before
+            or not directions_mismatch(current)
+        ):
+            return
+        await self._directions.request(
+            chat_id, _settings_origin(screen_message_id), niche_changed=True
+        )
 
     # --- helpers ---
 

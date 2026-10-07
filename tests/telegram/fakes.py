@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import Any
+
+from content_zavod.job_queue import JobResult, JobSnapshot
 from content_zavod.telegram.gateway import SentPhoto
 from content_zavod.telegram.pending_inputs import PendingInput
 
@@ -41,6 +44,32 @@ class FakePendingInputs:
         ):
             return None
         return self.rows.pop((chat_id, user_id))
+
+
+class FakeJobs:
+    """`JobQueue.enqueue`/`get_job` (#113): idempotent by key, ids from 1; `finish` stores an
+    output the way the worker would and returns the notification's `JobResult`."""
+
+    def __init__(self) -> None:
+        self.jobs: dict[int, JobSnapshot] = {}
+        self.keys: dict[str, int] = {}
+
+    async def enqueue(self, job_type: str, payload: dict[str, Any], idempotency_key: str) -> int:
+        if idempotency_key in self.keys:
+            return self.keys[idempotency_key]
+        job_id = len(self.jobs) + 1
+        self.jobs[job_id] = JobSnapshot(job_id, job_type, "queued", payload)
+        self.keys[idempotency_key] = job_id
+        return job_id
+
+    async def get_job(self, job_id: int) -> JobSnapshot | None:
+        return self.jobs.get(job_id)
+
+    def finish(self, job_id: int, output: dict[str, Any] | None) -> JobResult:
+        job = self.jobs[job_id]
+        status = "done" if output is not None else "failed"
+        self.jobs[job_id] = JobSnapshot(job_id, job.job_type, status, job.payload, output)
+        return JobResult(job_id=job_id, job_type=job.job_type, status=status, output=output)
 
 
 class RecordingBot:

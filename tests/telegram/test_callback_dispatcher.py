@@ -42,6 +42,7 @@ from content_zavod.telegram import (
 )
 from content_zavod.telegram.asset_photos import AssetPhotos
 from content_zavod.telegram.callback_dispatcher import CallbackDispatcher, CallbackInput
+from content_zavod.telegram.direction_suggestions import DirectionSuggestions
 from content_zavod.telegram.gateway import SentPhoto
 from content_zavod.telegram.guide import Guide, TeamNote
 from content_zavod.telegram.input_prompt import InputPrompt
@@ -50,7 +51,7 @@ from content_zavod.telegram.onboarding import ONBOARDING_INPUT_KIND, Onboarding
 from content_zavod.telegram.pending_inputs import PendingInput
 from content_zavod.telegram.settings_screen import SETTING_INPUT_KIND, SettingsScreen
 
-from .fakes import FakePendingInputs
+from .fakes import FakeJobs, FakePendingInputs
 
 OWNER_ID = 1
 CM_ID = 2
@@ -469,6 +470,10 @@ class Fixtures:
         self.scheduler = FakeScheduler()
         self.queue = FakeQueue()
         self.prompts = InputPrompt(self.bot, self.pending_inputs)
+        self.jobs = FakeJobs()
+        self.directions = DirectionSuggestions(
+            self.jobs, SettingsService(self.owner_settings), self.bot
+        )
         self.settings_screen = SettingsScreen(
             SettingsService(self.owner_settings),
             self.schedule,
@@ -520,7 +525,10 @@ class Fixtures:
             self.onboarding,
             guide=self.guide,
             team_note=self.team_note,
+            directions=self.directions,
         )
+        self.directions.attach("s", self.settings_screen)
+        self.directions.attach("o", self.onboarding)
 
 
 @pytest.fixture
@@ -1153,6 +1161,11 @@ _OWNER_ONLY_MENU_ACTIONS = [
     SimpleAction("onboarding_pick", "persona:0"),
     SimpleAction("onboarding_later", ""),
     SimpleAction("onboarding_launch", ""),
+    SimpleAction("suggest_directions", "s:2"),
+    SimpleAction("directions_take", "1"),
+    SimpleAction("directions_more", "1"),
+    SimpleAction("directions_own", "s:2"),
+    SimpleAction("directions_cancel", "s:2"),
 ]
 
 
@@ -1433,3 +1446,37 @@ async def test_team_note_is_owner_only(f: Fixtures) -> None:
 
     assert answer.calls == [(_OWNER_ONLY_TEXT, True)]
     assert f.bot.sent_photos == []
+
+
+# --- Направления suggested from the Ниша (#113) ---
+
+
+async def test_suggest_directions_enqueues_a_job_for_the_owner(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("suggest_directions", "s:9"), user_id=OWNER_ID)
+
+    assert answer.calls == [(None, None)]
+    ((job),) = f.jobs.jobs.values()
+    assert job.payload["origin"] == "s:9" and job.payload["chat_id"] == 1
+    assert f.bot.edited_messages[-1][2].startswith("⏳ Подбираю Направления")
+
+
+async def test_owner_takes_a_finished_suggestion(f: Fixtures) -> None:
+    f.owner_settings.values["niche"] = "выпечка"
+    await dispatch(f, SimpleAction("suggest_directions", "s:9"), user_id=OWNER_ID)
+    result = f.jobs.finish(1, {"niche": "выпечка", "queries": [{"query": "торт", "frequency": 5}]})
+    await f.directions.deliver(result)
+
+    answer = await dispatch(f, SimpleAction("directions_take", "1"), user_id=OWNER_ID)
+
+    assert answer.calls == [(None, False)]
+    assert f.owner_settings.values["directions"] == "торт"
+    assert f.bot.edited_messages[-1][1] == 9  # the Экран Настроек, redrawn
+    assert f.bot.edited_messages[-1][2].startswith("✅ Направления изменены: торт")
+
+
+@pytest.mark.parametrize("action", ["directions_take", "directions_more"])
+async def test_stale_suggestion_buttons_only_alert(f: Fixtures, action: str) -> None:
+    answer = await dispatch(f, SimpleAction(action, "77"), user_id=OWNER_ID)
+
+    assert answer.calls == [("Эти варианты уже недоступны — подберите заново.", True)]
+    assert "directions" not in f.owner_settings.values and f.jobs.jobs == {}

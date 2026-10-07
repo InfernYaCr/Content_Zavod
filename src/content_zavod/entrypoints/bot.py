@@ -91,6 +91,12 @@ from ..telegram import (
 )
 from ..telegram.article_card import ArticlePagePublisher, send_article_card
 from ..telegram.asset_photos import AssetPhotos
+from ..telegram.direction_suggestions import (
+    ONBOARDING_ORIGIN,
+    SETTINGS_ORIGIN,
+    SUGGEST_DIRECTIONS_JOB,
+    DirectionSuggestions,
+)
 from ..telegram.gateway import SentPhoto, format_week_range
 from ..telegram.guide import DEEP_LINK as GUIDE_DEEP_LINK
 from ..telegram.guide import Guide, TeamNote, announce_plan_ready
@@ -251,6 +257,7 @@ def _build_router(
     team_note: TeamNote,
     *,
     publisher: ArticlePagePublisher | None = None,
+    directions: DirectionSuggestions | None = None,
 ) -> Router:
     router = Router()
 
@@ -414,6 +421,7 @@ def _build_router(
         guide=guide,
         team_note=team_note,
         publisher=publisher,
+        directions=directions,
     )
 
     @router.callback_query()
@@ -701,8 +709,14 @@ def _make_notification_handler(
     publisher: ArticlePagePublisher | None = None,
     team_note: TeamNote | None = None,
     photos: AssetPhotos | None = None,
+    directions: DirectionSuggestions | None = None,
 ):
     async def handle(result: JobResult) -> None:
+        if directions is not None and result.job_type == SUGGEST_DIRECTIONS_JOB:
+            # Not domain state and not the team chat: the Владелец's own «⏳» message turns
+            # into the list (or says it failed) wherever it was asked (#113).
+            await directions.deliver(result)
+            return
         deliveries = await _apply_result(plan, article, result)
         if team_note is not None and any(
             not isinstance(delivery, _PagePublishDelivery) for delivery in deliveries
@@ -786,6 +800,8 @@ async def main(settings: Settings | None = None) -> None:
         )
         scheduler.start()
 
+        # Направления suggested from the Ниша (#113): the model call is a Job in the worker.
+        directions = DirectionSuggestions(queue, owner_settings_service, bot_client)
         settings_screen = SettingsScreen(
             owner_settings_service,
             schedule_settings,
@@ -793,6 +809,7 @@ async def main(settings: Settings | None = None) -> None:
             bot_client,
             prompts,
             tz=settings.timezone,
+            directions=directions,
         )
         main_menu = MainMenu(
             plan,
@@ -821,6 +838,8 @@ async def main(settings: Settings | None = None) -> None:
             team_chat_id=settings.telegram_notify_chat_id,
             photos=photos,
         )
+        directions.attach(SETTINGS_ORIGIN, settings_screen)
+        directions.attach(ONBOARDING_ORIGIN, onboarding)
         # Every Участник's own scope still holds the pre-#95 list until it is rewritten.
         await resync_member_commands(bot_client, await membership.list_all())
 
@@ -852,6 +871,7 @@ async def main(settings: Settings | None = None) -> None:
                 guide,
                 team_note,
                 publisher=publisher,
+                directions=directions,
             )
         )
 
@@ -866,6 +886,7 @@ async def main(settings: Settings | None = None) -> None:
             publisher=publisher,
             team_note=team_note,
             photos=photos,
+            directions=directions,
         )
         polling_task = asyncio.create_task(dispatcher.start_polling(bot, handle_signals=False))
         notifications_task = asyncio.create_task(

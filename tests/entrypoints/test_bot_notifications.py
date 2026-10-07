@@ -657,3 +657,30 @@ async def test_nothing_for_the_chat_means_no_team_note() -> None:
     await handle(JobResult(job_id=9, job_type="some_future_job", status="done", output={}))
 
     assert note.ensured == 0
+
+
+class FakeDirections:
+    def __init__(self) -> None:
+        self.delivered: list[JobResult] = []
+
+    async def deliver(self, result: JobResult) -> None:
+        self.delivered.append(result)
+
+
+@pytest.mark.parametrize("status", ["done", "failed"])
+async def test_directions_suggestion_goes_to_its_own_message_not_the_team_chat(
+    status: str,
+) -> None:
+    """#113: a suggestion (or its failure) edits the Владелец's «⏳» message; nothing is
+    written to the domain and nothing lands in the team chat."""
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    directions = FakeDirections()
+    handle = _make_notification_handler(plan, article, gateway, 42, directions=directions)
+    result = JobResult(
+        job_id=9, job_type="suggest_directions", status=status, output={"queries": []}
+    )
+
+    await handle(result)
+
+    assert directions.delivered == [result]
+    assert gateway.sent_errors_with_retry == [] and gateway.sent_notices == []

@@ -43,6 +43,7 @@ from .callback_codec import (
 )
 from .commands import sync_commands
 from .comment_gated_regeneration import CommentGatedRegeneration
+from .direction_suggestions import DirectionSuggestions
 from .gateway import ITEMS_PER_PAGE, BotClient, TelegramGateway
 from .generate_plan_command import handle_cancel_regenerate_plan, handle_confirm_regenerate_plan
 from .guide import FROM_GUIDE, FROM_MENU, Guide, TeamNote, parse_index
@@ -62,6 +63,7 @@ from .plan_review import PlanReview
 from .settings_screen import BACK_TO_MENU, SettingsScreen
 from .texts import (
     COVER_REQUESTED,
+    DIRECTIONS_STALE,
     HUB_ALERT_NO_COVER,
     HUB_ALERT_NOTHING_TO_RETRY,
     HUB_ALERT_RETRYING,
@@ -158,6 +160,7 @@ class CallbackDispatcher:
         guide: Guide,
         team_note: TeamNote,
         publisher: ArticlePagePublisher | None = None,
+        directions: DirectionSuggestions | None = None,
     ) -> None:
         self._guide = guide
         self._team_note = team_note
@@ -175,6 +178,7 @@ class CallbackDispatcher:
         self._prompts = prompts
         self._onboarding = onboarding
         self._publisher = publisher
+        self._directions = directions
 
     async def dispatch(self, callback_input: CallbackInput, answer: CallbackAnswerer) -> None:
         payload = callback_input.payload
@@ -412,6 +416,38 @@ class CallbackDispatcher:
                     return
                 await answer()
                 await self._onboarding.launch(chat_id, user_id, message_id)
+            case SimpleAction(action="suggest_directions", id_=id_):
+                if not await self._authorized("suggest_directions", role, deny_text, answer):
+                    return
+                await answer()
+                if self._directions is not None:
+                    await self._directions.start(chat_id, user_id, message_id, id_)
+            case SimpleAction(action="directions_take", id_=id_):
+                if not await self._authorized("directions_take", role, deny_text, answer):
+                    return
+                taken = self._directions is not None and await self._directions.take(
+                    chat_id, user_id, message_id, id_
+                )
+                await answer(None if taken else DIRECTIONS_STALE, show_alert=not taken)
+            case SimpleAction(action="directions_more", id_=id_):
+                if not await self._authorized("directions_more", role, deny_text, answer):
+                    return
+                more = self._directions is not None and await self._directions.more(
+                    chat_id, user_id, message_id, id_
+                )
+                await answer(None if more else DIRECTIONS_STALE, show_alert=not more)
+            case SimpleAction(action="directions_own", id_=id_):
+                if not await self._authorized("directions_own", role, deny_text, answer):
+                    return
+                await answer()
+                if self._directions is not None:
+                    await self._directions.own(chat_id, user_id, message_id, id_)
+            case SimpleAction(action="directions_cancel", id_=id_):
+                if not await self._authorized("directions_cancel", role, deny_text, answer):
+                    return
+                await answer()
+                if self._directions is not None:
+                    await self._directions.cancel(chat_id, user_id, message_id, id_)
             case Page(plan_id=plan_id, page=page):
                 if not await self._authorized("page", role, deny_text, answer):
                     return
