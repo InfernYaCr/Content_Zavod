@@ -57,7 +57,8 @@ class ArticleVersionNotFound(DomainError):
 
 
 class InvalidSettingValue(DomainError):
-    """Raised by a Settings typed setter when input normalizes to nothing."""
+    """Raised by a Settings typed setter when input normalizes to nothing or is otherwise
+    unusable; `field` says which check failed (e.g. `project_url`, `audience_too_long`)."""
 
     def __init__(self, field: str) -> None:
         super().__init__(f"Setting {field!r} cannot be empty")

@@ -16,3 +16,5 @@ class OwnerSettings:
     custom_persona: CustomPersona | None
     # Optional (#98): `None` means Статьи carry no project CTA, exactly as before.
     project: Project | None = None
+    # Optional (#100): the reader portrait; `None` means Темы and Статьи are prompted as before.
+    audience: str | None = None

@@ -16,6 +16,8 @@ OWNER_COMMANDS = {
     "set_persona",
     "project",
     "set_project",
+    "audience",
+    "set_audience",
     "settings",
 }
 ANY_ROLE_COMMANDS = {"help", "menu", "topic", "generate_plan", "history"}

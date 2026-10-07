@@ -1,3 +1,10 @@
+from .audience import (
+    AUDIENCE_KEY,
+    AUDIENCE_MAX_LENGTH,
+    CLEAR_AUDIENCE,
+    audience_detail_text,
+    audience_screen_text,
+)
 from .persona import (
     DEFAULT_PERSONA_KEY,
     DEFAULT_PERSONA_TITLE,
@@ -28,6 +35,9 @@ from .service import (
 from .values import OwnerSettings
 
 __all__ = [
+    "AUDIENCE_KEY",
+    "AUDIENCE_MAX_LENGTH",
+    "CLEAR_AUDIENCE",
     "CLEAR_PROJECT",
     "DEFAULT_DIRECTIONS",
     "DEFAULT_NICHE",
@@ -45,6 +55,8 @@ __all__ = [
     "Project",
     "SettingsReader",
     "SettingsService",
+    "audience_detail_text",
+    "audience_screen_text",
     "custom_persona_label",
     "format_custom_persona",
     "normalize_project_url",

@@ -38,9 +38,12 @@ from ..access import Role
 from ..domain.errors import InvalidSettingValue
 from ..scheduling import DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE, JOB_ID, ScheduleConfig
 from ..settings import (
+    AUDIENCE_MAX_LENGTH,
     PERSONAS,
     OwnerSettings,
     SettingsService,
+    audience_detail_text,
+    audience_screen_text,
     persona_detail_text,
     persona_display_title,
     persona_setting_value,
@@ -124,6 +127,13 @@ async def _save_persona(settings: SettingsService, text: str) -> str:
     return f"Персона изменена: {persona_display_title(persona, custom_persona)}"
 
 
+async def _save_audience(settings: SettingsService, text: str) -> str:
+    audience = await settings.set_audience(text)
+    if audience is None:
+        return "Аудитория убрана: Темы и Статьи будут без портрета читателя."
+    return f"Аудитория изменена: {audience_screen_text(audience)}"
+
+
 async def _save_directions(settings: SettingsService, text: str) -> str:
     return f"Направления изменены: {', '.join(await settings.set_directions(text))}"
 
@@ -163,7 +173,6 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
             "Например:\n"
             "Название: Технооптимист\n"
             "Роль: фаундер, который сам внедряет AI в процессы\n"
-            "Аудитория: владельцы малого бизнеса\n"
             "Тон: энергичный, без канцелярита\n"
             "Запрещено: выдуманные кейсы"
         ),
@@ -173,6 +182,33 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
             (persona.title, persona_setting_value(persona.key)) for persona in PERSONAS.values()
         ),
         custom_button="✏️ Своя Персона",
+    ),
+    SettingField(
+        key="audience",
+        label="Аудитория",
+        change_button="✏️ Изменить Аудиторию",
+        purpose="для кого пишутся Статьи и подбираются Темы",
+        show=lambda current: audience_screen_text(current.audience),
+        detail=lambda current: audience_detail_text(current.audience),
+        save=_save_audience,
+        question=(
+            "✏️ Опишите вашего читателя своими словами: кто он, что его беспокоит, чего он "
+            "хочет добиться и насколько разбирается в теме. Под него я буду подбирать Темы "
+            "и писать Статьи.\n\n"
+            "Например: владельцы небольших кофеен и пекарен, 30–45 лет. Маркетингом "
+            "занимаются сами, по вечерам. Боятся слить деньги на рекламу, не понимают, "
+            "что работает. Хотят стабильный поток гостей без агентства. В терминах "
+            "не разбираются — нужны простые шаги и примеры.\n\n"
+            "Чтобы убрать Аудиторию, отправьте «-»."
+        ),
+        placeholder="Кто читатель, его боли, цели, уровень",
+        invalid="Аудитория не может быть пустой — опишите читателя хотя бы одной фразой.",
+        invalid_by_field={
+            "audience_too_long": (
+                f"Слишком длинно — уложитесь в {AUDIENCE_MAX_LENGTH} символов: "
+                "главное о читателе, без лишних подробностей."
+            )
+        },
     ),
     SettingField(
         key="directions",

@@ -17,6 +17,9 @@ missing Роль raises `InvalidSettingValue` without writing anything. `set_pro
 raises `InvalidSettingValue("project_url")` for a link it can't accept, or
 `InvalidSettingValue("project")` when the link or description is missing; a lone
 `CLEAR_PROJECT` (`-`) removes the Проект, so Статьи go back to having no CTA.
+`set_audience` (#100) stores the reader portrait as stripped free text, raising
+`InvalidSettingValue("audience")` for empty input and `"audience_too_long"` past
+`AUDIENCE_MAX_LENGTH`; a lone `CLEAR_AUDIENCE` (`-`) removes it.
 
 `plan_pipeline` re-exports the constants and `parse_directions` below as
 aliases so existing importers (`/settings`, `/set_niche`, `/set_directions`)
@@ -28,6 +31,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from ..domain.errors import InvalidSettingValue
+from .audience import AUDIENCE_KEY, AUDIENCE_MAX_LENGTH, CLEAR_AUDIENCE, parse_stored_audience
 from .persona import (
     PERSONA_KEY,
     PERSONA_VALUE_PREFIX,
@@ -84,6 +88,7 @@ class SettingsService:
         directions_raw = await self._store.get(DIRECTIONS_KEY)
         persona_raw = await self._store.get(PERSONA_KEY)
         project_raw = await self._store.get(PROJECT_KEY)
+        audience_raw = await self._store.get(AUDIENCE_KEY)
         niche = niche_raw if niche_raw else DEFAULT_NICHE
         directions = parse_directions(directions_raw) if directions_raw else None
         persona, custom_persona = resolve_persona(persona_raw)
@@ -93,6 +98,7 @@ class SettingsService:
             persona=persona,
             custom_persona=custom_persona,
             project=parse_stored_project(project_raw),
+            audience=parse_stored_audience(audience_raw),
         )
 
     async def set_niche(self, value: str) -> str:
@@ -138,3 +144,15 @@ class SettingsService:
         project = Project(url=url, description=parts[1].strip())
         await self._store.set(PROJECT_KEY, serialize_project(project))
         return project
+
+    async def set_audience(self, value: str) -> str | None:
+        normalized = value.strip()
+        if normalized == CLEAR_AUDIENCE:
+            await self._store.set(AUDIENCE_KEY, "")
+            return None
+        if not normalized:
+            raise InvalidSettingValue("audience")
+        if len(normalized) > AUDIENCE_MAX_LENGTH:
+            raise InvalidSettingValue("audience_too_long")
+        await self._store.set(AUDIENCE_KEY, normalized)
+        return normalized
