@@ -19,9 +19,8 @@ from .callback_dispatcher import (
     CallbackInput,
     unpack_callback_query,
 )
-from .commands import render_help_text, sync_commands
+from .commands import MENU_COMMANDS, resync_member_commands, sync_commands
 from .comment_gated_regeneration import CommentGatedRegeneration, CommentPrompt
-from .directions_command import handle_directions_command, handle_set_directions_command
 from .gateway import (
     BotClient,
     TelegramCommentPrompt,
@@ -30,7 +29,6 @@ from .gateway import (
     build_confirm_keyboard,
     build_join_request_keyboard,
     build_members_keyboard,
-    build_persona_keyboard,
     build_plan_keyboard,
     build_request_access_keyboard,
     build_retry_keyboard,
@@ -51,20 +49,13 @@ from .history_command import (
     handle_history_versions,
     handle_history_week,
 )
+from .input_prompt import InputPrompt
 from .join_request_flow import JoinRequestFlow
+from .main_menu import MainMenu, build_open_menu_keyboard, render_help_text
 from .members_command import handle_members_command
-from .niche_command import handle_niche_command, handle_set_niche_command
-from .persona_command import (
-    PERSONA_TEMPLATES,
-    handle_persona_command,
-    handle_persona_template_callback,
-    handle_set_persona_command,
-)
 from .plan_delivery import PlanHubSource, PlanMessageRefs, deliver_plan_hub, deliver_plan_message
 from .plan_review import PlanOperations, PlanReview
-from .project_command import handle_project_command, handle_set_project_command
-from .schedule_command import handle_schedule_command, handle_set_schedule_command
-from .settings_command import handle_settings_command
+from .settings_screen import SETTING_FIELDS, SettingField, SettingsScreen
 from .topic_command import PlanProposal, handle_topic_command
 from .types import (
     ArticleFormat,
@@ -84,8 +75,9 @@ from .types import (
 __all__ = [
     "ACCESS_DENIED_TEXT",
     "ACTION_ROLE",
+    "MENU_COMMANDS",
     "OWNER_ONLY_TEXT",
-    "PERSONA_TEMPLATES",
+    "SETTING_FIELDS",
     "Action",
     "ArticleFormat",
     "ArticleId",
@@ -106,7 +98,9 @@ __all__ = [
     "HistoryVersion",
     "HistoryVersions",
     "HistoryWeek",
+    "InputPrompt",
     "JoinRequestFlow",
+    "MainMenu",
     "Page",
     "PlanHubSource",
     "PlanId",
@@ -119,6 +113,8 @@ __all__ = [
     "PlanReview",
     "PlanSummary",
     "PlanView",
+    "SettingField",
+    "SettingsScreen",
     "SimpleAction",
     "TelegramCommentPrompt",
     "TelegramGateway",
@@ -126,7 +122,7 @@ __all__ = [
     "build_confirm_keyboard",
     "build_join_request_keyboard",
     "build_members_keyboard",
-    "build_persona_keyboard",
+    "build_open_menu_keyboard",
     "build_plan_keyboard",
     "build_request_access_keyboard",
     "build_retry_keyboard",
@@ -137,7 +133,6 @@ __all__ = [
     "encode_callback_data",
     "handle_cancel_regenerate_plan",
     "handle_confirm_regenerate_plan",
-    "handle_directions_command",
     "handle_generate_plan_command",
     "handle_history_command",
     "handle_history_page",
@@ -145,20 +140,10 @@ __all__ = [
     "handle_history_versions",
     "handle_history_week",
     "handle_members_command",
-    "handle_niche_command",
-    "handle_persona_command",
-    "handle_persona_template_callback",
-    "handle_project_command",
-    "handle_schedule_command",
-    "handle_set_directions_command",
-    "handle_set_niche_command",
-    "handle_set_persona_command",
-    "handle_set_project_command",
-    "handle_set_schedule_command",
-    "handle_settings_command",
     "handle_topic_command",
     "render_help_text",
     "render_plan_text",
+    "resync_member_commands",
     "sync_commands",
     "unpack_callback_query",
 ]

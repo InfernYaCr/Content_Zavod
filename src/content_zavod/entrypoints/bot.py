@@ -27,6 +27,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import (
     BotCommand,
     BotCommandScopeChat,
+    BotCommandScopeDefault,
     BufferedInputFile,
     CallbackQuery,
     ForceReply,
@@ -60,41 +61,36 @@ from ..scheduling import (
 from ..settings import SettingsService
 from ..telegram import (
     ACCESS_DENIED_TEXT,
+    MENU_COMMANDS,
     OWNER_ONLY_TEXT,
     ArticleId,
     BotClient,
     CallbackDispatcher,
     CommentGatedRegeneration,
+    InputPrompt,
     JoinRequestFlow,
+    MainMenu,
     PlanReview,
+    SettingsScreen,
     TelegramCommentPrompt,
     TelegramGateway,
+    build_open_menu_keyboard,
     build_request_access_keyboard,
     deliver_plan_hub,
     deliver_plan_message,
-    handle_directions_command,
     handle_generate_plan_command,
     handle_history_command,
     handle_members_command,
-    handle_niche_command,
-    handle_persona_command,
-    handle_project_command,
-    handle_schedule_command,
-    handle_set_directions_command,
-    handle_set_niche_command,
-    handle_set_persona_command,
-    handle_set_project_command,
-    handle_set_schedule_command,
-    handle_settings_command,
     handle_topic_command,
     render_help_text,
+    resync_member_commands,
     sync_commands,
     unpack_callback_query,
 )
 from ..telegram.article_card import ArticlePagePublisher, send_article_card
 from ..telegram.gateway import format_week_range
 from ..telegram.pending_inputs import PendingInputs
-from ..telegram.texts import job_failure_text
+from ..telegram.texts import UNKNOWN_MESSAGE_TEXT, job_failure_text
 from ..telegraph import HttpxTelegraphClient, TelegraphPublisher, project_footer
 from ._process import register_shutdown
 
@@ -177,10 +173,10 @@ def _build_router(
     plan_review: PlanReview,
     article_regeneration: CommentGatedRegeneration[ArticleId],
     join_request_flow: JoinRequestFlow,
-    schedule_settings: ScheduleSettings,
-    owner_settings_service: SettingsService,
+    settings_screen: SettingsScreen,
+    main_menu: MainMenu,
+    prompts: InputPrompt,
     queue: JobQueue,
-    scheduler: AsyncIOScheduler,
     settings: Settings,
     *,
     publisher: ArticlePagePublisher | None = None,
@@ -225,22 +221,35 @@ def _build_router(
             )
             return
         await sync_commands(bot_client, telegram_id, role)
-        await gateway.send_notice(chat_id, "Добро пожаловать. Список команд: /help")
+        await main_menu.send(chat_id, role, welcome=True)
+
+    @router.message(Command("menu"))
+    @gated(COMMAND_ROLE["menu"])
+    async def on_menu(message: Message) -> None:
+        role = await membership.role_for(message.from_user.id)
+        if role is not None:
+            await main_menu.send(message.chat.id, role)
 
     @router.message(Command("help"))
     @gated(COMMAND_ROLE["help"])
     async def on_help(message: Message) -> None:
         # gated() already confirmed message.from_user has a registered Role; re-fetch it here
-        # because on_help is the one handler that needs the actual value, not just pass/fail.
+        # because the help text differs by Role.
         role = await membership.role_for(message.from_user.id)
         if role is not None:
-            await gateway.send_notice(message.chat.id, render_help_text(role))
+            await gateway.send_notice(
+                message.chat.id, render_help_text(role), reply_markup=build_open_menu_keyboard()
+            )
 
     @router.message(Command("topic"))
     @gated(COMMAND_ROLE["topic"])
     async def on_topic(message: Message) -> None:
         parts = (message.text or "").split(maxsplit=1)
         text = parts[1] if len(parts) > 1 else ""
+        if not text.strip():
+            # A bare /topic asks for the Тема, like «✍️ Предложить Тему» (#95).
+            await main_menu.ask_topic(message.chat.id, message.from_user.id)
+            return
         await handle_topic_command(
             plan,
             gateway,
@@ -272,75 +281,30 @@ def _build_router(
     async def on_members(message: Message) -> None:
         await handle_members_command(membership, gateway, message.chat.id)
 
+    # Hidden aliases (#95): no longer in Telegram's command menu - the Экран Настроек and the
+    # Расписание screen replace them - but kept working for muscle memory and older messages.
     @router.message(Command("schedule"))
     @gated(COMMAND_ROLE["schedule"])
     async def on_schedule(message: Message) -> None:
-        await handle_schedule_command(schedule_settings, gateway, message.chat.id)
+        await settings_screen.send_schedule(message.chat.id)
 
     @router.message(Command("set_schedule"))
     @gated(COMMAND_ROLE["set_schedule"])
     async def on_set_schedule(message: Message, command: CommandObject) -> None:
-        await handle_set_schedule_command(
-            schedule_settings,
-            scheduler,
-            gateway,
-            message.chat.id,
-            command.args or "",
-            tz=settings.timezone,
-        )
+        await settings_screen.set_schedule_command(message.chat.id, command.args or "")
 
-    @router.message(Command("niche"))
-    @gated(COMMAND_ROLE["niche"])
-    async def on_niche(message: Message) -> None:
-        await handle_niche_command(owner_settings_service, gateway, message.chat.id)
-
-    @router.message(Command("set_niche"))
-    @gated(COMMAND_ROLE["set_niche"])
-    async def on_set_niche(message: Message, command: CommandObject) -> None:
-        await handle_set_niche_command(
-            owner_settings_service, gateway, message.chat.id, command.args or ""
-        )
-
-    @router.message(Command("directions"))
-    @gated(COMMAND_ROLE["directions"])
-    async def on_directions(message: Message) -> None:
-        await handle_directions_command(owner_settings_service, gateway, message.chat.id)
-
-    @router.message(Command("set_directions"))
-    @gated(COMMAND_ROLE["set_directions"])
-    async def on_set_directions(message: Message, command: CommandObject) -> None:
-        await handle_set_directions_command(
-            owner_settings_service, gateway, message.chat.id, command.args or ""
-        )
-
-    @router.message(Command("persona"))
-    @gated(COMMAND_ROLE["persona"])
-    async def on_persona(message: Message) -> None:
-        await handle_persona_command(owner_settings_service, gateway, message.chat.id)
-
-    @router.message(Command("set_persona"))
-    @gated(COMMAND_ROLE["set_persona"])
-    async def on_set_persona(message: Message, command: CommandObject) -> None:
-        await handle_set_persona_command(
-            owner_settings_service, gateway, message.chat.id, command.args or ""
-        )
-
-    @router.message(Command("project"))
-    @gated(COMMAND_ROLE["project"])
-    async def on_project(message: Message) -> None:
-        await handle_project_command(owner_settings_service, gateway, message.chat.id)
-
-    @router.message(Command("set_project"))
-    @gated(COMMAND_ROLE["set_project"])
-    async def on_set_project(message: Message, command: CommandObject) -> None:
-        await handle_set_project_command(
-            owner_settings_service, gateway, message.chat.id, command.args or ""
-        )
-
-    @router.message(Command("settings"))
+    @router.message(Command("settings", "niche", "directions", "persona", "project"))
     @gated(COMMAND_ROLE["settings"])
     async def on_settings(message: Message) -> None:
-        await handle_settings_command(owner_settings_service, gateway, message.chat.id)
+        await settings_screen.send(message.chat.id)
+
+    @router.message(Command("set_niche", "set_directions", "set_persona", "set_project"))
+    @gated(COMMAND_ROLE["set_niche"])
+    async def on_set_setting(message: Message, command: CommandObject) -> None:
+        key = command.command.removeprefix("set_")
+        await settings_screen.apply_command(
+            message.chat.id, message.from_user.id, key, command.args or ""
+        )
 
     dispatcher = CallbackDispatcher(
         membership,
@@ -351,8 +315,10 @@ def _build_router(
         plan_review,
         article_regeneration,
         join_request_flow,
-        owner_settings_service,
+        settings_screen,
         queue,
+        main_menu,
+        prompts,
         publisher=publisher,
     )
 
@@ -369,7 +335,8 @@ def _build_router(
 
     @router.message()
     async def on_message(message: Message) -> None:
-        """Any non-command message: a possible comment for a pending regeneration (#4/#9).
+        """Any non-command message: a possible comment for a pending regeneration (#4/#9), or
+        an answer to a menu/Настройки question (#95).
 
         In a group only a reply can be one - it must answer the comment prompt (#88) - so
         everything else is dropped before Membership is even looked up, and a non-member
@@ -391,12 +358,22 @@ def _build_router(
         if message.text is None:
             return  # a sticker/photo/voice is not a comment - the wait stays open
         chat_id, user_id, text = message.chat.id, message.from_user.id, message.text
-        consumed = await plan_review.handle_comment_reply(
-            chat_id, user_id, text, reply_to_message_id
-        )
-        if not consumed:
-            await article_regeneration.handle_comment_reply(
+        consumed = (
+            await plan_review.handle_comment_reply(chat_id, user_id, text, reply_to_message_id)
+            or await article_regeneration.handle_comment_reply(
                 chat_id, user_id, text, reply_to_message_id
+            )
+            or await settings_screen.handle_reply(
+                chat_id, user_id, text, reply_to_message_id, role=actual
+            )
+            or await main_menu.handle_reply(chat_id, user_id, text, reply_to_message_id)
+        )
+        if not consumed and private and not await prompts.is_waiting(chat_id, user_id):
+            # Nothing was asked: point at the menu rather than staying silent (#95). A live
+            # wait no handler above took (a flow added later and not wired in here) is left
+            # alone rather than answered with the hint.
+            await gateway.send_notice(
+                chat_id, UNKNOWN_MESSAGE_TEXT, reply_markup=build_open_menu_keyboard()
             )
 
     return router
@@ -662,6 +639,7 @@ async def main(settings: Settings | None = None) -> None:
             kind="article_comment",
         )
         join_request_flow = JoinRequestFlow(join_requests, membership, gateway)
+        prompts = InputPrompt(bot_client, pending_inputs)
 
         # The scheduler must exist before _build_router so /set_schedule can reschedule its job.
         scheduler = AsyncIOScheduler()
@@ -688,6 +666,29 @@ async def main(settings: Settings | None = None) -> None:
         )
         scheduler.start()
 
+        settings_screen = SettingsScreen(
+            owner_settings_service,
+            schedule_settings,
+            scheduler,
+            bot_client,
+            prompts,
+            tz=settings.timezone,
+        )
+        main_menu = MainMenu(
+            plan,
+            queue,
+            schedule_settings,
+            bot_client,
+            gateway,
+            prompts,
+            team_chat_id=settings.telegram_notify_chat_id,
+            tz=settings.timezone,
+        )
+        # The default list - what a group chat, or a user /start hasn't synced yet, sees (#95).
+        await bot.set_my_commands(MENU_COMMANDS, scope=BotCommandScopeDefault())
+        # Every Участник's own scope still holds the pre-#95 list until it is rewritten.
+        await resync_member_commands(bot_client, await membership.list_all())
+
         telegraph_client = HttpxTelegraphClient()
         publisher = TelegraphPublisher(
             telegraph_client,
@@ -707,10 +708,10 @@ async def main(settings: Settings | None = None) -> None:
                 plan_review,
                 article_regeneration,
                 join_request_flow,
-                schedule_settings,
-                owner_settings_service,
+                settings_screen,
+                main_menu,
+                prompts,
                 queue,
-                scheduler,
                 settings,
                 publisher=publisher,
             )

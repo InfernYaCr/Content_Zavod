@@ -9,7 +9,7 @@ and `SimpleAction.action`, with `assert_never` on any `Action` the match doesn't
 
 `request_access` works for unregistered callers, so it is handled before the Role is even
 resolved and never reaches the match (`ACTION_ROLE` has no entry for it either - see
-`callback_codec.py`). Every other of the twenty Действия calls `require_role(role,
+`callback_codec.py`). Every other Действие calls `require_role(role,
 ACTION_ROLE[action])` as the first thing its branch does, refusing via `answer(text,
 show_alert=True)` without touching any collaborator when it fails - same text `gated()` uses
 for command handlers in `entrypoints/bot.py`.
@@ -27,7 +27,6 @@ from aiogram.types import CallbackQuery
 from ..access import AccessError, CannotRemoveSelf, MemberNotFound, Membership, Role, require_role
 from ..domain import PLATFORMS, Article, DomainError, HubTopic, Plan
 from ..job_queue import JobId, JobQueue
-from ..settings import SettingsService
 from ..telegraph import page_url
 from .article_card import ArticlePagePublisher, send_article_card
 from .callback_codec import (
@@ -52,10 +51,12 @@ from .history_command import (
     handle_history_versions,
     handle_history_week,
 )
+from .input_prompt import InputPrompt
 from .join_request_flow import JoinRequestFlow
+from .main_menu import MainMenu
 from .members_command import redraw_members
-from .persona_command import handle_persona_template_callback
 from .plan_review import PlanReview
+from .settings_screen import BACK_TO_MENU, SettingsScreen
 from .texts import (
     COVER_REQUESTED,
     HUB_ALERT_NO_COVER,
@@ -131,7 +132,7 @@ def unpack_callback_query(callback: CallbackQuery) -> CallbackInput | None:
 
 
 class CallbackDispatcher:
-    """Everything twenty callback branches used to do inline in `on_callback`, now reachable
+    """Everything the callback branches used to do inline in `on_callback`, now reachable
     without an aiogram `CallbackQuery` - tests call `dispatch` with a hand-built
     `CallbackInput` and a fake `answer`."""
 
@@ -145,8 +146,10 @@ class CallbackDispatcher:
         plan_review: PlanReview,
         article_regeneration: CommentGatedRegeneration[ArticleId],
         join_request_flow: JoinRequestFlow,
-        owner_settings_service: SettingsService,
+        settings_screen: SettingsScreen,
         queue: JobQueue,
+        main_menu: MainMenu,
+        prompts: InputPrompt,
         *,
         publisher: ArticlePagePublisher | None = None,
     ) -> None:
@@ -158,8 +161,10 @@ class CallbackDispatcher:
         self._plan_review = plan_review
         self._article_regeneration = article_regeneration
         self._join_request_flow = join_request_flow
-        self._owner_settings_service = owner_settings_service
+        self._settings_screen = settings_screen
         self._queue = queue
+        self._main_menu = main_menu
+        self._prompts = prompts
         self._publisher = publisher
 
     async def dispatch(self, callback_input: CallbackInput, answer: CallbackAnswerer) -> None:
@@ -264,9 +269,90 @@ class CallbackDispatcher:
                 if not await self._authorized("persona_template", role, deny_text, answer):
                     return
                 await answer()
-                await handle_persona_template_callback(
-                    self._owner_settings_service, self._gateway, chat_id, int(id_)
+                # A Пресет button from a pre-#95 /persona message: same as picking it on the
+                # Экран Настроек, which that message now turns into.
+                await self._settings_screen.pick(chat_id, message_id, "persona", int(id_))
+            case SimpleAction(action="menu"):
+                if not await self._authorized("menu", role, deny_text, answer):
+                    return
+                await answer()
+                await self._main_menu.show(chat_id, message_id, role or "content_manager")
+            case SimpleAction(action="menu_plan"):
+                if not await self._authorized("menu_plan", role, deny_text, answer):
+                    return
+                await answer()
+                await self._main_menu.show_plan(chat_id, message_id)
+            case SimpleAction(action="menu_generate_plan"):
+                if not await self._authorized("menu_generate_plan", role, deny_text, answer):
+                    return
+                await answer()
+                await self._main_menu.generate_plan(chat_id)
+            case SimpleAction(action="menu_topic"):
+                if not await self._authorized("menu_topic", role, deny_text, answer):
+                    return
+                await answer()
+                await self._main_menu.ask_topic(chat_id, user_id)
+            case SimpleAction(action="menu_history"):
+                if not await self._authorized("menu_history", role, deny_text, answer):
+                    return
+                await answer()
+                # In place of the menu; its «🏠 В меню» comes back.
+                await handle_history_page(self._plan, self._gateway, chat_id, message_id, 0)
+            case SimpleAction(action="menu_members"):
+                if not await self._authorized("menu_members", role, deny_text, answer):
+                    return
+                await answer()
+                await redraw_members(self._membership, self._bot_client, chat_id, message_id)
+            case SimpleAction(action="settings"):
+                if not await self._authorized("settings", role, deny_text, answer):
+                    return
+                await answer()
+                await self._settings_screen.show(chat_id, message_id)
+            case SimpleAction(action="edit_setting", id_=id_):
+                if not await self._authorized("edit_setting", role, deny_text, answer):
+                    return
+                await answer()
+                await self._settings_screen.edit(chat_id, user_id, message_id, id_)
+            case SimpleAction(action="ask_setting", id_=id_):
+                if not await self._authorized("ask_setting", role, deny_text, answer):
+                    return
+                await answer()
+                await self._settings_screen.ask(chat_id, user_id, id_, screen_message_id=message_id)
+            case SimpleAction(action="pick_setting", id_=id_):
+                if not await self._authorized("pick_setting", role, deny_text, answer):
+                    return
+                await answer()
+                key, _, index = id_.partition(":")
+                await self._settings_screen.pick(chat_id, message_id, key, int(index))
+            case SimpleAction(action="schedule", id_=id_):
+                if not await self._authorized("schedule", role, deny_text, answer):
+                    return
+                await answer()
+                await self._settings_screen.show_schedule(chat_id, message_id, id_ or BACK_TO_MENU)
+            case SimpleAction(action="schedule_day", id_=id_):
+                if not await self._authorized("schedule_day", role, deny_text, answer):
+                    return
+                await answer()
+                day, _, back = id_.partition(":")
+                await self._settings_screen.set_day(chat_id, message_id, day, back or BACK_TO_MENU)
+            case SimpleAction(action="schedule_time", id_=id_):
+                if not await self._authorized("schedule_time", role, deny_text, answer):
+                    return
+                await answer()
+                await self._settings_screen.ask_time(
+                    chat_id, user_id, message_id, id_ or BACK_TO_MENU
                 )
+            case SimpleAction(action="cancel_input", id_=id_):
+                if not await self._authorized("cancel_input", role, deny_text, answer):
+                    return
+                await answer()
+                # Drops only the presser's own wait asked by this very message. With none
+                # (expired, already answered, someone else's question) a
+                # private chat's prompt is still theirs to clear; in a group it may be someone
+                # else's, so it stays.
+                cancelled = await self._prompts.cancel(chat_id, user_id, id_, message_id=message_id)
+                if not cancelled and chat_id == user_id:
+                    await self._bot_client.delete_message(chat_id, message_id)
             case Page(plan_id=plan_id, page=page):
                 if not await self._authorized("page", role, deny_text, answer):
                     return

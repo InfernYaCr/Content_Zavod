@@ -2,8 +2,10 @@
 
 `require_role` is pure - no gateway/aiogram dependency - so it is table-tested
 directly instead of through a fake Telegram transport. `COMMAND_ROLE` is the
-one place that says which of the 16 gated commands need "owner" and which
-accept any registered Role; `start` is deliberately absent - it treats a
+one place that says which of the gated commands need "owner" and which
+accept any registered Role (since #95 only /menu and /help are listed in
+Telegram's command menu - the rest are hidden aliases of menu buttons, gated
+all the same); `start` is deliberately absent - it treats a
 missing Role as its own welcome branch, not a denial (see ADR-0012).
 """
 
@@ -13,6 +15,7 @@ from .membership import Role
 
 COMMAND_ROLE: dict[str, Role | None] = {
     "help": None,
+    "menu": None,
     "topic": None,
     "generate_plan": None,
     "history": None,

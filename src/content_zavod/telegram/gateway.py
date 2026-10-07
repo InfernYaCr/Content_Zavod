@@ -30,6 +30,7 @@ from .texts import (
     COVER_CAPTION,
     READ_BUTTON,
     REFINE_BUTTON,
+    TO_MENU_BUTTON,
     article_status,
     format_week_range,
     plan_status,
@@ -193,7 +194,15 @@ def build_history_weeks_keyboard(
             )
         if nav_row:
             rows.append(nav_row)
+    rows.append([_to_menu_button()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _to_menu_button() -> InlineKeyboardButton:
+    """Back to the Главное меню (#95), which opens these screens in place of itself."""
+    return InlineKeyboardButton(
+        text=TO_MENU_BUTTON, callback_data=encode_callback_data(SimpleAction("menu", ""))
+    )
 
 
 # A Статья has a downloadable last Версия once it's left "queued"/"generating"/"error" -
@@ -393,24 +402,6 @@ def build_confirm_keyboard(id_: str) -> InlineKeyboardMarkup:
     )
 
 
-def build_persona_keyboard(templates: Sequence[tuple[str, str]]) -> InlineKeyboardMarkup:
-    """One row per hardcoded Persona Preset, keyed by its position in `templates`
-    rather than its (arbitrarily long) text, to stay within CALLBACK_DATA_LIMIT."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=title,
-                    callback_data=encode_callback_data(
-                        SimpleAction("persona_template", str(index))
-                    ),
-                )
-            ]
-            for index, (title, _text) in enumerate(templates)
-        ]
-    )
-
-
 def build_retry_keyboard(job_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -495,6 +486,7 @@ def build_members_keyboard(
                 )
             ]
         )
+    rows.append([_to_menu_button()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

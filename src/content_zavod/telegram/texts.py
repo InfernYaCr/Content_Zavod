@@ -248,3 +248,92 @@ def hub_cover_state(state: str) -> str:
 
 def error_alert_text(exc: Exception) -> str:
     return ERROR_ALERTS.get(type(exc), ERROR_ALERT_FALLBACK)
+
+
+# --- Главное меню, Экран Настроек, Расписание (#95) ---
+# Per-Настройка texts (question, example, confirmation) live next to their entry in
+# `settings_screen.SETTING_FIELDS`, so adding a Настройка stays one entry; these are the
+# shared ones.
+
+BACK_BUTTON = "◀ Назад"
+CANCEL_BUTTON = "Отмена"
+
+WELCOME_TEXT = (
+    "👋 Добро пожаловать! Я составляю для команды План Тем на неделю "
+    "и пишу по нему Статьи для Дзена и VC.ru."
+)
+MENU_TEXT = "🏠 Главное меню\nВыберите, что сделать:"
+MENU_PLAN_BUTTON = "📋 План недели"
+MENU_TOPIC_BUTTON = "✍️ Предложить Тему"
+MENU_HISTORY_BUTTON = "🗂 История"
+MENU_SETTINGS_BUTTON = "⚙️ Настройки"
+MENU_MEMBERS_BUTTON = "👥 Участники"
+MENU_SCHEDULE_BUTTON = "🕘 Расписание"
+OPEN_MENU_BUTTON = "🏠 Открыть меню"
+# Under the История and Участники screens, which the menu edits in place (their own
+# «◀ Назад» already means "previous page").
+TO_MENU_BUTTON = "🏠 В меню"
+
+HELP_TEXT = (
+    "Я составляю для команды План Тем на неделю и пишу по нему Статьи для Дзена и VC.ru.\n\n"
+    "Всё делается кнопками в меню — откройте его командой /menu:\n"
+    "📋 План недели — где сейчас План и как составить новый\n"
+    "✍️ Предложить Тему — добавить свою Тему в План\n"
+    "🗂 История — прошлые Планы и готовые Статьи"
+)
+HELP_OWNER_TEXT = (
+    "\n\nТолько для Владельца:\n"
+    "⚙️ Настройки — Ниша, Персона, Направления, Проект\n"
+    "👥 Участники — у кого есть доступ к боту\n"
+    "🕘 Расписание — когда составляется новый План"
+)
+UNKNOWN_MESSAGE_TEXT = "Чтобы что-то сделать, откройте меню 👇"
+
+PLAN_OPEN_BUTTON = "📋 Открыть План"
+PLAN_GENERATE_BUTTON = "🪄 Составить План"
+PLAN_STATE_PENDING = "ждёт согласования"
+PLAN_STATE_APPROVED = "утверждён"
+PLAN_IN_TEAM_CHAT = "Он в чате команды — откройте его кнопкой ниже."
+PLAN_IN_TEAM_CHAT_NO_LINK = "Он в чате команды — найдите там сообщение с Планом."
+PLAN_MISSING_TEXT = (
+    "📋 Плана на {week} пока нет.\n"
+    "Новый План составляется автоматически по расписанию: {schedule}.\n"
+    "Можно составить его прямо сейчас."
+)
+
+TOPIC_QUESTION = (
+    "✍️ Напишите Тему — она добавится в План этой недели.\n\n"
+    "Например: Как малому бизнесу посчитать окупаемость рекламы"
+)
+TOPIC_PLACEHOLDER = "Тема для Плана"
+
+# Appended to every typed-input question (#88's two chat shapes): a private chat takes the
+# next message as is, a group needs a reply to the ForceReply line that follows.
+INPUT_HINT_PRIVATE = "Напишите ответ следующим сообщением или нажмите «Отмена»."
+INPUT_HINT_GROUP = "Ответьте на сообщение ниже или нажмите «Отмена»."
+INPUT_FORCE_REPLY = '✏️ <a href="tg://user?id={user_id}">Ваш ответ</a> — ответом на это сообщение.'
+
+SETTINGS_TITLE = "⚙️ Настройки\nДействуют на каждую следующую генерацию."
+SETTINGS_CURRENT = "Сейчас: {value}"
+SETTINGS_CHOOSE = "Выберите готовый вариант или задайте свой."
+SETTINGS_SAVED = "✅ {text}"
+SETTINGS_INVALID = "⚠️ {text}"
+
+SCHEDULE_LABEL = "Расписание"
+SCHEDULE_PURPOSE = "когда автоматически составляется новый План"
+SCHEDULE_CHANGE_BUTTON = "🕘 Изменить Расписание"
+SCHEDULE_TITLE = "🕘 Расписание\nНовый План составляется автоматически раз в неделю."
+SCHEDULE_HOW = "Нажмите день недели, чтобы сменить его, или «Изменить время»."
+SCHEDULE_TIME_BUTTON = "🕐 Изменить время"
+SCHEDULE_DAY_SAVED = "День изменён: {schedule}"
+SCHEDULE_TIME_SAVED = "Время изменено: {schedule}"
+SCHEDULE_TIME_QUESTION = (
+    "🕐 Во сколько составлять новый План? Напишите время в формате ЧЧ:ММ.\n\nНапример: 09:30"
+)
+SCHEDULE_TIME_PLACEHOLDER = "Например: 09:30"
+SCHEDULE_TIME_INVALID = "Не понял время «{text}». Нужно ЧЧ:ММ, например 09:30."
+
+
+def schedule_text(day: str, hour: int, minute: int) -> str:
+    """«понедельник, 09:00» - the one way a schedule is shown on every screen."""
+    return f"{weekday_name(day)}, {hour:02d}:{minute:02d}"

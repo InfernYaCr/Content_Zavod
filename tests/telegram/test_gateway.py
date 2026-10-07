@@ -523,7 +523,11 @@ def test_render_history_weeks_text_empty_page() -> None:
 def test_build_history_weeks_keyboard_one_button_per_week() -> None:
     keyboard = build_history_weeks_keyboard(make_plan_summaries(2), page=0, page_count=1)
 
-    assert len(keyboard.inline_keyboard) == 2
+    # two weeks, then «🏠 В меню» (#95)
+    assert len(keyboard.inline_keyboard) == 3
+    assert decode_callback_data(keyboard.inline_keyboard[2][0].callback_data) == SimpleAction(
+        "menu", ""
+    )
     assert keyboard.inline_keyboard[0][0].text == "3–9 августа 2026 — на согласовании"
     payload = decode_callback_data(keyboard.inline_keyboard[0][0].callback_data)
     assert payload == HistoryWeek("plan-0", 0)
