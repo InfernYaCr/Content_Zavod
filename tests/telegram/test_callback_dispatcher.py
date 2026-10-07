@@ -1091,6 +1091,29 @@ async def test_cancel_input_drops_the_pressers_wait_and_its_prompt(f: Fixtures) 
     assert f.bot.deleted_messages == [(1, 1), (1, 2)]
 
 
+async def test_cancel_under_someone_elses_question_keeps_the_pressers_own_wait(
+    f: Fixtures,
+) -> None:
+    """In a group two members can each have a question open; «Отмена» under the Owner's
+    question pressed by the Контент-менеджер must not drop the Контент-менеджер's own."""
+    await dispatch(f, SimpleAction("menu_topic", ""), user_id=OWNER_ID)  # messages 1, 2
+    await dispatch(f, SimpleAction("menu_topic", ""))  # messages 3, 4
+    answer = FakeAnswerer()
+    callback_input = CallbackInput(
+        chat_id=1,
+        message_id=1,
+        user_id=CM_ID,
+        username="cm",
+        payload=SimpleAction("cancel_input", "topic_input"),
+    )
+
+    await f.dispatcher.dispatch(callback_input, answer)
+
+    assert (1, CM_ID) in f.pending_inputs.rows
+    assert (1, OWNER_ID) in f.pending_inputs.rows
+    assert f.bot.deleted_messages == []
+
+
 async def test_stale_cancel_in_a_group_leaves_the_message(f: Fixtures) -> None:
     await dispatch(f, SimpleAction("cancel_input", "topic_input"))
 

@@ -344,10 +344,13 @@ class CallbackDispatcher:
                 if not await self._authorized("cancel_input", role, deny_text, answer):
                     return
                 await answer()
-                # Drops only the presser's own wait. With none (expired, or already answered) a
+                # Drops only the presser's own wait asked by this very message. With none
+                # (expired, already answered, someone else's question) a
                 # private chat's prompt is still theirs to clear; in a group it may be someone
                 # else's, so it stays.
-                cancelled = await self._prompts.cancel(chat_id, user_id, id_)
+                cancelled = await self._prompts.cancel(
+                    chat_id, user_id, id_, message_id=message_id
+                )
                 if not cancelled and chat_id == user_id:
                     await self._bot_client.delete_message(chat_id, message_id)
             case Page(plan_id=plan_id, page=page):

@@ -119,9 +119,15 @@ class InputPrompt:
         if replaced is not None:  # only if another ask slipped in between take and put
             await self.close(chat_id, replaced)
 
-    async def cancel(self, chat_id: int, user_id: int, kind: str) -> bool:
-        """«Отмена»: drop this user's `kind` wait, if any, and its prompt."""
-        pending = await self._pending.take(chat_id, user_id, kind)
+    async def cancel(
+        self, chat_id: int, user_id: int, kind: str, *, message_id: int | None = None
+    ) -> bool:
+        """«Отмена»: drop this user's `kind` wait, if any, and its prompt. `message_id` is the
+        question the button sits on: only that wait is dropped, so a member pressing «Отмена»
+        under someone else's question in a group doesn't cancel a question of their own."""
+        pending = await self._pending.take(
+            chat_id, user_id, kind, reply_to_message_id=message_id
+        )
         if pending is None:
             return False
         await self.close(chat_id, pending)
