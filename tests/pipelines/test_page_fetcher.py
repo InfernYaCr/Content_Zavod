@@ -46,6 +46,39 @@ def test_parse_html_keeps_body_text_and_drops_scripts_navigation_and_short_lines
     assert "Ок." not in parsed.text
 
 
+def test_parse_html_drops_cookie_banners_comments_widgets_and_hidden_blocks() -> None:
+    html = """<html><body><form id="aspnetForm">
+<div class="cookie-banner"><p>Мы используем файлы cookie для улучшения работы сайта</p></div>
+<article>
+<p>По данным опроса 2025 года, 42% малых компаний уже используют CRM-систему.</p>
+<div class="b-share"><span>Поделиться в социальных сетях прямо сейчас</span></div>
+<div class="related-posts"><div><p>Читайте также: десять лучших CRM этого года</p></div>
+<p>Ещё одна похожая статья из ленты рекомендаций</p></div>
+<p>Средняя стоимость лицензии составляет 1500 рублей за пользователя.</p>
+<div style="display: none">Скрытый текст для поисковых роботов и спама</div>
+</article>
+<section id="comments"><div class="comment"><p>Гость: у нас CRM окупилась за 2 дня!</p></div>
+</section>
+<time datetime="2020-01-01">старая дата комментария</time>
+</form></body></html>"""
+
+    parsed = parse_html(html)
+
+    assert "42% малых компаний" in parsed.text
+    assert "1500 рублей" in parsed.text
+    for junk in ("cookie", "Поделиться", "Читайте также", "похожая статья", "Скрытый", "Гость"):
+        assert junk not in parsed.text
+
+
+def test_parse_html_ignores_a_time_tag_inside_navigation() -> None:
+    html = (
+        '<html><body><nav><time datetime="2019-05-05">сегодня</time></nav>'
+        '<p>Текст статьи <time datetime="2026-02-02">2 февраля</time> про CRM.</p></body></html>'
+    )
+
+    assert parse_html(html).published_at == "2026-02-02"
+
+
 def test_parse_html_prefers_article_text_only_when_it_is_substantial() -> None:
     html = (
         "<html><body><article><p>Короткий анонс без содержания тут</p></article>"

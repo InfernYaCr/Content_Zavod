@@ -13,8 +13,10 @@ fetch only what we should and get readable text out of it:
   stdlib parser does.
 - Only `text/html` is read, streamed and capped at `max_bytes`; anything else is skipped.
 - HTML -> text uses the stdlib `html.parser` (no new dependency): script/style/nav/
-  footer-like blocks are dropped, `<article>`/`<main>` is preferred when it has enough
-  text, and the title/publisher/published date are picked from the usual meta tags.
+  footer-like blocks, hidden elements and junk containers by class/id (cookie banners,
+  comments, share/subscribe widgets, related feeds, ads) are dropped, `<article>`/`<main>`
+  is preferred when it has enough text, and the title/publisher/published date are picked
+  from the usual meta tags.
 
 Never raises for a bad page: `fetch` returns `None` and the research step moves on.
 """
@@ -239,7 +241,6 @@ _SKIP_TAGS = frozenset(
         "footer",
         "header",
         "aside",
-        "form",
         "iframe",
         "template",
         "button",
@@ -276,6 +277,42 @@ _BLOCK_TAGS = frozenset(
     }
 )
 _MAIN_TAGS = frozenset({"article", "main"})
+# Containers dropped by their class/id: cookie banners, comment threads (a reader's comment
+# must never become a "fact from the page"), share/subscribe widgets, related-article
+# feeds, ads. Matched as whole words of the class/id ("b-comments__list" -> "comments"), and
+# only words that practically never name a page-wide wrapper - "sidebar"/"menu" don't
+# qualify ("layout-with-sidebar"); semantic <aside>/<nav> already cover those. `<form>` is
+# not skipped either: ASP.NET-style sites wrap the whole page in one.
+_JUNK_WORDS = frozenset(
+    {
+        "cookie",
+        "cookies",
+        "consent",
+        "gdpr",
+        "comment",
+        "comments",
+        "share",
+        "sharing",
+        "social",
+        "related",
+        "recommend",
+        "recommendations",
+        "subscribe",
+        "subscription",
+        "newsletter",
+        "advert",
+        "advertising",
+        "adfox",
+        "banner",
+        "promo",
+        "breadcrumb",
+        "breadcrumbs",
+        "popup",
+        "modal",
+    }
+)
+_JUNK_CONTAINERS = frozenset({"div", "section", "ul", "ol", "span", "figure", "table"})
+_WORD_SPLIT_RE = re.compile(r"[^a-z]+")
 _PUBLISHED_META = ("article:published_time", "datepublished", "date", "pubdate", "dc.date")
 _MIN_LINE_WORDS = 3
 # `<article>`/`<main>` is used instead of the whole page only when it holds real text.
@@ -286,6 +323,10 @@ class _TextExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.skip_depth = 0
+        # The junk container being skipped (see `_JUNK_WORDS`) and how deep in nested
+        # same-name tags we are inside it.
+        self.junk_tag: str | None = None
+        self.junk_nesting = 0
         self.main_depth = 0
         self.in_title = False
         self.title_parts: list[str] = []
@@ -301,9 +342,16 @@ class _TextExtractor(HTMLParser):
         if tag in _SKIP_TAGS:
             self.skip_depth += 1
             return
+        if self.junk_tag is not None:
+            if tag == self.junk_tag:
+                self.junk_nesting += 1
+            return
+        if tag in _JUNK_CONTAINERS and not self.skip_depth and _is_junk(attrs):
+            self.junk_tag, self.junk_nesting = tag, 1
+            return
         if tag == "title":
             self.in_title = True
-        if tag == "time" and self.first_time is None:
+        if tag == "time" and self.first_time is None and not self.skip_depth:
             self.first_time = dict(attrs).get("datetime")
         if tag in _MAIN_TAGS:
             self.main_depth += 1
@@ -324,6 +372,12 @@ class _TextExtractor(HTMLParser):
         if tag in _SKIP_TAGS:
             self.skip_depth = max(0, self.skip_depth - 1)
             return
+        if self.junk_tag is not None:
+            if tag == self.junk_tag:
+                self.junk_nesting -= 1
+                if self.junk_nesting == 0:
+                    self.junk_tag = None
+            return
         if tag == "title":
             self.in_title = False
         if tag in _MAIN_TAGS:
@@ -335,7 +389,7 @@ class _TextExtractor(HTMLParser):
         if self.in_title:
             self.title_parts.append(data)
             return
-        if self.skip_depth:
+        if self.skip_depth or self.junk_tag is not None:
             return
         self.all_parts.append(data)
         if self.main_depth:
@@ -345,6 +399,17 @@ class _TextExtractor(HTMLParser):
         self.all_parts.append("\n")
         if self.main_depth:
             self.main_parts.append("\n")
+
+
+def _is_junk(attrs: list[tuple[str, str | None]]) -> bool:
+    values = dict(attrs)
+    if "hidden" in values or values.get("aria-hidden") == "true":
+        return True
+    style = (values.get("style") or "").replace(" ", "").lower()
+    if "display:none" in style:
+        return True
+    names = f"{values.get('class') or ''} {values.get('id') or ''}".lower()
+    return any(word in _JUNK_WORDS for word in _WORD_SPLIT_RE.split(names))
 
 
 def _clean_text(parts: list[str]) -> str:
