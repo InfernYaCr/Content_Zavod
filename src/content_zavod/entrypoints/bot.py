@@ -293,12 +293,14 @@ def _build_router(
     async def on_set_schedule(message: Message, command: CommandObject) -> None:
         await settings_screen.set_schedule_command(message.chat.id, command.args or "")
 
-    @router.message(Command("settings", "niche", "directions", "persona", "project"))
+    @router.message(Command("settings", "niche", "directions", "persona", "project", "audience"))
     @gated(COMMAND_ROLE["settings"])
     async def on_settings(message: Message) -> None:
         await settings_screen.send(message.chat.id)
 
-    @router.message(Command("set_niche", "set_directions", "set_persona", "set_project"))
+    @router.message(
+        Command("set_niche", "set_directions", "set_persona", "set_project", "set_audience")
+    )
     @gated(COMMAND_ROLE["set_niche"])
     async def on_set_setting(message: Message, command: CommandObject) -> None:
         key = command.command.removeprefix("set_")

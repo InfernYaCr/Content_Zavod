@@ -30,6 +30,8 @@ COMMAND_ROLE: dict[str, Role | None] = {
     "set_persona": "owner",
     "project": "owner",
     "set_project": "owner",
+    "audience": "owner",
+    "set_audience": "owner",
     "settings": "owner",
 }
 

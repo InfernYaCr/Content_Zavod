@@ -90,12 +90,14 @@ async def test_screen_shows_every_value_with_its_purpose_and_a_change_button(env
     assert text.startswith("⚙️ Настройки\nДействуют на каждую следующую генерацию.")
     assert "Ниша: маркетинг\n↳ из неё подбираются Темы" in text
     assert "Персона: Маркетолог-практик\n↳ от чьего лица пишутся Статьи" in text
+    assert "Аудитория: не задана\n↳ для кого пишутся Статьи и подбираются Темы" in text
     assert "Направления: crm для малого бизнеса, email маркетинг" in text
     assert "Проект: не задан\n↳" in text
     assert "Расписание: понедельник, 09:00" in text
     assert button_texts(markup) == [
         ["✏️ Изменить Нишу"],
         ["✏️ Изменить Персону"],
+        ["✏️ Изменить Аудиторию"],
         ["✏️ Изменить Направления"],
         ["✏️ Изменить Проект"],
         ["🕘 Изменить Расписание"],
@@ -184,6 +186,45 @@ async def test_project_link_error_is_specific_and_dash_clears_it(env: Env) -> No
     await env.screen.edit(PRIVATE, OWNER, SCREEN, "project")
     await env.reply("-")
     assert "Проект убран" in env.bot.edited[-1][2]
+
+
+async def test_audience_asks_with_an_example_rejects_empty_and_dash_clears_it(env: Env) -> None:
+    await env.screen.edit(PRIVATE, OWNER, SCREEN, "audience")
+    ((_, question, _, _),) = env.bot.sent
+    assert "Например:" in question
+    assert "Сейчас: не задана" in question
+
+    await env.reply("   ")
+    assert "audience" not in env.store.values
+    assert env.bot.edited[-1][2].startswith("⚠️ Аудитория не может быть пустой")
+
+    portrait = "Владельцы кофеен и пекарен.\nБоль — нет времени разбираться в рекламе."
+    await env.reply(portrait)
+    screen = env.bot.edited[-1][2]
+    assert screen.startswith("✅ Аудитория изменена: Владельцы кофеен и пекарен.")
+    assert "Аудитория: Владельцы кофеен и пекарен. Боль — нет времени" in screen
+
+    await env.screen.edit(PRIVATE, OWNER, SCREEN, "audience")
+    assert portrait in env.bot.sent[-1][1]  # the full value, line breaks kept
+    await env.reply("-")
+    assert env.bot.edited[-1][2].startswith("✅ Аудитория убрана")
+    assert "Аудитория: не задана" in env.bot.edited[-1][2]
+
+
+async def test_long_audience_is_shortened_on_the_screen_only() -> None:
+    env = Env({"audience": "Владельцы малого бизнеса " * 20})
+
+    await env.screen.send(PRIVATE)
+
+    ((_, text, _, _),) = env.bot.sent
+    line = next(line for line in text.splitlines() if line.startswith("Аудитория: "))
+    assert line.endswith("…") and len(line) < 140
+
+
+async def test_set_audience_alias_saves_and_shows_the_screen(env: Env) -> None:
+    await env.screen.apply_command(PRIVATE, OWNER, "audience", "Студенты-маркетологи")
+    assert env.store.values["audience"] == "Студенты-маркетологи"
+    assert env.bot.sent[-1][1].startswith("✅ Аудитория изменена: Студенты-маркетологи")
 
 
 async def test_screen_that_cannot_be_edited_is_sent_anew(env: Env) -> None:
