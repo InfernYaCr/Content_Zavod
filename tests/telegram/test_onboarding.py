@@ -8,6 +8,7 @@ import pytest
 
 from content_zavod.scheduling import ScheduleConfig
 from content_zavod.settings import OnboardingState, SettingsService
+from content_zavod.telegram.asset_photos import AssetPhotos
 from content_zavod.telegram.input_prompt import InputPrompt
 from content_zavod.telegram.onboarding import (
     ONBOARDING_INPUT_KIND,
@@ -143,8 +144,12 @@ async def test_offer_sends_the_intro_to_a_fresh_owner(env: Env) -> None:
     assert "Я помогаю команде вести блог на Дзене и VC.ru" in text
     assert "5 коротких шагов — Ниша → Аудитория → Персона → Направления → Проект" in text
     assert "/menu" in text
-    assert button_texts(markup) == [["▶ Начать настройку"], ["Позже — открыть меню"]]
-    assert button_data(markup) == [["ob:start"], ["ox:"]]
+    assert button_texts(markup) == [
+        ["▶ Начать настройку"],
+        ["Позже — открыть меню"],
+        ["📖 Как пользоваться"],
+    ]
+    assert button_data(markup) == [["ob:start"], ["ox:"], ["gd:"]]
 
 
 async def test_offer_is_nothing_for_a_content_manager(env: Env) -> None:
@@ -376,6 +381,7 @@ async def test_skipping_the_last_step_shows_the_review_card(env: Env) -> None:
         ["ob:persona:r"],
         ["ob:directions:r"],
         ["ob:project:r"],
+        ["gd:"],
     ]
     assert button_texts(markup)[0] == ["🚀 Запустить"]
     assert ["✏️ Изменить Нишу"] in button_texts(markup)
@@ -506,3 +512,36 @@ async def test_a_stale_start_button_after_finishing_only_shows_the_menu(env: Env
 
     assert env.menu.shown == [(PRIVATE, 100, "owner")] * 2
     assert env.store.values["onboarding"] == "later" and env.wait is None
+
+
+class _GuideStore:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def set(self, key: str, value: str) -> None:
+        self.values[key] = value
+
+
+async def test_with_pictures_the_intro_is_a_photo_with_the_same_text_and_buttons() -> None:
+    """#114: the intro is a standalone message, so it gets its picture."""
+    env = Env()
+    env.onboarding = Onboarding(
+        env.state,
+        env.settings,
+        InputPrompt(env.bot, env.pending),
+        env.bot,
+        env.menu,
+        FakeSchedule(),
+        photos=AssetPhotos(env.bot, _GuideStore()),
+    )
+
+    assert await env.onboarding.offer(PRIVATE, OWNER, "owner") is True
+
+    ((_, photo, caption, markup),) = env.bot.photos
+    assert photo.filename == "onboarding.png"
+    assert "5 коротких шагов" in caption
+    assert button_data(markup) == [["ob:start"], ["ox:"], ["gd:"]]
+    assert env.bot.sent == []

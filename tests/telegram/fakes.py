@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from content_zavod.telegram.gateway import SentPhoto
 from content_zavod.telegram.pending_inputs import PendingInput
 
 
@@ -49,7 +50,11 @@ class RecordingBot:
         self.sent: list[tuple[int, str, object, str | None]] = []
         self.edited: list[tuple[int, int, str, object]] = []
         self.deleted: list[tuple[int, int]] = []
+        self.photos: list[tuple[int, object, str | None, object]] = []
+        self.edited_media: list[tuple[int, int, object, str | None, object]] = []
+        self.pinned: list[tuple[int, int]] = []
         self.fail_edits = False
+        self.fail_pins = False
         self._next_id = 100
 
     async def send_message(self, chat_id, text, reply_markup=None, parse_mode=None) -> int:
@@ -61,8 +66,24 @@ class RecordingBot:
     async def send_document(self, chat_id, document, caption=None) -> None:
         pass
 
-    async def send_photo(self, chat_id, photo, caption=None) -> None:
-        pass
+    async def send_photo(self, chat_id, photo, caption=None, reply_markup=None) -> SentPhoto:
+        self.photos.append((chat_id, photo, caption, reply_markup))
+        message_id = self._next_id
+        self._next_id += 1
+        return SentPhoto(message_id, f"file-{message_id}")
+
+    async def edit_message_media(
+        self, chat_id, message_id, photo, caption=None, reply_markup=None
+    ) -> str | None:
+        if self.fail_edits:
+            raise RuntimeError("message to edit not found")
+        self.edited_media.append((chat_id, message_id, photo, caption, reply_markup))
+        return f"file-edit-{message_id}"
+
+    async def pin_chat_message(self, chat_id, message_id) -> None:
+        if self.fail_pins:
+            raise RuntimeError("not enough rights to manage pinned messages")
+        self.pinned.append((chat_id, message_id))
 
     async def edit_message_text(self, chat_id, message_id, text, reply_markup=None) -> None:
         if self.fail_edits:

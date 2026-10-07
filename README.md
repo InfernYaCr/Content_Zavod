@@ -82,6 +82,31 @@ uv run --frozen pytest
 uv run pre-commit run --all-files
 ```
 
+### Картинки Инструкции
+
+Слайды «📖 Как пользоваться» и картинки к приветствиям лежат в `src/content_zavod/assets/guide/` и
+закоммичены: бот просто отправляет PNG и браузер ему не нужен. Telegram `file_id` загруженной
+картинки кэшируется в `owner_settings` вместе с хэшем файла, так что изменённый PNG бот загрузит
+заново сам.
+
+- Слайды (1280×960) — по ключу слайда из `telegram/guide.py`: `about`, `week`, `niche`, `audience`,
+  `persona`, `directions`, `project`, `schedule`, `article`, `roles`, `faq`.
+- Баннеры (1280×640): `welcome` (/start), `onboarding` (вступление Онбординга), `cm_welcome`
+  (приветствие Контент-менеджера), `plan_ready` (под новым Планом в чате команды), `team_note`
+  (закреплённая памятка «📌 Как мы работаем»).
+
+Слайды — макеты экрана Telegram из настоящих текстов бота (`texts.py`, `SETTING_FIELDS`, экраны
+Онбординга), поэтому после правки текстов их стоит пересобрать одной командой (Chromium от
+Playwright: из `PLAYWRIGHT_BROWSERS_PATH` или `uv run --with playwright==1.56.0 playwright install chromium`):
+
+```bash
+uv run --with playwright==1.56.0 python scripts/render_guide_assets.py
+# только некоторые и с HTML для правки в браузере:
+uv run --with playwright==1.56.0 python scripts/render_guide_assets.py --only welcome,niche --html /tmp/guide-html
+```
+
+Дизайнер может просто заменить любой PNG: имя файла и размер сохранить, код не трогать.
+
 ## Issue-трекер
 
 GitHub Issues в этом репозитории, через `gh` CLI — см. [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md) и [docs/agents/triage-labels.md](docs/agents/triage-labels.md).

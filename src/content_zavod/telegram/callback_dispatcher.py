@@ -45,6 +45,8 @@ from .commands import sync_commands
 from .comment_gated_regeneration import CommentGatedRegeneration
 from .gateway import ITEMS_PER_PAGE, BotClient, TelegramGateway
 from .generate_plan_command import handle_cancel_regenerate_plan, handle_confirm_regenerate_plan
+from .guide import FROM_GUIDE, FROM_MENU, Guide, TeamNote, parse_index
+from .guide_texts import TEAM_NOTE_FAILED
 from .history_command import (
     handle_history_page,
     handle_history_version,
@@ -153,8 +155,12 @@ class CallbackDispatcher:
         prompts: InputPrompt,
         onboarding: Onboarding,
         *,
+        guide: Guide,
+        team_note: TeamNote,
         publisher: ArticlePagePublisher | None = None,
     ) -> None:
+        self._guide = guide
+        self._team_note = team_note
         self._membership = membership
         self._plan = plan
         self._article = article
@@ -275,11 +281,39 @@ class CallbackDispatcher:
                 # A Пресет button from a pre-#95 /persona message: same as picking it on the
                 # Экран Настроек, which that message now turns into.
                 await self._settings_screen.pick(chat_id, message_id, "persona", int(id_))
-            case SimpleAction(action="menu"):
+            case SimpleAction(action="menu", id_=id_):
                 if not await self._authorized("menu", role, deny_text, answer):
                     return
                 await answer()
+                if id_ == FROM_GUIDE:
+                    # «🏠 В меню» on the Инструкция: the menu takes the carousel's place (#114).
+                    await self._bot_client.delete_message(chat_id, message_id)
+                    await self._main_menu.send(chat_id, role or "content_manager")
+                    return
                 await self._main_menu.show(chat_id, message_id, role or "content_manager")
+            case SimpleAction(action="guide", id_=id_):
+                if not await self._authorized("guide", role, deny_text, answer):
+                    return
+                await answer()
+                if id_ == FROM_MENU:  # the carousel takes the menu's place
+                    await self._bot_client.delete_message(chat_id, message_id)
+                await self._guide.send(chat_id, role or "content_manager")
+            case SimpleAction(action="guide_slide", id_=id_):
+                if not await self._authorized("guide_slide", role, deny_text, answer):
+                    return
+                await answer()
+                await self._guide.show(
+                    chat_id, message_id, role or "content_manager", parse_index(id_)
+                )
+            case SimpleAction(action="guide_pin"):
+                if not await self._authorized("guide_pin", role, deny_text, answer):
+                    return
+                try:
+                    outcome = await self._team_note.post()
+                except Exception:
+                    logger.warning("could not post the team note", exc_info=True)
+                    outcome = TEAM_NOTE_FAILED
+                await answer(outcome, show_alert=True)
             case SimpleAction(action="menu_plan"):
                 if not await self._authorized("menu_plan", role, deny_text, answer):
                     return

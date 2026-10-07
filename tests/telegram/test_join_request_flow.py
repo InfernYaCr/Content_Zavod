@@ -150,7 +150,8 @@ async def test_approve_grants_content_manager_and_welcomes_them() -> None:
     assert text.startswith("🎉 Доступ выдан — вы Контент-менеджер.")
     assert "в чате команды" in text and "/menu" in text
     markup = gateway.markups[-1]
-    assert markup.inline_keyboard[0][0].callback_data == "mn:"
+    # #114: the Инструкция first, then the menu.
+    assert [row[0].callback_data for row in markup.inline_keyboard] == ["gd:", "mn:"]
 
 
 @pytest.mark.asyncio
@@ -192,3 +193,35 @@ async def test_second_owners_tap_is_a_safe_no_op() -> None:
     assert len(membership.added) == grants_after_first  # not granted twice, and not revoked
     # the second tap is a no-op: no further edits/grants happen
     assert len(gateway.edited) == edits_after_first
+
+
+class _GuideStore:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def set(self, key: str, value: str) -> None:
+        self.values[key] = value
+
+
+@pytest.mark.asyncio
+async def test_with_pictures_the_welcome_is_a_photo_leading_to_the_guide() -> None:
+    """#114: the newcomer's welcome gets its picture and «📖 Как пользоваться» first."""
+    from content_zavod.telegram.asset_photos import AssetPhotos
+
+    from .fakes import RecordingBot
+
+    requests, membership, gateway = FakeRequests(), FakeMembership([10]), FakeGateway()
+    bot = RecordingBot()
+    flow = JoinRequestFlow(requests, membership, gateway, photos=AssetPhotos(bot, _GuideStore()))
+    await flow.request_access(telegram_id=100, username="alice")
+
+    await flow.handle_approve(resolver_id=10, resolver_name="Owner10", join_request_id=1)
+
+    ((chat_id, photo, caption, markup),) = bot.photos
+    assert chat_id == 100 and photo.filename == "cm_welcome.png"
+    assert caption.startswith("🎉 Доступ выдан")
+    assert [row[0].callback_data for row in markup.inline_keyboard] == ["gd:", "mn:"]
+    assert all(chat != 100 for chat, _ in gateway.sent_messages)

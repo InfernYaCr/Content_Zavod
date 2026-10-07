@@ -4,8 +4,8 @@ Payload is a union of six types: five immutable dataclasses for the composite
 Действия that pack more than one field into their id (`Page`, `HistoryWeek`,
 `HistoryVersions`, `HistoryVersion`, `ExportArticle`), plus `SimpleAction` for
 the remaining Действия that carry a single opaque id (the Хаб's six, #91, the
-Главное меню and Экран Настроек ones, #95, and the onboarding wizard's, #96, pack
-whatever they need into that id).
+Главное меню and Экран Настроек ones, #95, and the onboarding wizard's, #96, and the
+Инструкция's, #114, pack whatever they need into that id).
 
 `ACTION_ROLE` says which of the Действия need "owner" and which accept any
 registered Role - `request_access` is absent, same reasoning as `COMMAND_ROLE`
@@ -76,6 +76,9 @@ Action = Literal[
     "onboarding_pick",
     "onboarding_later",
     "onboarding_launch",
+    "guide",
+    "guide_slide",
+    "guide_pin",
 ]
 
 _ACTION_CODES: dict[Action, str] = {
@@ -128,6 +131,10 @@ _ACTION_CODES: dict[Action, str] = {
     "onboarding_pick": "op",
     "onboarding_later": "ox",
     "onboarding_launch": "og",
+    # The Инструкция (#114): "g…".
+    "guide": "gd",
+    "guide_slide": "gs",
+    "guide_pin": "gp",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
 
@@ -183,6 +190,11 @@ ACTION_ROLE: dict[Action, Role | None] = {
     "onboarding_pick": "owner",
     "onboarding_later": "owner",
     "onboarding_launch": "owner",
+    # The Инструкция is for everyone (its slides depend on the presser's Role); posting the
+    # team chat's pinned note is a Владелец's call, like the rest of the bot's setup.
+    "guide": None,
+    "guide_slide": None,
+    "guide_pin": "owner",
 }
 
 # The five composite Действия each get their own type below - see them out

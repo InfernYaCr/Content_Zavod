@@ -13,8 +13,12 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from aiogram.types import InlineKeyboardMarkup
+
 from ..access import JoinRequestBroadcast, JoinRequestView, Role
+from .asset_photos import AssetPhotos
 from .gateway import TelegramGateway, build_join_request_keyboard
+from .guide import guide_button
 from .main_menu import build_open_menu_keyboard
 from .texts import CONTENT_MANAGER_WELCOME
 
@@ -47,7 +51,11 @@ class JoinRequestFlow:
         requests: JoinRequestOperations,
         membership: MembershipOperations,
         gateway: TelegramGateway,
+        *,
+        photos: AssetPhotos | None = None,
     ) -> None:
+        """`photos` - the Контент-менеджер's welcome goes out with its picture (#114)."""
+        self._photos = photos
         self._requests = requests
         self._membership = membership
         self._gateway = gateway
@@ -90,14 +98,22 @@ class JoinRequestFlow:
             await self._membership.add_member(view.telegram_id, "content_manager")
             # The newcomer's first look at the bot (#96): what it does, where the Plan
             # lives and what to press - with the menu one tap away.
-            await self._gateway.send_message(
-                view.telegram_id,
-                CONTENT_MANAGER_WELCOME,
-                reply_markup=build_open_menu_keyboard(),
-            )
+            await self._send_welcome(view.telegram_id)
 
         verdict = "одобрена" if view.status == "approved" else "отклонена"
         resolved_text = f"Заявка от {view.telegram_id}: {verdict} пользователем {resolver_name}."
         for broadcast in await self._requests.broadcasts_for(join_request_id):
             await self._gateway.edit_notice(broadcast.chat_id, broadcast.message_id, resolved_text)
         return view
+
+    async def _send_welcome(self, telegram_id: int) -> None:
+        """«📖 Как пользоваться» first: the Инструкция is the newcomer's next step (#114)."""
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[[guide_button()], *build_open_menu_keyboard().inline_keyboard]
+        )
+        if self._photos is not None:
+            await self._photos.send(telegram_id, "cm_welcome", CONTENT_MANAGER_WELCOME, keyboard)
+        else:
+            await self._gateway.send_message(
+                telegram_id, CONTENT_MANAGER_WELCOME, reply_markup=keyboard
+            )

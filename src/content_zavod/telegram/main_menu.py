@@ -2,7 +2,8 @@
 command list.
 
 Every Role gets «📋 План недели», «✍️ Предложить Тему» and «🗂 История»; a Владелец also gets
-«⚙️ Настройки», «👥 Участники» and «🕘 Расписание». Which buttons are shown is only a convenience
+«⚙️ Настройки», «👥 Участники», «🕘 Расписание» and «📌 Памятка в чат команды»; everyone ends with
+«📖 Как пользоваться», the Инструкция (#114). Which buttons are shown is only a convenience
 - each button's Действие is still gated by `ACTION_ROLE` in the callback dispatcher.
 
 «📋 План недели» doesn't copy the Plan (it lives as one canonical message in the team chat,
@@ -15,6 +16,7 @@ screens, whose «🏠 В меню» row turns it back.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
@@ -24,9 +26,12 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from ..access import Role
 from ..scheduling import DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE, week_label_for
+from .asset_photos import AssetPhotos
 from .callback_codec import Action, SimpleAction, encode_callback_data
 from .gateway import BotClient, TelegramGateway, format_week_range
 from .generate_plan_command import GenerationJobs, PlanGeneration, handle_generate_plan_command
+from .guide import guide_button
+from .guide_texts import MENU_TEAM_NOTE_BUTTON
 from .input_prompt import InputPrompt
 from .settings_screen import BACK_TO_MENU, ScheduleStore
 from .texts import (
@@ -56,6 +61,8 @@ from .texts import (
 from .topic_command import PlanProposal, handle_topic_command
 from .types import PlanMessageRef, PlanView
 
+logger = logging.getLogger(__name__)
+
 TOPIC_INPUT_KIND = "topic_input"
 
 
@@ -81,7 +88,9 @@ def build_main_menu_keyboard(role: Role) -> InlineKeyboardMarkup:
             [_button(MENU_SETTINGS_BUTTON, "settings")],
             [_button(MENU_MEMBERS_BUTTON, "menu_members")],
             [_button(MENU_SCHEDULE_BUTTON, "schedule", BACK_TO_MENU)],
+            [_button(MENU_TEAM_NOTE_BUTTON, "guide_pin")],
         ]
+    rows.append([guide_button(from_menu=True)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -128,7 +137,11 @@ class MainMenu:
         team_chat_id: int,
         tz: ZoneInfo,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        photos: AssetPhotos | None = None,
     ) -> None:
+        """`photos` - where the /start welcome picture comes from (#114); without it the
+        welcome is text, as before."""
+        self._photos = photos
         self._plan = plan
         self._queue = queue
         self._schedule = schedule
@@ -140,13 +153,26 @@ class MainMenu:
         self._now = now
 
     async def send(self, chat_id: int, role: Role, *, welcome: bool = False) -> None:
-        text = f"{WELCOME_TEXT}\n\n{MENU_TEXT}" if welcome else MENU_TEXT
+        """The menu as a new message. `welcome` (/start) puts the greeting above it - as its own
+        picture when there are pictures (#114), since the menu itself is edited in place and a
+        photo message can't turn into a text one."""
+        text = MENU_TEXT
+        if welcome and self._photos is not None:
+            await self._photos.send(chat_id, "welcome", WELCOME_TEXT)
+        elif welcome:
+            text = f"{WELCOME_TEXT}\n\n{MENU_TEXT}"
         await self._bot.send_message(chat_id, text, reply_markup=build_main_menu_keyboard(role))
 
     async def show(self, chat_id: int, message_id: int, role: Role) -> None:
-        await self._bot.edit_message_text(
-            chat_id, message_id, MENU_TEXT, reply_markup=build_main_menu_keyboard(role)
-        )
+        """The menu in place of the pressed message - or, when that one can't become the menu
+        (a photo: the КМ welcome, the onboarding intro), as a new message below it."""
+        try:
+            await self._bot.edit_message_text(
+                chat_id, message_id, MENU_TEXT, reply_markup=build_main_menu_keyboard(role)
+            )
+        except Exception:
+            logger.info("could not turn message %s into the menu", message_id, exc_info=True)
+            await self.send(chat_id, role)
 
     async def show_plan(self, chat_id: int, message_id: int) -> None:
         week_label = week_label_for(self._now(), self._tz)
