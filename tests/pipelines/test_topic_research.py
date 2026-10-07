@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import UTC, datetime
 
@@ -6,6 +7,7 @@ import pytest
 from content_zavod.domain import PlanItemId
 from content_zavod.pipelines.page_fetcher import FetchedPage
 from content_zavod.pipelines.provenance import StepRecord
+from content_zavod.pipelines import topic_research
 from content_zavod.pipelines.topic_research import (
     TopicBrief,
     TopicResearcher,
@@ -263,3 +265,53 @@ def test_verified_facts_checks_quote_and_numbers(fact, quote, kept) -> None:
 )
 def test_search_query_adds_new_words_of_the_top_two_keywords(brief, query) -> None:
     assert search_query(brief) == query
+
+
+class _HangingSearch:
+    async def search(self, query: str, *, limit: int):
+        await asyncio.sleep(5)
+
+
+@pytest.mark.asyncio
+async def test_a_hanging_search_is_cut_off_and_degrades_to_search_unavailable(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(topic_research, "SEARCH_TIMEOUT_SECONDS", 0.05)
+    steps = ScriptedSteps(["аутлайн"])
+
+    research = await _researcher(_HangingSearch()).prepare(_BRIEF, plan_item_id=None, steps=steps)
+
+    assert research.bundle.status == "search_unavailable"
+
+
+class _ConcurrencyProbe(ScriptedSteps):
+    def __init__(self, answers: list[str | Exception]) -> None:
+        super().__init__(answers)
+        self.running = 0
+        self.max_running = 0
+
+    async def llm(self, step_name: str, messages: list[Message]) -> str:
+        answer = await super().llm(step_name, messages)
+        self.running += 1
+        self.max_running = max(self.max_running, self.running)
+        await asyncio.sleep(0.01)
+        self.running -= 1
+        return answer
+
+
+@pytest.mark.asyncio
+async def test_facts_are_extracted_from_the_pages_in_parallel_keeping_page_order() -> None:
+    search = FakeSearch([_PAGE_A, _PAGE_B])
+    pages = {_PAGE_A: page(_PAGE_A, _TEXT_A), _PAGE_B: page(_PAGE_B, _TEXT_B)}
+    steps = _ConcurrencyProbe(
+        [
+            _facts(("42% малых компаний используют CRM", _TEXT_A)),
+            _facts(("Внедрение CRM занимает от двух до шести недель", _TEXT_B)),
+            "аутлайн",
+        ]
+    )
+
+    research = await _researcher(search, pages).prepare(_BRIEF, plan_item_id=None, steps=steps)
+
+    assert steps.max_running == 2
+    assert [(e.id, e.url) for e in research.bundle.evidence] == [("E1", _PAGE_A), ("E2", _PAGE_B)]

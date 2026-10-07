@@ -96,10 +96,15 @@ async def is_public_http_url(url: str, resolve: Resolver = _system_resolver) -> 
 
 
 class HttpxPageFetcher:
+    """`timeout` is httpx's per-operation timeout (connect, each read...); `total_timeout`
+    caps a whole `fetch` - robots.txt, redirects and a server trickling bytes included - so
+    one slow site can't stall a Тема's research."""
+
     def __init__(
         self,
         *,
         timeout: float = 15.0,
+        total_timeout: float = 25.0,
         max_bytes: int = 2_000_000,
         transport: httpx.AsyncBaseTransport | None = None,
         resolve: Resolver = _system_resolver,
@@ -111,12 +116,16 @@ class HttpxPageFetcher:
             headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"},
         )
         self._max_bytes = max_bytes
+        self._total_timeout = total_timeout
         self._resolve = resolve
         self._robots: dict[str, RobotFileParser] = {}
 
     async def fetch(self, url: str) -> FetchedPage | None:
         try:
-            return await self._fetch(url)
+            return await asyncio.wait_for(self._fetch(url), timeout=self._total_timeout)
+        except TimeoutError:
+            logger.info("research: page %s skipped (over %ss)", url, self._total_timeout)
+            return None
         except (httpx.HTTPError, UnicodeError, ValueError) as exc:
             logger.info("research: page %s skipped (%s)", url, exc)
             return None

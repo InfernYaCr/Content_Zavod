@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 import pytest
 
@@ -206,3 +208,18 @@ async def test_fetch_decodes_windows_1251_from_meta_charset() -> None:
 
     assert page is not None
     assert "Русский текст в старой кодировке" in page.text
+
+
+@pytest.mark.asyncio
+async def test_fetch_gives_up_on_a_page_past_its_total_deadline() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        await asyncio.sleep(5)
+        return _html_response()
+
+    fetcher = HttpxPageFetcher(
+        transport=httpx.MockTransport(handler), resolve=_resolve_public, total_timeout=0.05
+    )
+
+    assert await fetcher.fetch("https://example.ru/slow") is None

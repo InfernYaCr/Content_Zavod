@@ -55,6 +55,12 @@ MAX_EVIDENCE = 15
 # A source older than this many years is skipped when its date is known: stale numbers are
 # worse than none (docs/plans/2026-08-12-technical-hardening-and-saas.md, E2).
 MAX_SOURCE_AGE_YEARS = 3
+# Time budget of the search call (Yandex web search takes 20-90s; the client retries
+# connection errors) - past it the Тема is written in "no evidence" mode rather than the
+# Job hanging. Pages are fetched in parallel, each under the fetcher's own total deadline,
+# and facts are extracted from the pages in parallel, so research costs roughly one search
+# + one page fetch + one extraction call of wall time, not their sum over the pages.
+SEARCH_TIMEOUT_SECONDS = 120.0
 
 # Video, social, marketplaces, search pages: not citable Источники for an article.
 _BLOCKED_DOMAINS = (
@@ -176,7 +182,10 @@ class TopicResearcher:
         if self._search is None:
             return ResearchBundle(query=query, status="search_unavailable")
         try:
-            results = await self._search.search(query, limit=self._max_results)
+            results = await asyncio.wait_for(
+                self._search.search(query, limit=self._max_results),
+                timeout=SEARCH_TIMEOUT_SECONDS,
+            )
         except Exception:
             logger.warning("research: web search failed for %r", query, exc_info=True)
             return ResearchBundle(query=query, status="search_unavailable")
@@ -196,12 +205,12 @@ class TopicResearcher:
         )
         pages = await self._fetch_pages([hit.url for hit in results.hits])
         titles = {hit.url: hit.title for hit in results.hits}
+        extracted = await asyncio.gather(*(self._extract(brief, page, steps) for page in pages))
         evidence: list[Evidence] = []
         sources: list[ResearchSource] = []
-        for page in pages:
+        for page, facts in zip(pages, extracted, strict=True):
             if len(evidence) >= MAX_EVIDENCE:
                 break
-            facts = await self._extract(brief, page, steps)
             if not facts:
                 continue
             for fact, quote in facts[: MAX_EVIDENCE - len(evidence)]:
