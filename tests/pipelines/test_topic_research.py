@@ -5,9 +5,9 @@ from datetime import UTC, datetime
 import pytest
 
 from content_zavod.domain import PlanItemId
+from content_zavod.pipelines import topic_research
 from content_zavod.pipelines.page_fetcher import FetchedPage
 from content_zavod.pipelines.provenance import StepRecord
-from content_zavod.pipelines import topic_research
 from content_zavod.pipelines.topic_research import (
     TopicBrief,
     TopicResearcher,
