@@ -45,6 +45,10 @@ class ArticleView:
     title: str
     platform: str
     content: bytes
+    # The latest Версия's Исследование status (#94): `no_evidence`/`search_unavailable`
+    # mean the text was written without verified facts - the Article card warns the editor.
+    # `None` for Версии generated before #94.
+    research_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +116,8 @@ class GeneratedVersion:
     tokens: int | None
     cost: float | None
     source_job_id: int | None = None
+    # `research_status` from the Job output (#94) - metadata, never part of `content`.
+    research_status: str | None = None
 
 
 @dataclass(frozen=True)

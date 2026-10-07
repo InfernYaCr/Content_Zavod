@@ -1,12 +1,13 @@
 """The ready-Статья card's text (#92): title, Площадка and a plain-text preview, so a
 Контент-менеджер can judge the text on a phone without downloading a file. The full text is
-one tap away - the «📖 Читать» Страница для чтения, or the .docx/.md Выгрузка."""
+one tap away - the «📖 Читать» Страница для чтения, or the .docx/.md Выгрузка. A Версия
+written without verified evidence (#94) gets a warning line - kept out of the text itself."""
 
 from __future__ import annotations
 
 import re
 
-from .texts import ARTICLE_CARD_PLATFORM, platform_name
+from .texts import ARTICLE_CARD_NO_EVIDENCE, ARTICLE_CARD_PLATFORM, platform_name
 from .types import ArticleView
 
 PREVIEW_LIMIT = 800
@@ -25,6 +26,9 @@ def render_article_card_text(article: ArticleView) -> str:
         f"📄 {article.title}",
         ARTICLE_CARD_PLATFORM.format(platform=platform_name(article.platform)),
     ]
+    warning = ARTICLE_CARD_NO_EVIDENCE.get(article.research_status or "")
+    if warning:
+        lines.append(warning)
     if preview:
         lines += ["", preview]
     return "\n".join(lines)

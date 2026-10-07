@@ -11,7 +11,9 @@ evidence with `[E1]` markers; this module turns them into numbered `[1]` referen
 appends «Источники» listing only URLs from the evidence bundle - the model never writes a
 source list, and any other URL it put in the text is dropped (the Проект's link excepted).
 Without evidence (search unavailable or nothing verifiable found) the draft is told not to
-state concrete facts/numbers and the Статья opens with a note for the editor.
+state concrete facts/numbers; the Статья text itself stays clean (it is exported and
+published as is) - the Job reports `research_status`, the Версия stores it, and the
+Telegram Article card warns the editor.
 
 Both job types converge on one shared pipeline core (`_run_pipeline`):
 `regenerate_article` is a refinement of the prior result, not a different pipeline - it
@@ -76,19 +78,6 @@ _PROMPT_VERSIONS = {
 
 SOURCES_HEADING = "Источники:"
 
-_NO_EVIDENCE_NOTES = {
-    "search_unavailable": (
-        "> Примечание для редактора: поиск источников по Теме был недоступен, поэтому "
-        "Статья написана без проверенных фактов, цифр и ссылок. Проверьте утверждения перед "
-        "публикацией или запросите Перегенерацию позже."
-    ),
-    "no_evidence": (
-        "> Примечание для редактора: по Теме не нашлось источников с проверяемыми фактами, "
-        "поэтому Статья написана без конкретных цифр и ссылок. Проверьте утверждения перед "
-        "публикацией."
-    ),
-}
-_NOTE_PREFIX = "> Примечание для редактора:"
 
 
 class ArticleReader(Protocol):
@@ -257,8 +246,8 @@ def _is_money_or_legal(title: str, keywords: Sequence[str]) -> bool:
 
 def assemble_content(body: str, bundle: ResearchBundle, project: Project | None) -> str:
     """The model's text -> the Статья: foreign URLs out, `[E1]` -> `[1]`, the Проект link
-    exactly once, «Источники» from the evidence bundle only, and a note for the editor when
-    there was no evidence to write from."""
+    exactly once, «Источники» from the evidence bundle only. Nothing about missing evidence
+    goes into the text: that is `research_status` metadata, shown on the Article card."""
     body = _drop_foreign_urls(body, {source.url for source in bundle.sources}, project)
     body, cited = _number_citations(body, bundle)
     body = _ensure_project_link(body, project)
@@ -272,8 +261,6 @@ def assemble_content(body: str, bundle: ResearchBundle, project: Project | None)
             # still what the text stands on, so list them without numbering.
             lines = [f"- {_source_line(bundle, source.url)}" for source in bundle.sources]
         body = f"{body.rstrip()}\n\n{SOURCES_HEADING}\n" + "\n".join(lines)
-    else:
-        body = f"{_NO_EVIDENCE_NOTES[bundle.status]}\n\n{body}"
     return body
 
 
@@ -344,12 +331,9 @@ def _number_citations(body: str, bundle: ResearchBundle) -> tuple[str, list[str]
 
 
 def strip_generated_parts(content: str) -> str:
-    """The previous Версия as the model should see it on Перегенерация: without the note
-    for the editor, the «Источники» appendix and the numbered references - all of which
-    the code adds itself and which would only confuse the `[E1]` markers."""
-    paragraphs = content.split("\n\n")
-    if paragraphs and paragraphs[0].startswith(_NOTE_PREFIX):
-        content = "\n\n".join(paragraphs[1:])
+    """The previous Версия as the model should see it on Перегенерация: without the
+    «Источники» appendix and the numbered references - both of which the code adds itself
+    and which would only confuse the `[E1]` markers."""
     heading = f"\n\n{SOURCES_HEADING}\n"
     if heading in content:
         content = content[: content.rindex(heading)]

@@ -5,7 +5,6 @@ import pytest
 from content_zavod.domain import ArticleId, ArticleView, PlanItemDetail, PlanItemId
 from content_zavod.job_queue import JobPartialFailure
 from content_zavod.pipelines.article_pipeline import (
-    _NO_EVIDENCE_NOTES,
     make_generate_article_handler,
     make_regenerate_article_handler,
 )
@@ -95,9 +94,6 @@ def _completion(
         latency_ms=latency_ms,
     )
 
-
-_NO_EVIDENCE = _NO_EVIDENCE_NOTES["no_evidence"]
-_SEARCH_DOWN = _NO_EVIDENCE_NOTES["search_unavailable"]
 
 _PAGE_A = "https://media.example/crm-2026"
 _PAGE_B = "https://blog.example/crm-tips"
@@ -201,7 +197,7 @@ async def test_unknown_evidence_markers_are_dropped_and_unmarked_text_lists_all_
 
 
 @pytest.mark.asyncio
-async def test_without_evidence_the_article_has_a_note_and_no_sources() -> None:
+async def test_without_evidence_the_text_stays_clean_and_the_status_is_reported() -> None:
     text_generator = ScriptedTextGenerator(_plain_completions("Body https://x.example/a only."))
     handler = make_generate_article_handler(
         text_generator, _no_evidence_researcher(), SettingsService(FakeOwnerSettingsStore())
@@ -209,7 +205,8 @@ async def test_without_evidence_the_article_has_a_note_and_no_sources() -> None:
 
     output = await handler(_PAYLOAD)
 
-    assert output["content"] == f"{_NO_EVIDENCE}\n\nBody only."
+    # No note inside the text - it would be exported/published; the card shows the status.
+    assert output["content"] == "Body only."
     assert output["research_status"] == "no_evidence"
     assert "Источники" not in output["content"]
     draft_system = text_generator.calls[1][0].text
@@ -217,7 +214,7 @@ async def test_without_evidence_the_article_has_a_note_and_no_sources() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failed_search_runs_in_no_evidence_mode_with_its_own_note() -> None:
+async def test_failed_search_runs_in_no_evidence_mode_with_its_own_status() -> None:
     researcher = TopicResearcher(FakeSearch(error=RuntimeError("403")), FakePageFetcher())
     text_generator = ScriptedTextGenerator(_plain_completions("Body."))
     handler = make_generate_article_handler(
@@ -226,7 +223,7 @@ async def test_failed_search_runs_in_no_evidence_mode_with_its_own_note() -> Non
 
     output = await handler(_PAYLOAD)
 
-    assert output["content"] == f"{_SEARCH_DOWN}\n\nBody."
+    assert output["content"] == "Body."
     assert output["research_status"] == "search_unavailable"
 
 
@@ -303,7 +300,7 @@ async def test_regenerate_article_refines_the_current_version_without_its_append
         plan_item_id="item-1",
         title="Topic A",
         platform="zen",
-        content=f"{_NO_EVIDENCE}\n\nold content [1]\n\nИсточники:\n1. x — https://a".encode(),
+        content="old content [1]\n\nИсточники:\n1. x — https://a".encode(),
     )
     article_reader = FakeArticleReader(view)
     text_generator = ScriptedTextGenerator(_plain_completions("new body"))
@@ -318,7 +315,7 @@ async def test_regenerate_article_refines_the_current_version_without_its_append
     output = await handler({"article_id": "article-1", "comment": "shorter please"})
 
     assert article_reader.requested == ["article-1"]
-    assert output["content"] == f"{_NO_EVIDENCE}\n\nnew body"
+    assert output["content"] == "new body"
     draft_input = text_generator.calls[1][1].text.split("INPUT_DATA", 1)[1]
     assert '"previous_content": "old content"' in draft_input
     assert "shorter please" in draft_input
@@ -588,11 +585,7 @@ async def _generate_with_project(rewrite: str, *, evidence: bool = False) -> tup
     researcher = _evidence_researcher() if evidence else _no_evidence_researcher()
     handler = make_generate_article_handler(text_generator, researcher, SettingsService(store))
     output = await handler({"article_id": "a", "title": "T", "platform": "zen"})
-    content = output["content"]
-    if not evidence:
-        assert content.startswith(f"{_NO_EVIDENCE}\n\n")
-        content = content.removeprefix(f"{_NO_EVIDENCE}\n\n")
-    return content, text_generator.calls
+    return output["content"], text_generator.calls
 
 
 @pytest.mark.asyncio

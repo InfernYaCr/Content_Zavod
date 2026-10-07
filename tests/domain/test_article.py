@@ -55,6 +55,29 @@ async def test_record_version_makes_the_article_available_via_get(
     assert view.content == b"Hello, world."
 
 
+async def test_latest_version_research_status_is_served_with_the_view(
+    article: Article, plan: Plan
+) -> None:
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.create(plan_id, item_id, "Topic A", "zen")
+
+    await article.record_version(
+        article_id,
+        GeneratedVersion(
+            content="No facts.",
+            prompt="p",
+            model="m",
+            tokens=1,
+            cost=None,
+            research_status="no_evidence",
+        ),
+    )
+    assert (await article.get(article_id)).research_status == "no_evidence"
+
+    await article.record_version(article_id, _VERSION)
+    assert (await article.get(article_id)).research_status is None
+
+
 async def test_record_version_raises_for_unknown_article(article: Article) -> None:
     with pytest.raises(ArticleNotFound):
         await article.record_version("missing", _VERSION)

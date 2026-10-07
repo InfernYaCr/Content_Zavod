@@ -87,15 +87,15 @@ class Article:
         )
         if article_row is None:
             raise ArticleNotFound(article_id)
-        content = await self._latest_content(article_id)
-        if content is None:
+        latest = await self._latest_version(article_id)
+        if latest is None:
             raise ArticleNotReady(article_id)
         return _to_view(
             article_id,
             PlanItemId(article_row["plan_item_id"]),
             article_row["title"],
             article_row["platform"],
-            content,
+            *latest,
         )
 
     async def list_for_plan(self, plan_id: PlanId) -> list[ArticleView]:
@@ -106,8 +106,8 @@ class Article:
         views: list[ArticleView] = []
         for row in rows:
             article_id = ArticleId(row["id"])
-            content = await self._latest_content(article_id)
-            if content is None:
+            latest = await self._latest_version(article_id)
+            if latest is None:
                 continue
             views.append(
                 _to_view(
@@ -115,7 +115,7 @@ class Article:
                     PlanItemId(row["plan_item_id"]),
                     row["title"],
                     row["platform"],
-                    content,
+                    *latest,
                 )
             )
         return views
@@ -247,8 +247,9 @@ class Article:
                 await conn.execute(
                     """
                     INSERT INTO article_versions
-                        (article_id, content, prompt, model, tokens, cost, source_job_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        (article_id, content, prompt, model, tokens, cost, source_job_id,
+                         research_status)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     """,
                     article_id,
                     version.content,
@@ -257,6 +258,7 @@ class Article:
                     version.tokens,
                     version.cost,
                     version.source_job_id,
+                    version.research_status,
                 )
                 await conn.execute(
                     "UPDATE articles SET status = 'ready', active_generation_job_id = NULL, "
@@ -364,16 +366,23 @@ class Article:
             raise ArticleNotFound(article_id)
         return row["status"]
 
-    async def _latest_content(self, article_id: ArticleId) -> str | None:
+    async def _latest_version(self, article_id: ArticleId) -> tuple[str, str | None] | None:
+        """The latest Версия's (content, research_status)."""
         row = await self._pool.fetchrow(
-            "SELECT content FROM article_versions WHERE article_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
+            "SELECT content, research_status FROM article_versions WHERE article_id = $1 "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
             article_id,
         )
-        return row["content"] if row is not None else None
+        return (row["content"], row["research_status"]) if row is not None else None
 
 
 def _to_view(
-    article_id: ArticleId, plan_item_id: PlanItemId, title: str, platform: str, content: str
+    article_id: ArticleId,
+    plan_item_id: PlanItemId,
+    title: str,
+    platform: str,
+    content: str,
+    research_status: str | None,
 ) -> ArticleView:
     return ArticleView(
         id=article_id,
@@ -381,4 +390,5 @@ def _to_view(
         title=title,
         platform=platform,
         content=content.encode("utf-8"),
+        research_status=research_status,
     )
