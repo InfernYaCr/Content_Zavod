@@ -23,6 +23,7 @@ from .commands import MENU_COMMANDS, resync_member_commands, sync_commands
 from .comment_gated_regeneration import CommentGatedRegeneration, CommentPrompt
 from .gateway import (
     BotClient,
+    MessageGone,
     TelegramCommentPrompt,
     TelegramGateway,
     build_article_keyboard,
@@ -101,6 +102,7 @@ __all__ = [
     "InputPrompt",
     "JoinRequestFlow",
     "MainMenu",
+    "MessageGone",
     "Page",
     "PlanHubSource",
     "PlanId",

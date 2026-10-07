@@ -29,14 +29,26 @@ to one retrying after the other) can also both send before either records -
 out of scope here since `run_notifications` delivers one result at a time;
 only a delivery outside that loop (e.g. `/topic`) running concurrently with
 it could still race.
+
+A recorded message someone deleted in the chat (#106) would otherwise fail
+every later edit for that Plan. An edit that finds it gone (`MessageGone`)
+sends a fresh message and moves the ref to it with
+`replace_message_ref`, conditional on the ref still naming the dead
+message. Two deliveries racing after the same deletion therefore both
+send, but only one replacement sticks: the loser deletes its own extra
+message (best effort) and redraws the winner's with its view instead.
 """
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from .gateway import TelegramGateway
+from .gateway import MessageGone, TelegramGateway
 from .types import PlanHubView, PlanId, PlanMessageRef, PlanView
+
+logger = logging.getLogger(__name__)
 
 
 class PlanMessageRefs(Protocol):
@@ -44,17 +56,73 @@ class PlanMessageRefs(Protocol):
 
     async def record_message_ref(self, plan_id: PlanId, chat_id: int, message_id: int) -> None: ...
 
+    async def replace_message_ref(
+        self, plan_id: PlanId, old: PlanMessageRef, chat_id: int, message_id: int
+    ) -> bool: ...
+
+
+async def _edit_or_replace(
+    plan: PlanMessageRefs,
+    gateway: TelegramGateway,
+    plan_id: PlanId,
+    chat_id: int,
+    ref: PlanMessageRef,
+    *,
+    send: Callable[[int], Awaitable[int]],
+    edit: Callable[[int, int], Awaitable[None]],
+) -> bool:
+    """Edits the recorded Plan message; if it is gone (#106), sends a replacement into
+    `chat_id` and makes it canonical. Returns whether the replacement this call sent is now
+    the Plan message."""
+    try:
+        await edit(ref.chat_id, ref.message_id)
+        return False
+    except MessageGone:
+        logger.warning(
+            "Plan %s message %s in chat %s is gone, sending a new one",
+            plan_id,
+            ref.message_id,
+            ref.chat_id,
+        )
+    message_id = await send(chat_id)
+    if await plan.replace_message_ref(plan_id, ref, chat_id, message_id):
+        return True
+    # Another delivery replaced the dead message first: ours is an extra - tidy it up and draw
+    # this delivery's state on the winner instead.
+    try:
+        await gateway.delete_message(chat_id, message_id)
+    except Exception:
+        logger.warning(
+            "could not delete extra Plan %s message %s in chat %s",
+            plan_id,
+            message_id,
+            chat_id,
+            exc_info=True,
+        )
+    current = await plan.get_message_ref(plan_id)
+    if current is not None:
+        await edit(current.chat_id, current.message_id)
+    return False
+
 
 async def deliver_plan_message(
     plan: PlanMessageRefs, gateway: TelegramGateway, chat_id: int, view: PlanView
 ) -> bool:
     """Returns whether a new message was sent - `False` means an earlier, possibly long
     scrolled-away message was edited in place, which an interactive caller may want to
-    point the user at."""
+    point the user at. A recorded message deleted in the chat is replaced by a new one, which
+    counts as sent (#106)."""
     ref = await plan.get_message_ref(view.id)
     if ref is not None:
-        await gateway.edit_plan(ref.chat_id, ref.message_id, view)
-        return False
+        return await _edit_or_replace(
+            plan,
+            gateway,
+            view.id,
+            chat_id,
+            ref,
+            send=lambda c: gateway.send_plan(c, view),
+            edit=lambda c, m: gateway.edit_plan(c, m, view),
+        )
     message_id = await gateway.send_plan(chat_id, view)
     await plan.record_message_ref(view.id, chat_id, message_id)
     return True
@@ -70,14 +138,23 @@ async def deliver_plan_hub(
     """Redraws an approved Plan's canonical message as its Хаб (#91), from statuses read
     right now - so a redelivered or out-of-order notification just redraws the same state.
     Same send-once/edit-after shape as `deliver_plan_message`: a Plan with no recorded message
-    yet gets one sent and recorded. A Plan that is no longer `approved` (archived by a
-    replacement) is left alone - its late Job results have nowhere meaningful to show."""
+    yet gets one sent and recorded, and a deleted one is replaced (#106). A Plan that is no
+    longer `approved` (archived by a replacement) is left alone - its late Job results have
+    nowhere meaningful to show."""
     hub = await plan.get_hub(plan_id)
     if hub.status != "approved":
         return
     ref = await plan.get_message_ref(plan_id)
     if ref is not None:
-        await gateway.edit_hub(ref.chat_id, ref.message_id, hub)
+        await _edit_or_replace(
+            plan,
+            gateway,
+            plan_id,
+            chat_id,
+            ref,
+            send=lambda c: gateway.send_hub(c, hub),
+            edit=lambda c, m: gateway.edit_hub(c, m, hub),
+        )
         return
     message_id = await gateway.send_hub(chat_id, hub)
     await plan.record_message_ref(plan_id, chat_id, message_id)

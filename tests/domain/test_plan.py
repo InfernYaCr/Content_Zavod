@@ -607,6 +607,35 @@ async def test_record_message_ref_is_first_writer_wins(plan: Plan) -> None:
     assert await plan.get_message_ref(plan_id) == PlanMessageRef(chat_id=42, message_id=100)
 
 
+async def test_replace_message_ref_overwrites_the_dead_ref(plan: Plan) -> None:
+    """#106: the Plan message was deleted in the chat - its replacement becomes canonical."""
+    plan_id, _ = await _create_plan(plan)
+    await plan.record_message_ref(plan_id, chat_id=42, message_id=100)
+
+    replaced = await plan.replace_message_ref(
+        plan_id, PlanMessageRef(chat_id=42, message_id=100), chat_id=43, message_id=200
+    )
+
+    assert replaced is True
+    assert await plan.get_message_ref(plan_id) == PlanMessageRef(chat_id=43, message_id=200)
+
+
+async def test_replace_message_ref_loses_to_a_delivery_that_already_replaced_it(
+    plan: Plan,
+) -> None:
+    """#106: two deliveries both found the same dead message; only the first replacement
+    sticks, the second learns it lost and leaves the winner's ref alone."""
+    plan_id, _ = await _create_plan(plan)
+    await plan.record_message_ref(plan_id, chat_id=42, message_id=100)
+    dead = PlanMessageRef(chat_id=42, message_id=100)
+    await plan.replace_message_ref(plan_id, dead, chat_id=42, message_id=200)
+
+    replaced = await plan.replace_message_ref(plan_id, dead, chat_id=42, message_id=300)
+
+    assert replaced is False
+    assert await plan.get_message_ref(plan_id) == PlanMessageRef(chat_id=42, message_id=200)
+
+
 async def _approved_with_fan_out(
     plan: Plan, article: Article, *, titles: tuple[str, ...] = ("Topic A", "Topic B")
 ) -> tuple[PlanId, list[PlanItemDetail]]:

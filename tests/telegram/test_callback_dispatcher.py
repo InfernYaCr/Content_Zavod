@@ -944,6 +944,19 @@ async def test_hub_back_returns_to_the_checklist(f: Fixtures) -> None:
     assert f.bot.edited_messages[-1][2].startswith("📋 План")
 
 
+async def test_hub_button_redraws_the_pressed_message_even_if_the_ref_points_elsewhere(
+    f: Fixtures,
+) -> None:
+    """#106: a Хаб button lives on a message that exists (it was just pressed), so it redraws
+    that one - never the stored ref, which may be a deleted message or a replacement."""
+    f.plan.message_ref = PlanMessageRef(chat_id=1, message_id=99)
+
+    await dispatch(f, SimpleAction("hub_back", "plan-1"))
+
+    assert [(c, m) for c, m, _, _ in f.bot.edited_messages] == [(1, 2)]
+    assert f.bot.sent_messages == []
+
+
 async def test_hub_cover_sends_the_photo_on_demand(f: Fixtures) -> None:
     f.plan.cover = PlanItemCoverView(
         plan_item_id=PlanItemId("item-1"), title="Тема", image=b"img", mime_type="image/png"

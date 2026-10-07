@@ -528,6 +528,18 @@ def build_article_keyboard(
     )
 
 
+class MessageGone(Exception):
+    """The message an edit addressed no longer exists for the bot to edit - someone deleted
+    it in the chat, or Telegram won't let it be edited any more (#106). Raised by a
+    `BotClient` edit so callers holding a stored message identity (the Plan message) can send
+    a fresh one instead of failing every later redraw."""
+
+    def __init__(self, chat_id: int, message_id: int) -> None:
+        super().__init__(f"message {message_id} in chat {chat_id} is gone")
+        self.chat_id = chat_id
+        self.message_id = message_id
+
+
 class BotClient(Protocol):
     async def send_message(
         self,
@@ -561,7 +573,9 @@ class BotClient(Protocol):
         message_id: int,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
-    ) -> None: ...
+    ) -> None:
+        """An unchanged redraw is success; a message that's gone raises `MessageGone`."""
+        ...
 
     async def edit_message_reply_markup(
         self,
@@ -591,6 +605,10 @@ class TelegramGateway:
         """Generic send returning the message id - for flows that need to address
         this exact message later (e.g. editing a join-request broadcast)."""
         return await self._bot.send_message(chat_id, text, reply_markup=reply_markup)
+
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        """Best effort, like the bot client's: a message already gone is not an error."""
+        await self._bot.delete_message(chat_id, message_id)
 
     async def send_plan(self, chat_id: int, plan: PlanView, *, page: int = 0) -> int:
         """Returns the sent message's id, so callers can record it as the Plan's canonical

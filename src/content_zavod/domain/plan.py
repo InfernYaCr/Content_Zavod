@@ -30,7 +30,9 @@ Telegram message (ADR-0005, #73): the delivery side (see
 recorded yet and edits otherwise, so a crash between a successful Telegram
 send and the caller's own delivered-mark no longer produces a second
 message on retry - `record_message_ref` runs, and is durable, before that
-mark is ever attempted.
+mark is ever attempted. When the recorded message was deleted in the chat,
+`replace_message_ref` moves the identity to the replacement the delivery sends
+(#106) - only if nobody replaced it first.
 
 `get_hub` reads an approved Plan as its Хаб (#91, ADR-0014): each Тема's cover and
 per-Площадка Статья state, derived from current rows and the Jobs that own their
@@ -145,6 +147,27 @@ class Plan:
             chat_id,
             message_id,
         )
+
+    async def replace_message_ref(
+        self, plan_id: PlanId, old: PlanMessageRef, chat_id: int, message_id: int
+    ) -> bool:
+        """Moves the Plan's canonical Telegram identity to a replacement message after the
+        recorded one turned out to be gone - deleted in the chat (#106). Conditional on the
+        stored ref still being `old`: of two deliveries that both found the same dead message,
+        only the first replacement sticks, and the other gets `False` and must not treat its
+        own message as canonical."""
+        status = await self._pool.execute(
+            """
+            UPDATE plans SET telegram_chat_id = $4, telegram_message_id = $5
+            WHERE id = $1 AND telegram_chat_id = $2 AND telegram_message_id = $3
+            """,
+            plan_id,
+            old.chat_id,
+            old.message_id,
+            chat_id,
+            message_id,
+        )
+        return status == "UPDATE 1"
 
     async def get_hub(self, plan_id: PlanId) -> PlanHubView:
         """The Plan as its Хаб (#91): every approved Тема with its cover and per-Площадка Статья
