@@ -53,7 +53,7 @@ from .input_prompt import InputPrompt
 from .join_request_flow import JoinRequestFlow
 from .main_menu import MainMenu, build_open_menu_keyboard, render_help_text
 from .members_command import handle_members_command
-from .plan_delivery import PlanMessageRefs, deliver_plan_message
+from .plan_delivery import PlanHubSource, PlanMessageRefs, deliver_plan_hub, deliver_plan_message
 from .plan_review import PlanOperations, PlanReview
 from .settings_screen import SETTING_FIELDS, SettingField, SettingsScreen
 from .topic_command import PlanProposal, handle_topic_command
@@ -102,6 +102,7 @@ __all__ = [
     "JoinRequestFlow",
     "MainMenu",
     "Page",
+    "PlanHubSource",
     "PlanId",
     "PlanItemId",
     "PlanItemView",
@@ -127,6 +128,7 @@ __all__ = [
     "build_retry_keyboard",
     "build_skip_keyboard",
     "decode_callback_data",
+    "deliver_plan_hub",
     "deliver_plan_message",
     "encode_callback_data",
     "handle_cancel_regenerate_plan",

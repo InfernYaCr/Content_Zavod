@@ -3,8 +3,8 @@
 Payload is a union of six types: five immutable dataclasses for the composite
 Действия that pack more than one field into their id (`Page`, `HistoryWeek`,
 `HistoryVersions`, `HistoryVersion`, `ExportArticle`), plus `SimpleAction` for
-the remaining Действия that carry a single opaque id (the Главное меню and
-Экран Настроек ones, #95, pack whatever they need into that id themselves).
+the remaining Действия that carry a single opaque id (the Хаб's six, #91, and the
+Главное меню and Экран Настроек ones, #95, pack whatever they need into that id).
 
 `ACTION_ROLE` says which of the Действия need "owner" and which accept any
 registered Role - `request_access` is absent, same reasoning as `COMMAND_ROLE`
@@ -65,6 +65,12 @@ Action = Literal[
     "schedule_day",
     "schedule_time",
     "cancel_input",
+    "hub_topic",
+    "hub_back",
+    "hub_cover",
+    "hub_article",
+    "hub_retry",
+    "hub_retry_topic",
 ]
 
 _ACTION_CODES: dict[Action, str] = {
@@ -106,6 +112,12 @@ _ACTION_CODES: dict[Action, str] = {
     "schedule_day": "sd",
     "schedule_time": "sk",
     "cancel_input": "ci",
+    "hub_topic": "ht",
+    "hub_back": "hb",
+    "hub_cover": "hc",
+    "hub_article": "ha",
+    "hub_retry": "hr",
+    "hub_retry_topic": "hrt",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
 
@@ -150,6 +162,12 @@ ACTION_ROLE: dict[Action, Role | None] = {
     "schedule_time": "owner",
     # Drops only the presser's own wait (one per chat and user), so any Role may press it.
     "cancel_input": None,
+    "hub_topic": None,
+    "hub_back": None,
+    "hub_cover": None,
+    "hub_article": None,
+    "hub_retry": None,
+    "hub_retry_topic": None,
 }
 
 # The five composite Действия each get their own type below - see them out

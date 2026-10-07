@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from datetime import date
 from typing import Protocol
 
 from aiogram.types import (
@@ -26,11 +25,14 @@ from .callback_codec import (
     encode_callback_data,
 )
 from .pending_inputs import PendingInput
+from .plan_hub import render_hub_screen
 from .texts import (
+    COVER_CAPTION,
     READ_BUTTON,
     REFINE_BUTTON,
     TO_MENU_BUTTON,
     article_status,
+    format_week_range,
     plan_status,
     platform_name,
     topic_status,
@@ -41,6 +43,7 @@ from .types import (
     ArticleVersionSummary,
     ArticleVersionView,
     ArticleView,
+    PlanHubView,
     PlanSummary,
     PlanView,
     build_export_document,
@@ -73,39 +76,6 @@ def total_pages(item_count: int) -> int:
     return max(1, -(-item_count // ITEMS_PER_PAGE))  # ceil division
 
 
-_MONTHS_RU_GENITIVE = (
-    "января",
-    "февраля",
-    "марта",
-    "апреля",
-    "мая",
-    "июня",
-    "июля",
-    "августа",
-    "сентября",
-    "октября",
-    "ноября",
-    "декабря",
-)
-
-
-def format_week_range(week_label: str) -> str:
-    """Render an ISO week_label (e.g. "2026-W33") as a human date range, e.g.
-    "10–16 августа 2026". `week_label` itself stays the Plan's idempotency
-    key (see `week_label_for` in scheduling/weekly_plan_trigger.py) and is
-    never shown to the Контент-менеджер directly."""
-    year_part, _, week_part = week_label.partition("-W")
-    monday = date.fromisocalendar(int(year_part), int(week_part), 1)
-    sunday = date.fromisocalendar(int(year_part), int(week_part), 7)
-    start_month = _MONTHS_RU_GENITIVE[monday.month - 1]
-    end_month = _MONTHS_RU_GENITIVE[sunday.month - 1]
-    if monday.year != sunday.year:
-        return f"{monday.day} {start_month} {monday.year} – {sunday.day} {end_month} {sunday.year}"
-    if monday.month != sunday.month:
-        return f"{monday.day} {start_month} – {sunday.day} {end_month} {sunday.year}"
-    return f"{monday.day}–{sunday.day} {end_month} {sunday.year}"
-
-
 # A Тема's status as the Контент-менеджер reads it in the Plan message (#81) - the raw
 # `plan_items.status` keys never reach the chat.
 def render_plan_text(plan: PlanView, *, page: int = 0) -> str:
@@ -122,17 +92,6 @@ def render_plan_text(plan: PlanView, *, page: int = 0) -> str:
             status = topic_status(item.status)
             lines.append(f"{index}. {item.title} — {status}")
     return "\n".join(lines)
-
-
-def render_generation_progress_text(done: int, total: int) -> str:
-    """One live-edited message tracking an approve_all batch's generate_cover/generate_article
-    Jobs (#91), replacing the old one-Telegram-message-per-Job trickle. Points at /history
-    once done - covers and article-ready messages themselves still arrive individually, just
-    all together right after this text reaches total/total, not scattered across the whole
-    generation window."""
-    if done >= total:
-        return f"✅ Материалы готовы: {total}/{total}. Статьи — в /history."
-    return f"🔄 Готовлю материалы: {done}/{total}"
 
 
 def build_plan_keyboard(plan: PlanView, *, page: int = 0) -> InlineKeyboardMarkup | None:
@@ -728,17 +687,17 @@ class TelegramGateway:
             reply_markup=build_history_version_keyboard(article.id, back_page=back_page),
         )
 
-    async def send_generation_progress(self, chat_id: int, done: int, total: int) -> int:
-        """Sends the batch's progress message, returning its id so the caller can record it
-        as the batch's canonical Telegram identity (#91, mirrors `send_plan`/#73)."""
-        return await self._bot.send_message(chat_id, render_generation_progress_text(done, total))
+    async def send_hub(self, chat_id: int, hub: PlanHubView) -> int:
+        """The Хаб (#91) as a new message - only when the Plan has no canonical message yet;
+        returns its id so the caller can record it (`telegram.plan_delivery`)."""
+        text, keyboard = render_hub_screen(hub)
+        return await self._bot.send_message(chat_id, text, reply_markup=keyboard)
 
-    async def edit_generation_progress(
-        self, chat_id: int, message_id: int, done: int, total: int
-    ) -> None:
-        await self._bot.edit_message_text(
-            chat_id, message_id, render_generation_progress_text(done, total)
-        )
+    async def edit_hub(self, chat_id: int, message_id: int, hub: PlanHubView) -> None:
+        """Redraws the Plan message as whatever Хаб screen is open (#91). An unchanged
+        redraw (e.g. a redelivered notification) is a no-op success in the bot client."""
+        text, keyboard = render_hub_screen(hub)
+        await self._bot.edit_message_text(chat_id, message_id, text, reply_markup=keyboard)
 
     async def edit_notice(self, chat_id: int, message_id: int, text: str) -> None:
         await self._bot.edit_message_text(chat_id, message_id, text)
@@ -773,7 +732,7 @@ class TelegramGateway:
     async def send_cover(self, chat_id: int, image: bytes, mime_type: str, title: str) -> None:
         extension = mime_type.rpartition("/")[2] or "jpg"
         photo = BufferedInputFile(image, filename=f"cover.{extension}")
-        await self._bot.send_photo(chat_id, photo, caption=f"🖼 Обложка готова: {title}")
+        await self._bot.send_photo(chat_id, photo, caption=COVER_CAPTION.format(title=title))
 
     async def send_error(self, chat_id: int, text: str) -> None:
         for chunk in chunk_text(text):

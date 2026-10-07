@@ -19,7 +19,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import wraps
-from typing import Protocol
 
 import asyncpg
 from aiogram import Bot, Dispatcher, Router
@@ -41,7 +40,6 @@ from ..access import COMMAND_ROLE, JoinRequests, Membership, Role, require_role
 from ..config import Settings, load_settings
 from ..domain import (
     Article,
-    ArticleView,
     GeneratedVersion,
     Plan,
     PlanId,
@@ -78,6 +76,7 @@ from ..telegram import (
     TelegramGateway,
     build_open_menu_keyboard,
     build_request_access_keyboard,
+    deliver_plan_hub,
     deliver_plan_message,
     handle_generate_plan_command,
     handle_history_command,
@@ -88,6 +87,7 @@ from ..telegram import (
     sync_commands,
     unpack_callback_query,
 )
+from ..telegram.article_card import ArticlePagePublisher, send_article_card
 from ..telegram.gateway import format_week_range
 from ..telegram.pending_inputs import PendingInputs
 from ..telegram.texts import UNKNOWN_MESSAGE_TEXT, job_failure_text
@@ -95,12 +95,6 @@ from ..telegraph import HttpxTelegraphClient, TelegraphPublisher, project_footer
 from ._process import register_shutdown
 
 logger = logging.getLogger(__name__)
-
-
-class ArticlePagePublisher(Protocol):
-    """See `telegraph.TelegraphPublisher`: the Статья's page URL, `None` on failure."""
-
-    async def publish(self, article: ArticleView) -> str | None: ...
 
 
 class _AiogramBotClient:
@@ -184,6 +178,8 @@ def _build_router(
     prompts: InputPrompt,
     queue: JobQueue,
     settings: Settings,
+    *,
+    publisher: ArticlePagePublisher | None = None,
 ) -> Router:
     router = Router()
 
@@ -323,6 +319,7 @@ def _build_router(
         queue,
         main_menu,
         prompts,
+        publisher=publisher,
     )
 
     @router.callback_query()
@@ -388,17 +385,41 @@ class _PlanDelivery:
 
 
 @dataclass(frozen=True)
+class _HubDelivery:
+    """Redraw an approved Plan's message as its Хаб (#91) - after every Статья/cover result,
+    success or failure. Progress is read back from the DB, never counted, so delivering this
+    twice for one Job (a redelivered notification) is harmless."""
+
+    plan_id: PlanId
+
+
+@dataclass(frozen=True)
 class _NoticeDelivery:
     text: str
 
 
 @dataclass(frozen=True)
 class _ArticleDelivery:
+    """A Статья card, sent only for a by-hand «✏️ Доработать» (`regenerate_article`): the
+    person who asked is looking at the bottom of the chat. The approval fan-out's Статьи are
+    reached through the Хаб instead (#91)."""
+
+    article_id: ArticleId
+
+
+@dataclass(frozen=True)
+class _PagePublishDelivery:
+    """Publish a fan-out Статья's Страница для чтения (#92) as soon as it's ready, without a
+    message: the Хаб's result card then links it straight away as «📖» (#91)."""
+
     article_id: ArticleId
 
 
 @dataclass(frozen=True)
 class _CoverDelivery:
+    """A cover photo, sent only for a by-hand «🖼 Обложка» re-request - same reasoning as
+    `_ArticleDelivery`."""
+
     plan_item_id: PlanItemId
     image: bytes
     mime_type: str
@@ -408,55 +429,17 @@ class _CoverDelivery:
 class _ErrorDelivery:
     text: str
     job_id: int
-    # Set when this failed Job was also part of an open batch (#91): a failure still has to
-    # advance the shared progress message (and, if it was the batch's last Job, still trigger
-    # the final burst for whatever else succeeded) - or a batch with any failed Job would never
-    # close and its already-succeeded Статьи would never reach the delivery.
-    batch_progress: _BatchProgressDelivery | _BatchDoneDelivery | None = None
-
-
-@dataclass(frozen=True)
-class _BatchProgressDelivery:
-    """One Job of an open approve_all batch (#91) finished, but not the last one - the shared
-    progress message needs editing, not a per-Job message."""
-
-    plan_id: PlanId
-    done: int
-    total: int
-
-
-@dataclass(frozen=True)
-class _BatchDoneDelivery:
-    """The last Job of an open approve_all batch (#91) finished - the progress message becomes
-    the final "done" text, followed by every ready Статья and обложка together."""
-
-    plan_id: PlanId
-    total: int
 
 
 _Delivery = (
     _PlanDelivery
+    | _HubDelivery
     | _NoticeDelivery
     | _ArticleDelivery
+    | _PagePublishDelivery
     | _CoverDelivery
     | _ErrorDelivery
-    | _BatchProgressDelivery
-    | _BatchDoneDelivery
 )
-
-
-async def _advance_batch(
-    plan: Plan, plan_id: PlanId
-) -> _BatchProgressDelivery | _BatchDoneDelivery | None:
-    """Advances one open batch's progress by one finished Job (#91). `None` means no batch is
-    open for this Plan right now - the caller falls back to its own per-Job delivery."""
-    progress = await plan.record_generation_progress(plan_id)
-    if progress is None:
-        return None
-    done, total = progress
-    if done >= total:
-        return _BatchDoneDelivery(plan_id=plan_id, total=total)
-    return _BatchProgressDelivery(plan_id=plan_id, done=done, total=total)
 
 
 def _empty_plan_text(week_label: str, empty_reason: str | None) -> str:
@@ -472,41 +455,45 @@ def _empty_plan_text(week_label: str, empty_reason: str | None) -> str:
     )
 
 
-async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Delivery | None:
+async def _apply_failure(plan: Plan, article: Article, result: JobResult) -> list[_Delivery]:
+    """A failed Job: the fan-out's own Статьи/covers only turn ❌ in the Хаб (it carries
+    «🔁 Повторить»); a failure of something someone asked for by hand - «✏️ Доработать», a
+    «🖼 Обложка» re-request, a Plan/Тема generation - also gets its «Не удалось …» message."""
+    # The chat gets a plain Russian «Не удалось …» (#89); the technical error stays in the log.
+    logger.warning("Job %s (%s) failed: %s", result.job_id, result.job_type, result.error)
+    if result.job_type in ("generate_article", "regenerate_article"):
+        article_id = await article.mark_generation_failed(result.job_id)
+        if article_id is None:
+            logger.info("Ignoring stale Article failure for job_id=%s", result.job_id)
+            return []
+        hub = _HubDelivery(plan_id=await article.get_plan_id(article_id))
+        if result.job_type == "generate_article":
+            return [hub]
+        summary = await article.get_summary(article_id)
+        text = job_failure_text(result.job_type, title=summary.title, platform=summary.platform)
+        return [_ErrorDelivery(text=text, job_id=result.job_id), hub]
+    if result.job_type == "generate_cover":
+        plan_item_id = await plan.mark_cover_generation_failed(result.job_id)
+        if plan_item_id is None:
+            logger.info("Ignoring stale cover failure for job_id=%s", result.job_id)
+            return []
+        hub = _HubDelivery(plan_id=await plan.get_plan_id_for_item(plan_item_id))
+        if not await plan.is_manual_cover_job(result.job_id):
+            return [hub]
+        title = (await plan.get_item(plan_item_id)).title
+        text = job_failure_text(result.job_type, title=title)
+        return [_ErrorDelivery(text=text, job_id=result.job_id), hub]
+    return [_ErrorDelivery(text=job_failure_text(result.job_type), job_id=result.job_id)]
+
+
+async def _apply_result(plan: Plan, article: Article, result: JobResult) -> list[_Delivery]:
     """The DB half of notification handling (#73): applies a finished Job's result to
-    domain state and returns what, if anything, still needs delivering to Telegram - `None`
-    for a stale result nothing should be sent for. Pure DB writes only; no Telegram call
-    happens here, so retrying this half alone (as a redelivered notification does) is exactly
-    as idempotent as the domain operations it calls."""
+    domain state and returns what still needs delivering to Telegram - nothing for a stale
+    result. Pure DB writes only; no Telegram call happens here, so retrying this half alone
+    (as a redelivered notification does) is exactly as idempotent as the domain operations
+    it calls."""
     if result.status == "failed":
-        batch_delivery: _BatchProgressDelivery | _BatchDoneDelivery | None = None
-        failed_title: str | None = None
-        failed_platform: str | None = None
-        if result.job_type in ("generate_article", "regenerate_article"):
-            article_id = await article.mark_generation_failed(result.job_id)
-            if article_id is None:
-                logger.info("Ignoring stale Article failure for job_id=%s", result.job_id)
-                return None
-            summary = await article.get_summary(article_id)
-            failed_title, failed_platform = summary.title, summary.platform
-            if result.job_type == "generate_article":
-                batch_delivery = await _advance_batch(plan, await article.get_plan_id(article_id))
-        elif result.job_type == "generate_cover":
-            plan_item_id = await plan.mark_cover_generation_failed(result.job_id)
-            if plan_item_id is None:
-                logger.info("Ignoring stale cover failure for job_id=%s", result.job_id)
-                return None
-            failed_title = (await plan.get_item(plan_item_id)).title
-            batch_delivery = await _advance_batch(
-                plan, await plan.get_plan_id_for_item(plan_item_id)
-            )
-        # The chat gets a plain Russian «Не удалось …» (#89); the technical error stays in the log.
-        logger.warning("Job %s (%s) failed: %s", result.job_id, result.job_type, result.error)
-        return _ErrorDelivery(
-            text=job_failure_text(result.job_type, title=failed_title, platform=failed_platform),
-            job_id=result.job_id,
-            batch_progress=batch_delivery,
-        )
+        return await _apply_failure(plan, article, result)
 
     output = result.output or {}
     if result.job_type == "generate_plan":
@@ -519,11 +506,13 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
         if not topics:
             # #84: an empty result creates no Plan (one with only "Утвердить всё" on it would
             # start nothing) - the team chat gets what happened and what to do instead.
-            return _NoticeDelivery(
-                text=_empty_plan_text(output["week_label"], output.get("empty_reason"))
-            )
+            return [
+                _NoticeDelivery(
+                    text=_empty_plan_text(output["week_label"], output.get("empty_reason"))
+                )
+            ]
         plan_id = await plan.add_topics(output["week_label"], topics)
-        return _PlanDelivery(plan_id=plan_id)
+        return [_PlanDelivery(plan_id=plan_id)]
     if result.job_type == "regenerate_topic":
         plan_item_id = PlanItemId(output["plan_item_id"])
         await plan.apply_regeneration(
@@ -533,7 +522,7 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
             ),
         )
         # #81: the new title shows up in the Plan message itself, not in a separate notice.
-        return _PlanDelivery(plan_id=await plan.get_plan_id_for_item(plan_item_id))
+        return [_PlanDelivery(plan_id=await plan.get_plan_id_for_item(plan_item_id))]
     if result.job_type in ("generate_article", "regenerate_article"):
         article_id = ArticleId(output["article_id"])
         application = await article.record_version(
@@ -550,23 +539,25 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
         )
         if application == "stale":
             logger.info("Ignoring stale Article result for job_id=%s", result.job_id)
-            return None
-        if result.job_type == "generate_article" and application == "applied":
-            batch_delivery = await _advance_batch(plan, await article.get_plan_id(article_id))
-            if batch_delivery is not None:
-                return batch_delivery
-        return _ArticleDelivery(article_id=article_id)
+            return []
+        hub = _HubDelivery(plan_id=await article.get_plan_id(article_id))
+        if result.job_type == "generate_article":
+            return [_PagePublishDelivery(article_id=article_id), hub]
+        return [_ArticleDelivery(article_id=article_id), hub]
     if result.job_type == "generate_cover":
         plan_item_id = PlanItemId(output["plan_item_id"])
         image = base64.b64decode(output["image"])
         await plan.apply_cover(plan_item_id, image, output["mime_type"])
-        batch_delivery = await _advance_batch(plan, await plan.get_plan_id_for_item(plan_item_id))
-        if batch_delivery is not None:
-            return batch_delivery
-        return _CoverDelivery(plan_item_id=plan_item_id, image=image, mime_type=output["mime_type"])
+        hub = _HubDelivery(plan_id=await plan.get_plan_id_for_item(plan_item_id))
+        if not await plan.is_manual_cover_job(result.job_id):
+            return [hub]
+        cover = _CoverDelivery(
+            plan_item_id=plan_item_id, image=image, mime_type=output["mime_type"]
+        )
+        return [cover, hub]
 
     logger.warning("No notification renderer for job_type=%r", result.job_type)
-    return None
+    return []
 
 
 async def _deliver(
@@ -578,67 +569,27 @@ async def _deliver(
     publisher: ArticlePagePublisher | None = None,
 ) -> None:
     """The Telegram half of notification handling (#73): turns an `_apply_result` outcome
-    into the actual message(s). A Plan delivery goes through `deliver_plan_message`, which
-    sends only the first time and edits the Plan's canonical message every time after -
-    the fix for #73's duplicate-message gap."""
+    into the actual message. A Plan delivery goes through `deliver_plan_message`, a Хаб one
+    through `deliver_plan_hub` - both send only the first time and edit the Plan's canonical
+    message every time after, the fix for #73's duplicate-message gap."""
     if isinstance(delivery, _PlanDelivery):
         view = await plan.get(delivery.plan_id)
         await deliver_plan_message(plan, gateway, notify_chat_id, view)
+    elif isinstance(delivery, _HubDelivery):
+        await deliver_plan_hub(plan, gateway, notify_chat_id, delivery.plan_id)
     elif isinstance(delivery, _NoticeDelivery):
         await gateway.send_notice(notify_chat_id, delivery.text)
     elif isinstance(delivery, _ArticleDelivery):
         view = await article.get(delivery.article_id)
-        await _send_article_card(gateway, notify_chat_id, view, publisher)
+        await send_article_card(gateway, notify_chat_id, view, publisher)
+    elif isinstance(delivery, _PagePublishDelivery):
+        if publisher is not None:
+            await publisher.publish(await article.get(delivery.article_id))
     elif isinstance(delivery, _CoverDelivery):
         item = await plan.get_item(delivery.plan_item_id)
         await gateway.send_cover(notify_chat_id, delivery.image, delivery.mime_type, item.title)
     elif isinstance(delivery, _ErrorDelivery):
         await gateway.send_error_with_retry(notify_chat_id, delivery.text, delivery.job_id)
-        if delivery.batch_progress is not None:
-            await _deliver_batch(
-                plan, article, gateway, notify_chat_id, delivery.batch_progress, publisher
-            )
-    elif isinstance(delivery, _BatchProgressDelivery | _BatchDoneDelivery):
-        await _deliver_batch(plan, article, gateway, notify_chat_id, delivery, publisher)
-
-
-async def _deliver_batch(
-    plan: Plan,
-    article: Article,
-    gateway: TelegramGateway,
-    notify_chat_id: int,
-    delivery: _BatchProgressDelivery | _BatchDoneDelivery,
-    publisher: ArticlePagePublisher | None = None,
-) -> None:
-    """Shared by the dedicated batch deliveries and a failed Job that was also part of an open
-    batch (#91) - a failure still has to advance/finalize the shared progress message, and if
-    it happened to be the batch's last Job, still trigger the burst for whatever else in the
-    batch succeeded."""
-    done = delivery.total if isinstance(delivery, _BatchDoneDelivery) else delivery.done
-    ref = await plan.get_progress_message_ref(delivery.plan_id)
-    if ref is not None:
-        # `ref` is None only in the narrow crash window (#91, same class as #73's plan-message
-        # gap) between start_generation_batch opening the batch and its progress message
-        # actually being recorded - the done/total count itself is still correct either way.
-        await gateway.edit_generation_progress(ref.chat_id, ref.message_id, done, delivery.total)
-    if isinstance(delivery, _BatchDoneDelivery):
-        for view in await article.list_for_plan(delivery.plan_id):
-            await _send_article_card(gateway, notify_chat_id, view, publisher)
-        for cover in await plan.list_covers_for_plan(delivery.plan_id):
-            await gateway.send_cover(notify_chat_id, cover.image, cover.mime_type, cover.title)
-
-
-async def _send_article_card(
-    gateway: TelegramGateway,
-    notify_chat_id: int,
-    view: ArticleView,
-    publisher: ArticlePagePublisher | None,
-) -> None:
-    """Publishes (or updates) the Статья's Страница для чтения first, so the card can carry
-    «📖 Читать» (#92). `publish` returns `None` on any Telegraph failure - the card still goes
-    out, just without that button."""
-    read_url = await publisher.publish(view) if publisher is not None else None
-    await gateway.send_article_ready(notify_chat_id, view, read_url=read_url)
 
 
 def _make_notification_handler(
@@ -650,8 +601,7 @@ def _make_notification_handler(
     publisher: ArticlePagePublisher | None = None,
 ):
     async def handle(result: JobResult) -> None:
-        delivery = await _apply_result(plan, article, result)
-        if delivery is not None:
+        for delivery in await _apply_result(plan, article, result):
             await _deliver(plan, article, gateway, notify_chat_id, delivery, publisher)
 
     return handle
@@ -739,6 +689,14 @@ async def main(settings: Settings | None = None) -> None:
         # Every Участник's own scope still holds the pre-#95 list until it is rewritten.
         await resync_member_commands(bot_client, await membership.list_all())
 
+        telegraph_client = HttpxTelegraphClient()
+        publisher = TelegraphPublisher(
+            telegraph_client,
+            article,
+            owner_settings,
+            access_token=settings.telegraph_access_token,
+            footer_link=project_footer(owner_settings_service),
+        )
         dispatcher = Dispatcher()
         dispatcher.include_router(
             _build_router(
@@ -755,20 +713,13 @@ async def main(settings: Settings | None = None) -> None:
                 prompts,
                 queue,
                 settings,
+                publisher=publisher,
             )
         )
 
         stop = asyncio.Event()
         register_shutdown(stop)
 
-        telegraph_client = HttpxTelegraphClient()
-        publisher = TelegraphPublisher(
-            telegraph_client,
-            article,
-            owner_settings,
-            access_token=settings.telegraph_access_token,
-            footer_link=project_footer(owner_settings_service),
-        )
         notify_handler = _make_notification_handler(
             plan, article, gateway, settings.telegram_notify_chat_id, publisher=publisher
         )

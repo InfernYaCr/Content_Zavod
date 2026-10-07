@@ -8,6 +8,7 @@ render) worth a fast unit test.
 
 from __future__ import annotations
 
+import base64
 import logging
 
 import pytest
@@ -16,8 +17,8 @@ from content_zavod.domain import (
     ArticleSummary,
     ArticleView,
     GeneratedVersion,
+    PlanHubView,
     PlanId,
-    PlanItemCoverView,
     PlanItemId,
     PlanMessageRef,
     PlanView,
@@ -34,14 +35,9 @@ class FakePlan:
         self.applied_regenerations: list[tuple[str, TopicDraft]] = []
         self.applied_covers: list[tuple[str, bytes, str]] = []
         self.message_refs: dict[str, PlanMessageRef] = {}
-        self.progress_message_refs: dict[str, PlanMessageRef] = {}
-        # None means "no batch open" - the default, matching every Plan before #91 and
-        # every Plan whose batch has already closed. Tests that want batched-progress
-        # behaviour queue up (done, total) pairs here, consumed one per call.
-        self.generation_progress_results: list[tuple[int, int] | None] = []
-        self.recorded_generation_progress_calls: list[str] = []
         self.plan_id_for_item = PlanId("plan-1")
-        self.covers_for_plan: list[PlanItemCoverView] = []
+        self.plan_status = "approved"
+        self.manual_cover_jobs: set[int] = set()
         self.cover_failures_marked: list[int] = []
         self.mark_cover_generation_failed_returns: PlanItemId | None = PlanItemId("item-1")
 
@@ -72,28 +68,15 @@ class FakePlan:
     async def get_plan_id_for_item(self, plan_item_id: PlanItemId) -> PlanId:
         return self.plan_id_for_item
 
-    async def record_generation_progress(self, plan_id: PlanId) -> tuple[int, int] | None:
-        self.recorded_generation_progress_calls.append(plan_id)
-        if not self.generation_progress_results:
-            return None
-        return self.generation_progress_results.pop(0)
-
-    async def get_progress_message_ref(self, plan_id: PlanId) -> PlanMessageRef | None:
-        return self.progress_message_refs.get(plan_id)
-
-    async def record_progress_message_ref(
-        self, plan_id: PlanId, chat_id: int, message_id: int
-    ) -> None:
-        self.progress_message_refs.setdefault(
-            plan_id, PlanMessageRef(chat_id=chat_id, message_id=message_id)
-        )
-
-    async def list_covers_for_plan(self, plan_id: PlanId) -> list[PlanItemCoverView]:
-        return self.covers_for_plan
-
     async def mark_cover_generation_failed(self, source_job_id: int) -> PlanItemId | None:
         self.cover_failures_marked.append(source_job_id)
         return self.mark_cover_generation_failed_returns
+
+    async def is_manual_cover_job(self, job_id: int) -> bool:
+        return job_id in self.manual_cover_jobs
+
+    async def get_hub(self, plan_id: PlanId) -> PlanHubView:
+        return PlanHubView(id=plan_id, week_label="2026-W41", status=self.plan_status, topics=[])
 
 
 class FakeArticle:
@@ -137,13 +120,17 @@ class FakeGateway:
         self.sent_errors_with_retry: list[tuple[int, str, int]] = []
         self.sent_notices: list[tuple[int, str]] = []
         self.sent_covers: list[tuple[int, bytes, str, str]] = []
-        self.edited_generation_progress: list[tuple[int, int, int, int]] = []
+        # Every Хаб send/edit as (chat_id, message_id or None for a send, plan_id).
+        self.hub_redraws: list[tuple[int, int | None, str]] = []
         self._next_message_id = 0
 
-    async def edit_generation_progress(
-        self, chat_id: int, message_id: int, done: int, total: int
-    ) -> None:
-        self.edited_generation_progress.append((chat_id, message_id, done, total))
+    async def send_hub(self, chat_id: int, hub: PlanHubView) -> int:
+        self._next_message_id += 1
+        self.hub_redraws.append((chat_id, None, hub.id))
+        return self._next_message_id
+
+    async def edit_hub(self, chat_id: int, message_id: int, hub: PlanHubView) -> None:
+        self.hub_redraws.append((chat_id, message_id, hub.id))
 
     async def send_plan(self, chat_id: int, plan: PlanView) -> int:
         self.sent_plans.append((chat_id, plan))
@@ -185,9 +172,7 @@ async def test_failed_job_sends_error_with_retry_button() -> None:
     ("job_type", "text"),
     [
         ("regenerate_topic", "Не удалось перегенерировать Тему."),
-        ("generate_article", "Не удалось написать Статью для VC.ru: «Topic A»"),
         ("regenerate_article", "Не удалось переписать Статью для VC.ru: «Topic A»"),
-        ("generate_cover", "Не удалось сгенерировать обложку для Темы «Topic A»"),
         ("some_future_job", "Не удалось выполнить задачу."),
     ],
 )
@@ -345,37 +330,6 @@ async def test_regenerate_topic_applies_and_redraws_the_plan_message() -> None:
     assert [(c, m, view.id) for c, m, view in gateway.edited_plans] == [(-100, 5, "plan-1")]
 
 
-async def test_generate_article_records_version_and_sends_article() -> None:
-    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    handle = _make_notification_handler(plan, article, gateway, 42)
-
-    await handle(
-        JobResult(
-            job_id=1,
-            job_type="generate_article",
-            status="done",
-            output={
-                "article_id": "article-1",
-                "content": "body",
-                "prompt": "p",
-                "model": "m",
-                "tokens": 10,
-                "cost": 0.0,
-            },
-        )
-    )
-
-    assert article.recorded_versions == [
-        (
-            "article-1",
-            GeneratedVersion(
-                content="body", prompt="p", model="m", tokens=10, cost=0.0, source_job_id=1
-            ),
-        )
-    ]
-    assert len(gateway.sent_articles) == 1
-
-
 async def test_article_research_status_is_recorded_on_the_version_not_in_its_text() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     handle = _make_notification_handler(plan, article, gateway, 42)
@@ -402,99 +356,6 @@ async def test_article_research_status_is_recorded_on_the_version_not_in_its_tex
     assert version.content == "body"
 
 
-async def test_replayed_article_result_reuses_version_then_retries_telegram_send() -> None:
-    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    article.application = "already_applied"
-    handle = _make_notification_handler(plan, article, gateway, 42)
-
-    await handle(
-        JobResult(
-            job_id=1,
-            job_type="generate_article",
-            status="done",
-            output={
-                "article_id": "article-1",
-                "content": "body",
-                "prompt": "p",
-                "model": "m",
-                "tokens": 10,
-                "cost": 0.0,
-            },
-        )
-    )
-
-    assert len(article.recorded_versions) == 1
-    assert len(gateway.sent_articles) == 1
-
-
-async def test_batched_generate_article_edits_progress_instead_of_sending_article() -> None:
-    """#91: while a batch is open (`record_generation_progress` returns a real count),
-    a finished generate_article Job edits the shared progress message instead of sending its
-    own "Статья готова" message."""
-    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    plan.progress_message_refs["plan-1"] = PlanMessageRef(chat_id=42, message_id=7)
-    plan.generation_progress_results = [(4, 9)]
-    handle = _make_notification_handler(plan, article, gateway, 42)
-
-    await handle(
-        JobResult(
-            job_id=1,
-            job_type="generate_article",
-            status="done",
-            output={
-                "article_id": "article-1",
-                "content": "body",
-                "prompt": "p",
-                "model": "m",
-                "tokens": 10,
-                "cost": 0.0,
-            },
-        )
-    )
-
-    assert gateway.sent_articles == []
-    assert gateway.edited_generation_progress == [(42, 7, 4, 9)]
-    assert plan.recorded_generation_progress_calls == ["plan-1"]
-
-
-async def test_batched_generate_article_last_job_sends_the_full_burst() -> None:
-    """#91: once the batch's last Job reports in, the progress message finalizes and every
-    ready Статья/обложка for the Plan is sent together, in one go."""
-    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    plan.progress_message_refs["plan-1"] = PlanMessageRef(chat_id=42, message_id=7)
-    plan.generation_progress_results = [(9, 9)]
-    article.articles_for_plan = [
-        ArticleView(id="a1", plan_item_id="item-1", title="T1", platform="zen", content=b"c1"),
-        ArticleView(id="a2", plan_item_id="item-1", title="T1", platform="vc", content=b"c2"),
-    ]
-    plan.covers_for_plan = [
-        PlanItemCoverView(
-            plan_item_id="item-1", title="T1", image=b"cover-bytes", mime_type="image/jpeg"
-        )
-    ]
-    handle = _make_notification_handler(plan, article, gateway, 42)
-
-    await handle(
-        JobResult(
-            job_id=1,
-            job_type="generate_article",
-            status="done",
-            output={
-                "article_id": "article-1",
-                "content": "body",
-                "prompt": "p",
-                "model": "m",
-                "tokens": 10,
-                "cost": 0.0,
-            },
-        )
-    )
-
-    assert gateway.edited_generation_progress == [(42, 7, 9, 9)]
-    assert [a.id for _, a in gateway.sent_articles] == ["a1", "a2"]
-    assert gateway.sent_covers == [(42, b"cover-bytes", "image/jpeg", "T1")]
-
-
 async def test_stale_article_result_is_not_sent() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     article.application = "stale"
@@ -519,67 +380,6 @@ async def test_stale_article_result_is_not_sent() -> None:
     assert gateway.sent_articles == []
 
 
-async def test_generate_cover_applies_cover_and_notifies() -> None:
-    import base64
-
-    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    handle = _make_notification_handler(plan, article, gateway, 42)
-    image_b64 = base64.b64encode(b"image-bytes").decode("ascii")
-
-    await handle(
-        JobResult(
-            job_id=1,
-            job_type="generate_cover",
-            status="done",
-            output={"plan_item_id": "item-1", "image": image_b64, "mime_type": "image/jpeg"},
-        )
-    )
-
-    assert plan.applied_covers == [("item-1", b"image-bytes", "image/jpeg")]
-    assert gateway.sent_covers == [(42, b"image-bytes", "image/jpeg", "Topic A")]
-
-
-async def test_batched_generate_cover_edits_progress_instead_of_sending_the_cover() -> None:
-    import base64
-
-    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    plan.progress_message_refs["plan-1"] = PlanMessageRef(chat_id=42, message_id=7)
-    plan.generation_progress_results = [(3, 9)]
-    handle = _make_notification_handler(plan, article, gateway, 42)
-    image_b64 = base64.b64encode(b"image-bytes").decode("ascii")
-
-    await handle(
-        JobResult(
-            job_id=1,
-            job_type="generate_cover",
-            status="done",
-            output={"plan_item_id": "item-1", "image": image_b64, "mime_type": "image/jpeg"},
-        )
-    )
-
-    assert plan.applied_covers == [("item-1", b"image-bytes", "image/jpeg")]
-    assert gateway.sent_covers == []
-    assert gateway.edited_generation_progress == [(42, 7, 3, 9)]
-
-
-async def test_failed_generate_cover_within_open_batch_still_advances_progress() -> None:
-    """#91: a failed cover must not leave its batch permanently short by one - otherwise the
-    batch never closes and the Статьи it already generated successfully never get delivered."""
-    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    plan.progress_message_refs["plan-1"] = PlanMessageRef(chat_id=42, message_id=7)
-    plan.generation_progress_results = [(9, 9)]
-    handle = _make_notification_handler(plan, article, gateway, 42)
-
-    await handle(JobResult(job_id=3, job_type="generate_cover", status="failed", error="boom"))
-
-    assert plan.cover_failures_marked == [3]
-    assert plan.recorded_generation_progress_calls == ["plan-1"]
-    assert gateway.edited_generation_progress == [(42, 7, 9, 9)]
-    assert gateway.sent_errors_with_retry == [
-        (42, "Не удалось сгенерировать обложку для Темы «Topic A»", 3)
-    ]
-
-
 async def test_stale_failed_generate_cover_job_is_ignored() -> None:
     """Mirrors the existing stale-Article-failure behaviour: a job_id no plan_item currently
     owns (already superseded, e.g. by a later re-request) is dropped silently."""
@@ -589,8 +389,8 @@ async def test_stale_failed_generate_cover_job_is_ignored() -> None:
 
     await handle(JobResult(job_id=3, job_type="generate_cover", status="failed", error="old"))
 
-    assert plan.recorded_generation_progress_calls == []
     assert gateway.sent_errors_with_retry == []
+    assert gateway.hub_redraws == []
 
 
 async def test_unknown_job_type_is_ignored() -> None:
@@ -656,18 +456,154 @@ async def test_telegraph_failure_still_delivers_the_card_without_read_url() -> N
     assert gateway.article_read_urls == [None]
 
 
-async def test_batch_burst_publishes_every_ready_article() -> None:
+async def test_generate_article_records_version_and_redraws_the_hub_without_a_card() -> None:
+    """#91: a fan-out Статья shows up as ✅ in the Хаб (the Plan message) - no card of its own."""
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    plan.progress_message_refs["plan-1"] = PlanMessageRef(chat_id=42, message_id=7)
-    plan.generation_progress_results = [(2, 2)]
-    article.articles_for_plan = [
-        ArticleView(id="a1", plan_item_id="item-1", title="T1", platform="zen", content=b"c1"),
-        ArticleView(id="a2", plan_item_id="item-1", title="T1", platform="vc", content=b"c2"),
+    plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(_article_result("generate_article"))
+
+    assert article.recorded_versions == [
+        (
+            "article-1",
+            GeneratedVersion(
+                content="body", prompt="p", model="m", tokens=10, cost=0.0, source_job_id=1
+            ),
+        )
     ]
-    publisher = FakePublisher({"a1": "https://telegra.ph/a1", "a2": None})
+    assert gateway.sent_articles == []
+    assert gateway.hub_redraws == [(-100, 5, "plan-1")]
+
+
+async def test_generate_article_publishes_its_reading_page_for_the_hub() -> None:
+    """The Хаб's result card links «📖» straight away (#91 + #92), so the page is published
+    when the Статья is ready - without sending a card."""
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    publisher = FakePublisher({"article-1": "https://telegra.ph/a1"})
     handle = _make_notification_handler(plan, article, gateway, 42, publisher=publisher)
 
     await handle(_article_result("generate_article"))
 
-    assert publisher.published == ["a1", "a2"]
-    assert gateway.article_read_urls == ["https://telegra.ph/a1", None]
+    assert publisher.published == ["article-1"]
+    assert gateway.sent_articles == []
+
+
+async def test_redelivered_article_result_just_redraws_the_same_hub() -> None:
+    """Progress is derived, not counted: a redelivered notification redraws the Хаб once more
+    (Telegram's "not modified" is a success) and changes nothing else."""
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
+    article.application = "already_applied"
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(_article_result("generate_article"))
+    await handle(_article_result("generate_article"))
+
+    assert gateway.sent_articles == []
+    assert gateway.hub_redraws == [(-100, 5, "plan-1")] * 2
+
+
+async def test_hub_without_a_recorded_message_is_sent_once_then_edited() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(_article_result("generate_article"))
+    await handle(_article_result("generate_article"))
+
+    assert gateway.hub_redraws == [(42, None, "plan-1"), (42, 1, "plan-1")]
+
+
+async def test_result_for_an_archived_plan_redraws_nothing() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    plan.plan_status = "archived"
+    plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(_article_result("generate_article"))
+
+    assert gateway.hub_redraws == []
+
+
+async def test_regenerated_article_sends_its_card_and_redraws_the_hub() -> None:
+    """«✏️ Доработать» was asked for by hand: its result is a card where the person is looking."""
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(_article_result("regenerate_article"))
+
+    assert [a.id for _, a in gateway.sent_articles] == ["article-1"]
+    assert gateway.hub_redraws == [(-100, 5, "plan-1")]
+
+
+async def test_failed_fan_out_article_only_turns_red_in_the_hub() -> None:
+    """#91: no «Не удалось …» message per fan-out failure - the Хаб shows ❌ and carries
+    «🔁 Повторить»."""
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(JobResult(job_id=5, job_type="generate_article", status="failed", error="x"))
+
+    assert article.failed_jobs == [5]
+    assert gateway.sent_errors_with_retry == []
+    assert gateway.hub_redraws == [(-100, 5, "plan-1")]
+
+
+def _cover_result(job_id: int = 1) -> JobResult:
+    image_b64 = base64.b64encode(b"image-bytes").decode("ascii")
+    return JobResult(
+        job_id=job_id,
+        job_type="generate_cover",
+        status="done",
+        output={"plan_item_id": "item-1", "image": image_b64, "mime_type": "image/jpeg"},
+    )
+
+
+async def test_fan_out_cover_applies_and_redraws_the_hub_without_a_photo() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(_cover_result())
+
+    assert plan.applied_covers == [("item-1", b"image-bytes", "image/jpeg")]
+    assert gateway.sent_covers == []
+    assert gateway.hub_redraws == [(-100, 5, "plan-1")]
+
+
+async def test_manual_cover_is_sent_as_a_photo_and_redraws_the_hub() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    plan.manual_cover_jobs = {1}
+    plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(_cover_result())
+
+    assert gateway.sent_covers == [(42, b"image-bytes", "image/jpeg", "Topic A")]
+    assert gateway.hub_redraws == [(-100, 5, "plan-1")]
+
+
+async def test_failed_fan_out_cover_only_turns_red_in_the_hub() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(JobResult(job_id=3, job_type="generate_cover", status="failed", error="boom"))
+
+    assert plan.cover_failures_marked == [3]
+    assert gateway.sent_errors_with_retry == []
+    assert gateway.hub_redraws == [(-100, 5, "plan-1")]
+
+
+async def test_failed_manual_cover_also_says_so_in_the_chat() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    plan.manual_cover_jobs = {3}
+    handle = _make_notification_handler(plan, article, gateway, 42)
+
+    await handle(JobResult(job_id=3, job_type="generate_cover", status="failed", error="boom"))
+
+    assert gateway.sent_errors_with_retry == [
+        (42, "Не удалось сгенерировать обложку для Темы «Topic A»", 3)
+    ]
