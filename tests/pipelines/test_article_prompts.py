@@ -181,6 +181,8 @@ def test_draft_gets_evidence_quotes_but_never_source_urls() -> None:
 
     assert "только из evidence" in system.text
     assert "Evidence по теме нет" not in system.text
+    assert "в заголовках маркеры не ставь" in system.text
+    assert "а не перечнем фактов" in system.text
     input_data = user.text.split("INPUT_DATA", 1)[1]
     assert "42% компаний используют CRM." in input_data
     assert "https://media.example/a" not in input_data
@@ -196,6 +198,7 @@ def test_rewrite_keeps_evidence_markers() -> None:
     )
 
     assert "[E1] сохрани" in system.text
+    assert "не удаляй их" in system.text
 
 
 def test_extraction_treats_the_page_as_untrusted_and_cuts_long_pages() -> None:

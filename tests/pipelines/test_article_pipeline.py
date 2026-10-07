@@ -180,6 +180,27 @@ async def test_generate_article_writes_from_evidence_and_lists_only_cited_bundle
 
 
 @pytest.mark.asyncio
+async def test_marker_spelling_variants_are_numbered_and_heading_markers_dropped() -> None:
+    rewrite = (
+        "## Рынок CRM [E1]\n\n"
+        "Почти половина компаний работает с CRM [Е1]. Внедрение — недели (E2). "
+        "Обе цифры [E1–E2]."
+    )
+    text_generator = ScriptedTextGenerator(_evidence_completions(rewrite))
+    handler = make_generate_article_handler(
+        text_generator, _evidence_researcher(), SettingsService(FakeOwnerSettingsStore())
+    )
+
+    output = await handler(_PAYLOAD)
+
+    assert output["content"] == (
+        "## Рынок CRM\n\n"
+        "Почти половина компаний работает с CRM [1]. Внедрение — недели [2]. Обе цифры [1, 2]."
+        f"\n\nИсточники:\n1. Опрос о CRM — {_PAGE_A}\n2. Советы по CRM — {_PAGE_B}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_unknown_evidence_markers_are_dropped_and_unmarked_text_lists_all_sources() -> None:
     text_generator = ScriptedTextGenerator(
         _evidence_completions("Текст без маркеров, но с выдуманным [E9].")

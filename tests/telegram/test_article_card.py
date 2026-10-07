@@ -69,9 +69,7 @@ def test_card_warns_the_editor_when_the_version_has_no_evidence() -> None:
 
 
 def test_card_warns_differently_when_search_was_unavailable() -> None:
-    text = render_article_card_text(
-        _article("Текст статьи.", research_status="search_unavailable")
-    )
+    text = render_article_card_text(_article("Текст статьи.", research_status="search_unavailable"))
 
     assert "⚠️ Поиск источников был недоступен" in text
 

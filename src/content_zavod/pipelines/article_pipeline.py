@@ -72,12 +72,11 @@ _SENSITIVE_KEYWORDS = frozenset(
 _PROMPT_VERSIONS = {
     "research_extract": "research-extract-v1",
     "outline": "outline-v4",
-    "draft": "draft-v4",
-    "rewrite": "rewrite-v4",
+    "draft": "draft-v5",
+    "rewrite": "rewrite-v5",
 }
 
 SOURCES_HEADING = "Источники:"
-
 
 
 class ArticleReader(Protocol):
@@ -303,18 +302,38 @@ def _drop_foreign_urls(body: str, allowed: set[str], project: Project | None) ->
     return _BARE_URL_RE.sub(replace_bare, body)
 
 
-_MARKER_RE = re.compile(r"[ \t]*\[\s*(E\d+(?:\s*[,;]\s*E\d+)*)\s*\]")
+# `[E1]`, `[E1, E3]`, `[E1; E3]`, `[E1–E3]`, also with a Cyrillic «Е» (YandexGPT writes
+# Russian and slips into it) or in parentheses - whatever the spelling, no raw marker may
+# reach the published text.
+_E = "[EeЕе]"
+_MARKER_RE = re.compile(rf"[ \t]*[\[(]\s*({_E}\s*\d+(?:\s*[,;–—-]\s*{_E}?\s*\d+)*)\s*[\])]")
+_HEADING_LINE_RE = re.compile(r"^[ \t]*#{1,6}[ \t].*$", re.MULTILINE)
+_RANGE_RE = re.compile(r"(\d+)\s*[–—-]\s*" + _E + r"?\s*(\d+)")
+
+
+def _marker_ids(inner: str) -> list[str]:
+    numbers: list[int] = []
+    for part in re.split(r"\s*[,;]\s*", inner):
+        span = _RANGE_RE.search(part)
+        if span is not None:
+            first, last = int(span.group(1)), int(span.group(2))
+            if first <= last <= first + 20:
+                numbers.extend(range(first, last + 1))
+                continue
+        numbers.extend(int(n) for n in re.findall(r"\d+", part))
+    return [f"E{n}" for n in numbers]
 
 
 def _number_citations(body: str, bundle: ResearchBundle) -> tuple[str, list[str]]:
     """`[E1]`/`[E1, E3]` -> `[1]`/`[1, 2]`, numbered per source URL by first appearance;
-    markers for unknown ids are dropped. Returns the body and the cited URLs in order."""
+    markers for unknown ids, and every marker in a heading, are dropped. Returns the body
+    and the cited URLs in order."""
     url_by_id = {item.id: item.url for item in bundle.evidence}
     cited: list[str] = []
 
     def replace(match: re.Match[str]) -> str:
         numbers: list[int] = []
-        for evidence_id in re.split(r"\s*[,;]\s*", match.group(1)):
+        for evidence_id in _marker_ids(match.group(1)):
             url = url_by_id.get(evidence_id)
             if url is None:
                 continue
@@ -327,6 +346,7 @@ def _number_citations(body: str, bundle: ResearchBundle) -> tuple[str, list[str]
             return ""
         return " [" + ", ".join(str(n) for n in numbers) + "]"
 
+    body = _HEADING_LINE_RE.sub(lambda line: _MARKER_RE.sub("", line.group(0)), body)
     return _MARKER_RE.sub(replace, body), cited
 
 
