@@ -60,3 +60,25 @@ def test_steps_count_text_agrees_with_the_number() -> None:
     assert steps_count_text(5) == "5 коротких шагов"
     assert steps_count_text(11) == "11 коротких шагов"
     assert steps_count_text(22) == "22 коротких шага"
+
+
+def test_plan_size_promised_to_newcomers_matches_the_pipeline() -> None:
+    """A Plan has at most `TOPICS_PER_PLAN` Темы (and may have fewer) - never «2–4»."""
+    from content_zavod.pipelines.plan_pipeline import TOPICS_PER_PLAN
+    from content_zavod.telegram.texts import (
+        BOT_DESCRIPTION,
+        CONTENT_MANAGER_WELCOME,
+        ONBOARDING_INTRO,
+    )
+
+    assert TOPICS_PER_PLAN == 3
+    for text in (BOT_DESCRIPTION, CONTENT_MANAGER_WELCOME, ONBOARDING_INTRO):
+        assert "до трёх Тем" in text
+        assert "2–4" not in text
+
+
+def test_content_manager_welcome_says_how_to_reach_the_team_chat() -> None:
+    from content_zavod.telegram.texts import CONTENT_MANAGER_WELCOME
+
+    assert "в чате команды" in CONTENT_MANAGER_WELCOME
+    assert "попросите Владельца добавить" in CONTENT_MANAGER_WELCOME
