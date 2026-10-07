@@ -542,6 +542,7 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> _Del
                 tokens=output["tokens"],
                 cost=output["cost"],
                 source_job_id=result.job_id,
+                research_status=output.get("research_status"),
             ),
         )
         if application == "stale":
