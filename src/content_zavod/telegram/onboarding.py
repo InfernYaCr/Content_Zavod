@@ -7,11 +7,13 @@ wizard then asks the Настройки one at a time, in `ONBOARDING_ORDER` (Н
 an «✏️ Изменить …» per step, and «🚀 Запустить» starts the first Plan at once through the same
 path as /generate_plan and «🪄 Составить План».
 
-Every step is a `SettingField` from `settings_screen.SETTING_FIELDS`: its question with an
-example, its Пресеты (Персона's become buttons plus «✏️ Своя Персона»), its validation and its
-save are exactly the Экран Настроек's - nothing is re-phrased here. A key of `ONBOARDING_ORDER`
-with no such field is skipped, and a new field only needs its key added there; the only
-per-step extras are `ONBOARDING_STEPS` (may it be skipped, a note above the question).
+Every step is a `SettingField` from `settings_screen.SETTING_FIELDS`: its Пресеты (Персона's
+become buttons plus «✏️ Своя Персона»), its validation and its save are exactly the Экран
+Настроек's. A key of `ONBOARDING_ORDER` with no such field is skipped, and a new field only needs
+its key added there. The per-step extras are `ONBOARDING_STEPS`: may it be skipped, a note above
+the question, and the first-run wording of the question - the Экран Настроек asks to *change* a
+value («Напишите новую Нишу»), the wizard asks for it for the first time («Какая у вас Ниша?»).
+A step without its own wording falls back to the field's `question`.
 
 Each step is one `InputPrompt` question (the shared typed-input wait, #88) with «◀ Назад»,
 «Пропустить ⏭» where the step is optional, and «Отмена»; an answer is saved straight away, so a
@@ -36,7 +38,13 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from ..access import Role
 from ..domain.errors import InvalidSettingValue
 from ..scheduling import DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE
-from ..settings import DEFAULT_DIRECTIONS, DEFAULT_NICHE, OwnerSettings, SettingsService
+from ..settings import (
+    DEFAULT_DIRECTIONS,
+    DEFAULT_NICHE,
+    PERSONAS,
+    OwnerSettings,
+    SettingsService,
+)
 from .callback_codec import Action, SimpleAction, encode_callback_data
 from .gateway import BotClient
 from .input_prompt import InputPrompt
@@ -45,14 +53,19 @@ from .settings_screen import SETTING_FIELDS, ScheduleStore, SettingField, curren
 from .texts import (
     BACK_BUTTON,
     ONBOARDING_ALREADY_LAUNCHED,
+    ONBOARDING_AUDIENCE_QUESTION,
     ONBOARDING_CANCELLED,
     ONBOARDING_DIRECTIONS_MISMATCH,
+    ONBOARDING_DIRECTIONS_QUESTION,
     ONBOARDING_IN_PRIVATE,
     ONBOARDING_INTRO,
     ONBOARDING_LATER_BUTTON,
     ONBOARDING_LAUNCH_BUTTON,
     ONBOARDING_LAUNCHED,
+    ONBOARDING_NICHE_QUESTION,
     ONBOARDING_OPEN_PRIVATE_BUTTON,
+    ONBOARDING_PERSONA_CHOOSE,
+    ONBOARDING_PROJECT_QUESTION,
     ONBOARDING_REVIEW_HINT,
     ONBOARDING_REVIEW_TITLE,
     ONBOARDING_SKIP_BUTTON,
@@ -84,6 +97,11 @@ class OnboardingStep:
     skippable: bool = True
     note: Callable[[OwnerSettings], str | None] = field(default=lambda _current: None)
     """A warning shown above the question, if it returns one."""
+    question: str | None = None
+    """The first-run question with an example, in place of the field's `question` (which asks
+    for a *new* value). The «Своя …» variant of a step with Пресеты keeps the field's."""
+    choose: str | None = None
+    """For a step with Пресеты: the first-run text above the Пресет buttons."""
 
 
 def _directions_note(current: OwnerSettings) -> str | None:
@@ -92,10 +110,17 @@ def _directions_note(current: OwnerSettings) -> str | None:
     return None
 
 
+_PERSONA_CHOOSE = ONBOARDING_PERSONA_CHOOSE.format(
+    presets="\n".join(f"• {persona.title} — {persona.role}" for persona in PERSONAS.values())
+)
+
 ONBOARDING_STEPS: Mapping[str, OnboardingStep] = {
     # The one answer the bot can't guess; everything else has a sensible default.
-    "niche": OnboardingStep(skippable=False),
-    "directions": OnboardingStep(note=_directions_note),
+    "niche": OnboardingStep(skippable=False, question=ONBOARDING_NICHE_QUESTION),
+    "audience": OnboardingStep(question=ONBOARDING_AUDIENCE_QUESTION),
+    "persona": OnboardingStep(choose=_PERSONA_CHOOSE),
+    "directions": OnboardingStep(note=_directions_note, question=ONBOARDING_DIRECTIONS_QUESTION),
+    "project": OnboardingStep(question=ONBOARDING_PROJECT_QUESTION),
 }
 _DEFAULT_STEP = OnboardingStep()
 
@@ -398,7 +423,12 @@ class Onboarding:
         note = step.note(current)
         if note:
             blocks.append(note)
-        blocks.append(SETTINGS_CHOOSE if chooser else setting.question)
+        if chooser:
+            blocks.append(step.choose or SETTINGS_CHOOSE)
+        elif ref.custom:
+            blocks.append(setting.question)
+        else:
+            blocks.append(step.question or setting.question)
         blocks.append(current_line((setting.detail or setting.show)(current)))
         text = _with_notice("\n\n".join(blocks), notice)
 

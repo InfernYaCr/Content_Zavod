@@ -369,6 +369,34 @@ ONBOARDING_START_BUTTON = "▶ Начать настройку"
 ONBOARDING_LATER_BUTTON = "Позже — открыть меню"
 ONBOARDING_STEP_HEADER = "Шаг {number} из {total} · {label}\n↳ {purpose}"
 ONBOARDING_SKIP_BUTTON = "Пропустить ⏭"
+# First-run wording of each step's question (#96): the Экран Настроек asks to *change* a value
+# («Напишите новую Нишу»), the wizard asks for it for the first time. The step header already
+# says what the value drives, so these don't repeat it; the examples match the Экран Настроек.
+ONBOARDING_NICHE_QUESTION = (
+    "✏️ Какая у вас Ниша — о чём ваш блог? Напишите своими словами.\n\n"
+    "Например: фитнес и здоровое питание"
+)
+ONBOARDING_AUDIENCE_QUESTION = (
+    "✏️ Кто ваш читатель? Опишите его своими словами: кто он, что его беспокоит, чего хочет "
+    "добиться и насколько разбирается в теме.\n\n"
+    "Например: владельцы небольших кофеен и пекарен, 30–45 лет. Маркетингом занимаются сами, "
+    "по вечерам. Боятся слить деньги на рекламу, не понимают, что работает. Хотят стабильный "
+    "поток гостей без агентства. В терминах не разбираются — нужны простые шаги и примеры."
+)
+ONBOARDING_PERSONA_CHOOSE = (
+    "Выберите автора кнопкой ниже или опишите своего — «✏️ Своя Персона».\n\n{presets}"
+)
+ONBOARDING_DIRECTIONS_QUESTION = (
+    "✏️ Что ваши читатели ищут в Яндексе? Напишите 3–8 запросов через запятую — я буду "
+    "смотреть в Wordstat, какие из них растут, и предлагать по ним Темы.\n\n"
+    "Например: фитнес дома, правильное питание, похудение после родов"
+)
+ONBOARDING_PROJECT_QUESTION = (
+    "✏️ Есть канал или сайт, куда приводить читателей? Пришлите ссылку и через пробел — "
+    "пару слов о нём. Ссылка будет в конце каждой Статьи.\n\n"
+    "Например: @my_channel Канал о маркетинге для малого бизнеса\n\n"
+    "Нет канала — просто нажмите «Пропустить ⏭»."
+)
 # Directions default to marketing queries: if the Ниша isn't marketing, say so before
 # the Владелец skips the step and gets a marketing Plan.
 ONBOARDING_DIRECTIONS_MISMATCH = (

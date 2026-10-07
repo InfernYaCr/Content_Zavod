@@ -190,7 +190,9 @@ async def test_start_asks_for_the_niche_first_with_an_example_and_no_skip(env: E
     assert env.bot.deleted == [(PRIVATE, 100)]  # the intro
     _, question, markup, _ = env.last
     assert question.startswith("Шаг 1 из 5 · Ниша\n↳ из неё подбираются Темы")
+    assert "Какая у вас Ниша" in question
     assert "Например: фитнес и здоровое питание" in question
+    assert "новую" not in question  # the Экран Настроек's «Напишите новую Нишу»
     assert "Сейчас: маркетинг" in question
     assert button_texts(markup) == [["◀ Назад"], ["Отмена"]]
     assert button_data(markup) == [["ob:intro"], [f"ci:{KIND}"]]
@@ -207,10 +209,45 @@ async def test_answer_saves_and_moves_on_to_describe_the_reader(env: Env) -> Non
     assert (PRIVATE, question_id) in env.bot.deleted  # the answered question
     _, question, markup, _ = env.last
     assert question.startswith("✅ Ниша изменена: фитнес\n\nШаг 2 из 5 · Аудитория")
-    assert "Опишите вашего читателя" in question
+    assert "Кто ваш читатель? Опишите его своими словами" in question
+    assert "Например: владельцы небольших кофеен" in question
+    assert "Чтобы убрать Аудиторию" not in question  # nothing to remove on a first run
     assert button_texts(markup) == [["◀ Назад", "Пропустить ⏭"], ["Отмена"]]
     assert button_data(markup)[0] == ["ob:niche", "ob:persona"]
     assert env.wait.target_id == "audience"
+
+
+@pytest.mark.parametrize(
+    ("key", "first_run"),
+    [
+        ("niche", "Какая у вас Ниша"),
+        ("audience", "Кто ваш читатель?"),
+        ("directions", "Что ваши читатели ищут в Яндексе?"),
+        ("project", "Есть канал или сайт, куда приводить читателей?"),
+    ],
+)
+async def test_every_typed_step_asks_in_first_run_words_not_the_settings_ones(
+    env: Env, key: str, first_run: str
+) -> None:
+    """The Экран Настроек's question asks to *change* a value; the wizard asks for it."""
+    setting = next(setting for setting in SETTING_FIELDS if setting.key == key)
+
+    await env.press(key)
+
+    question = env.last[1]
+    assert first_run in question
+    assert setting.question not in question
+    assert "Например:" in question
+
+
+async def test_a_step_without_its_own_wording_falls_back_to_the_settings_question() -> None:
+    niche = next(setting for setting in SETTING_FIELDS if setting.key == "niche")
+    extra = replace(niche, key="extra", question="✏️ Вопрос Экрана Настроек")
+    env = Env(fields=(*onboarding_fields(), extra))
+
+    await env.press("extra")
+
+    assert "✏️ Вопрос Экрана Настроек" in env.last[1]
 
 
 async def test_audience_answer_is_saved(env: Env) -> None:
@@ -240,7 +277,9 @@ async def test_persona_step_offers_the_presets_as_buttons(env: Env) -> None:
 
     _, question, markup, _ = env.last
     assert question.startswith("Шаг 3 из 5 · Персона")
-    assert "Выберите готовый вариант или задайте свой." in question
+    assert "Выберите автора кнопкой ниже или опишите своего" in question
+    # A newcomer sees what each Пресет means, not just its title.
+    assert "• Маркетолог-практик — практикующий маркетолог" in question
     data = _data(markup)
     persona = next(setting for setting in SETTING_FIELDS if setting.key == "persona")
     assert [f"op:persona:{index}" for index in range(len(persona.presets))] == data[
