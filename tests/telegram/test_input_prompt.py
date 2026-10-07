@@ -82,3 +82,12 @@ async def test_cancel_drops_the_wait_and_its_messages() -> None:
     assert bot.deleted == [(GROUP, 100), (GROUP, 101)]
     assert pending.rows == {}
     assert await prompts.cancel(GROUP, USER, "k") is False
+
+
+async def test_is_waiting_sees_a_live_wait_of_any_kind() -> None:
+    _bot, _pending, prompts = make()
+    assert await prompts.is_waiting(PRIVATE, USER) is False
+
+    await prompts.ask(PRIVATE, USER, "some_other_flow", "t", "Вопрос?", placeholder="p")
+
+    assert await prompts.is_waiting(PRIVATE, USER) is True

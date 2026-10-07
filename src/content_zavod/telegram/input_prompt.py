@@ -131,6 +131,11 @@ class InputPrompt:
         await self.close(chat_id, pending)
         return True
 
+    async def is_waiting(self, chat_id: int, user_id: int) -> bool:
+        """Whether this user has a live wait in this chat, of any kind - so a message no
+        handler took is still not "unsolicited" if some flow asked for it."""
+        return await self._pending.get(chat_id, user_id) is not None
+
     async def close(self, chat_id: int, pending: PendingInput) -> None:
         await self._bot.delete_message(chat_id, pending.prompt_message_id)
         if pending.force_reply_message_id is not None:

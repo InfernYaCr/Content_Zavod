@@ -371,8 +371,10 @@ def _build_router(
             )
             or await main_menu.handle_reply(chat_id, user_id, text, reply_to_message_id)
         )
-        if not consumed and private:
-            # Nothing was asked: point at the menu rather than staying silent (#95).
+        if not consumed and private and not await prompts.is_waiting(chat_id, user_id):
+            # Nothing was asked: point at the menu rather than staying silent (#95). A live
+            # wait no handler above took (a flow added later and not wired in here) is left
+            # alone rather than answered with the hint.
             await gateway.send_notice(
                 chat_id, UNKNOWN_MESSAGE_TEXT, reply_markup=build_open_menu_keyboard()
             )
