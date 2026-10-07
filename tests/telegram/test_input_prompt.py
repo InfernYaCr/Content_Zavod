@@ -84,6 +84,16 @@ async def test_cancel_drops_the_wait_and_its_messages() -> None:
     assert await prompts.cancel(GROUP, USER, "k") is False
 
 
+async def test_release_drops_the_wait_but_keeps_the_question_message() -> None:
+    bot, pending, prompts = make()
+    await prompts.ask(GROUP, USER, "k", "t", "Вопрос?", placeholder="p")
+
+    assert await prompts.release(GROUP, USER, "k", message_id=100) is True
+    assert bot.deleted == [(GROUP, 101)]  # only the force-reply prompt
+    assert pending.rows == {}
+    assert await prompts.release(GROUP, USER, "k", message_id=100) is False
+
+
 async def test_is_waiting_sees_a_live_wait_of_any_kind() -> None:
     _bot, _pending, prompts = make()
     assert await prompts.is_waiting(PRIVATE, USER) is False

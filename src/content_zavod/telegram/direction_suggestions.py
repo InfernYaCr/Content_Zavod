@@ -1,8 +1,8 @@
 """Направления suggested from the Ниша (#113): the bot half of the `suggest_directions` Job.
 
 «✨ Предложить по Нише» sits on the Направления question - on the Экран Настроек and in the
-onboarding wizard. Pressing it closes that question, posts «⏳ Подбираю…» as a new message and
-enqueues a `suggest_directions` Job; the model call and the Wordstat check run in the worker
+onboarding wizard. Pressing it drops that question's wait, turns the question message itself
+into «⏳ Подбираю…» and enqueues a `suggest_directions` Job; the model call and the Wordstat check run in the worker
 like every other LLM call (ADR-0004, provenance #74), never in the bot process. When the Job
 finishes, its notification edits the «⏳» message into the list, with
 [✅ Взять] [🔄 Ещё варианты] / [✏️ Написать свои] [Отмена].
@@ -75,7 +75,8 @@ class DirectionsOrigin(Protocol):
     async def suggestion_opened(
         self, chat_id: int, user_id: int, message_id: int, place: str
     ) -> None:
-        """«✨ Предложить по Нише» was pressed on `message_id`: close that screen."""
+        """«✨ Предложить по Нише» was pressed on `message_id`: drop that question's wait (the
+        message itself becomes «⏳»)."""
         ...
 
     async def suggestion_taken(self, chat_id: int, user_id: int, place: str, notice: str) -> None:
@@ -171,12 +172,13 @@ class DirectionSuggestions:
     # --- asking ---
 
     async def start(self, chat_id: int, user_id: int, message_id: int, origin: str) -> None:
-        """«✨ Предложить по Нише» pressed on `message_id`."""
+        """«✨ Предложить по Нише» pressed on `message_id`: that question turns into «⏳» in
+        place, so a double tap edits the same message and enqueues the same Job."""
         found = self._origin(origin)
         if found is not None:
             screen, place = found
             await screen.suggestion_opened(chat_id, user_id, message_id, place)
-        await self.request(chat_id, origin)
+        await self.request(chat_id, origin, message_id=message_id)
 
     async def request(
         self,
@@ -198,7 +200,10 @@ class DirectionSuggestions:
         if message_id is None:
             message_id = await self._bot.send_message(chat_id, text, reply_markup=keyboard)
         else:
-            await self._bot.edit_message_text(chat_id, message_id, text, reply_markup=keyboard)
+            try:
+                await self._bot.edit_message_text(chat_id, message_id, text, reply_markup=keyboard)
+            except MessageGone:
+                return  # deleted under the tap: nowhere to show the result, so no Job
         # One Job per «⏳» message and round: a double-tapped «Ещё варианты» enqueues once.
         await self._jobs.enqueue(
             SUGGEST_DIRECTIONS_JOB,
@@ -239,6 +244,8 @@ class DirectionSuggestions:
         )
         if job is None or job.status != "done" or not queries:
             return False
+        if (job.output or {}).get("niche") != (await self._settings.read()).niche:
+            return False  # picked for a Ниша that has changed since
         notice = await _DIRECTIONS_FIELD.save(self._settings, ", ".join(queries))
         await self._bot.delete_message(chat_id, message_id)
         found = self._origin(str(job.payload.get("origin", "")))

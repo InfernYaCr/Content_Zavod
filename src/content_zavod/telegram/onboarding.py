@@ -364,8 +364,9 @@ class Onboarding:
     async def suggestion_opened(
         self, chat_id: int, user_id: int, message_id: int, place: str
     ) -> None:
-        """«✨» was pressed on the step's question: it goes, its wait with it."""
-        await self._leave(chat_id, user_id, message_id)
+        """«✨» was pressed on the step's question: its wait goes - the question message itself
+        turns into «⏳ Подбираю…»."""
+        await self._prompts.release(chat_id, user_id, ONBOARDING_INPUT_KIND, message_id=message_id)
 
     async def suggestion_taken(self, chat_id: int, user_id: int, place: str, notice: str) -> None:
         """Saved as if typed: on to the next step (or back to «Проверьте вводные»)."""

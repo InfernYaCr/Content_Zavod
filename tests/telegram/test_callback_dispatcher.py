@@ -1359,10 +1359,11 @@ async def test_suggest_directions_enqueues_a_job_for_the_owner(f: Fixtures) -> N
     assert answer.calls == [(None, None)]
     ((job),) = f.jobs.jobs.values()
     assert job.payload["origin"] == "s:9" and job.payload["chat_id"] == 1
-    assert f.bot.sent_messages[-1][1].startswith("⏳ Подбираю Направления")
+    assert f.bot.edited_messages[-1][2].startswith("⏳ Подбираю Направления")
 
 
 async def test_owner_takes_a_finished_suggestion(f: Fixtures) -> None:
+    f.owner_settings.values["niche"] = "выпечка"
     await dispatch(f, SimpleAction("suggest_directions", "s:9"), user_id=OWNER_ID)
     result = f.jobs.finish(1, {"niche": "выпечка", "queries": [{"query": "торт", "frequency": 5}]})
     await f.directions.deliver(result)

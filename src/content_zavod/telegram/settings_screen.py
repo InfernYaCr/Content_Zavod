@@ -472,6 +472,7 @@ class SettingsScreen:
         if not args.strip():
             await self.ask(chat_id, user_id, key, screen_message_id=None)
             return
+        niche_before = (await self._settings.read()).niche
         try:
             notice = await setting.save(self._settings, args)
         except InvalidSettingValue as exc:
@@ -480,7 +481,7 @@ class SettingsScreen:
             return
         screen_message_id = await self.send(chat_id, notice=notice)
         if key == "niche":
-            await self._offer_directions(chat_id, screen_message_id)
+            await self._offer_directions(chat_id, screen_message_id, niche_before)
 
     # --- Расписание ---
 
@@ -597,6 +598,7 @@ class SettingsScreen:
         if setting is None:
             await self._prompts.close(chat_id, pending)
             return True
+        niche_before = (await self._settings.read()).niche
         try:
             notice = await setting.save(self._settings, text)
         except InvalidSettingValue as exc:
@@ -618,7 +620,7 @@ class SettingsScreen:
             build_settings_keyboard(),
         )
         if key == "niche":
-            await self._offer_directions(chat_id, screen_message_id)
+            await self._offer_directions(chat_id, screen_message_id, niche_before)
         return True
 
     # --- Направления suggested from the Ниша (#113): this screen as their origin ---
@@ -626,11 +628,9 @@ class SettingsScreen:
     async def suggestion_opened(
         self, chat_id: int, user_id: int, message_id: int, place: str
     ) -> None:
-        """«✨» was pressed on the Направления question: drop that wait with the question."""
-        if not await self._prompts.cancel(
-            chat_id, user_id, SETTING_INPUT_KIND, message_id=message_id
-        ):
-            await self._bot.delete_message(chat_id, message_id)  # a stale question
+        """«✨» was pressed on the Направления question: drop its wait - the question message
+        itself turns into «⏳ Подбираю…»."""
+        await self._prompts.release(chat_id, user_id, SETTING_INPUT_KIND, message_id=message_id)
 
     async def suggestion_taken(self, chat_id: int, user_id: int, place: str, notice: str) -> None:
         await self._redraw(
@@ -645,9 +645,18 @@ class SettingsScreen:
         if write_own:
             await self.ask(chat_id, user_id, "directions", screen_message_id=_place_id(place))
 
-    async def _offer_directions(self, chat_id: int, screen_message_id: int | None) -> None:
-        """A new Ниша with the default marketing Направления: start the suggestion at once."""
-        if self._directions is None or not directions_mismatch(await self._settings.read()):
+    async def _offer_directions(
+        self, chat_id: int, screen_message_id: int | None, niche_before: str
+    ) -> None:
+        """A new Ниша with the default marketing Направления: start the suggestion at once.
+        Only on an actual change - the same Ниша sent again (a repeated /set_niche) doesn't
+        start another round."""
+        current = await self._settings.read()
+        if (
+            self._directions is None
+            or current.niche == niche_before
+            or not directions_mismatch(current)
+        ):
             return
         await self._directions.request(
             chat_id, _settings_origin(screen_message_id), niche_changed=True

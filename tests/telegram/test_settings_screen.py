@@ -473,13 +473,25 @@ async def test_set_niche_alias_also_starts_a_suggestion_for_the_new_screen() -> 
     assert suggester.requested == [(PRIVATE, "s:100", True)]  # the screen it just sent
 
 
-async def test_opening_a_suggestion_drops_the_directions_question(env: Env) -> None:
+async def test_the_same_niche_sent_again_starts_no_second_suggestion() -> None:
+    suggester = FakeSuggester()
+    env = Env(directions=suggester)
+
+    await env.screen.apply_command(PRIVATE, OWNER, "niche", "ремонт квартир")
+    await env.screen.apply_command(PRIVATE, OWNER, "niche", "ремонт квартир")
+    await env.screen.edit(PRIVATE, OWNER, SCREEN, "niche")
+    await env.reply("ремонт квартир")
+
+    assert len(suggester.requested) == 1
+
+
+async def test_opening_a_suggestion_drops_the_directions_wait(env: Env) -> None:
     await env.screen.edit(PRIVATE, OWNER, SCREEN, "directions")
 
     await env.screen.suggestion_opened(PRIVATE, OWNER, 100, str(SCREEN))
 
     assert env.pending.rows == {}
-    assert env.bot.deleted == [(PRIVATE, 100)]
+    assert env.bot.deleted == []  # the question message becomes «⏳ Подбираю…»
 
 
 async def test_taken_suggestion_redraws_the_screen_with_the_notice(env: Env) -> None:

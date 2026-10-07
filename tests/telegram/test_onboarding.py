@@ -354,14 +354,14 @@ async def test_only_the_directions_step_offers_a_suggestion(env: Env) -> None:
         assert "✨ Предложить по Нише" not in [t for row in button_texts(env.last[2]) for t in row]
 
 
-async def test_opening_a_suggestion_closes_the_step_question(env: Env) -> None:
+async def test_opening_a_suggestion_drops_the_step_wait_but_keeps_its_message(env: Env) -> None:
     await env.press("directions")
     question = env.wait.prompt_message_id
 
     await env.onboarding.suggestion_opened(PRIVATE, OWNER, question, "directions")
 
     assert env.wait is None
-    assert (PRIVATE, question) in env.bot.deleted
+    assert (PRIVATE, question) not in env.bot.deleted  # it becomes «⏳ Подбираю…»
 
 
 async def test_taken_suggestion_moves_on_like_an_answer(env: Env) -> None:

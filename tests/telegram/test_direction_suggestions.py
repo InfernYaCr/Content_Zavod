@@ -47,8 +47,12 @@ class RecordingOrigin:
 
 
 class GoneBot(RecordingBot):
+    gone = False
+
     async def edit_message_text(self, chat_id, message_id, text, reply_markup=None) -> None:
-        raise MessageGone(chat_id, message_id)
+        if self.gone:
+            raise MessageGone(chat_id, message_id)
+        await super().edit_message_text(chat_id, message_id, text, reply_markup)
 
 
 OUTPUT = {
@@ -72,8 +76,8 @@ class Env:
         self.suggestions.attach("s", self.origin)
 
     async def started(self) -> int:
-        """Press «✨» on message 7; the «⏳» message is 100, its Job 1."""
-        await self.suggestions.start(CHAT, OWNER, 7, ORIGIN)
+        """Press «✨» on question 100: it becomes the «⏳» message, its Job 1."""
+        await self.suggestions.start(CHAT, OWNER, 100, ORIGIN)
         return 1
 
 
@@ -82,18 +86,26 @@ def env() -> Env:
     return Env()
 
 
-async def test_start_closes_the_question_shows_working_and_enqueues_a_job(env: Env) -> None:
+async def test_start_turns_the_question_into_working_and_enqueues_a_job(env: Env) -> None:
     await env.suggestions.start(CHAT, OWNER, 7, ORIGIN)
 
     assert env.origin.calls == [("opened", 7, "50")]
-    ((chat_id, text, markup, _),) = env.bot.sent
-    assert chat_id == CHAT
+    assert env.bot.sent == []  # in place: no new message
+    ((chat_id, message_id, text, markup),) = env.bot.edited
+    assert (chat_id, message_id) == (CHAT, 7)
     assert text.startswith("⏳ Подбираю Направления для Ниши «домашняя выпечка»")
     assert button_data(markup) == [[f"dc:{ORIGIN}"]]
     ((job),) = env.jobs.jobs.values()
     assert job.job_type == SUGGEST_DIRECTIONS_JOB
-    assert job.payload == {"chat_id": CHAT, "message_id": 100, "origin": ORIGIN, "exclude": []}
+    assert job.payload == {"chat_id": CHAT, "message_id": 7, "origin": ORIGIN, "exclude": []}
     assert "directions" not in env.store.values
+
+
+async def test_a_double_tapped_suggest_starts_one_job(env: Env) -> None:
+    await env.suggestions.start(CHAT, OWNER, 7, ORIGIN)
+    await env.suggestions.start(CHAT, OWNER, 7, ORIGIN)
+
+    assert len(env.jobs.jobs) == 1 and env.bot.sent == []
 
 
 async def test_after_a_niche_change_it_says_why_it_started(env: Env) -> None:
@@ -107,7 +119,7 @@ async def test_result_turns_the_working_message_into_the_list(env: Env) -> None:
 
     await env.suggestions.deliver(env.jobs.finish(job_id, OUTPUT))
 
-    ((chat_id, message_id, text, markup),) = env.bot.edited
+    chat_id, message_id, text, markup = env.bot.edited[-1]
     assert (chat_id, message_id) == (CHAT, 100)
     assert text.startswith("✨ Направления для Ниши «домашняя выпечка»")
     assert "• торт на заказ — ищут 12 400 раз в месяц" in text
@@ -128,7 +140,7 @@ async def test_unchecked_list_says_wordstat_did_not_answer(env: Env) -> None:
 
     await env.suggestions.deliver(env.jobs.finish(job_id, output))
 
-    assert "⚠️ Wordstat сейчас не ответил" in env.bot.edited[0][2]
+    assert "⚠️ Wordstat сейчас не ответил" in env.bot.edited[-1][2]
 
 
 async def test_nothing_with_demand_offers_more_but_no_take(env: Env) -> None:
@@ -137,7 +149,7 @@ async def test_nothing_with_demand_offers_more_but_no_take(env: Env) -> None:
 
     await env.suggestions.deliver(env.jobs.finish(job_id, output))
 
-    _, _, text, markup = env.bot.edited[0]
+    _, _, text, markup = env.bot.edited[-1]
     assert text.startswith("😕 Для Ниши «домашняя выпечка» не нашлось запросов")
     assert button_texts(markup) == [["🔄 Ещё варианты"], ["✏️ Написать свои", "Отмена"]]
 
@@ -147,7 +159,7 @@ async def test_a_failed_job_says_so_and_offers_a_retry(env: Env) -> None:
 
     await env.suggestions.deliver(env.jobs.finish(job_id, None))
 
-    _, message_id, text, markup = env.bot.edited[0]
+    _, message_id, text, markup = env.bot.edited[-1]
     assert message_id == 100 and text.startswith("😕 Не получилось подобрать Направления")
     assert button_data(markup) == [["dm:1"], [f"do:{ORIGIN}", f"dc:{ORIGIN}"]]
 
@@ -155,10 +167,21 @@ async def test_a_failed_job_says_so_and_offers_a_retry(env: Env) -> None:
 async def test_a_result_for_a_message_that_is_gone_is_dropped() -> None:
     env = Env(GoneBot())
     job_id = await env.started()
+    env.bot.gone = True
 
     await env.suggestions.deliver(env.jobs.finish(job_id, OUTPUT))  # no raise, nothing sent
 
-    assert len(env.bot.sent) == 1
+    assert env.bot.sent == []
+
+
+async def test_a_question_deleted_under_the_tap_starts_no_job() -> None:
+    bot = GoneBot()
+    bot.gone = True
+    env = Env(bot)
+
+    await env.suggestions.start(CHAT, OWNER, 7, ORIGIN)
+
+    assert env.jobs.jobs == {} and env.bot.sent == []
 
 
 async def test_take_saves_that_list_and_returns_to_the_origin(env: Env) -> None:
@@ -184,6 +207,15 @@ async def test_take_of_an_unknown_job_is_stale_and_saves_nothing(env: Env, job_t
 
 async def test_take_before_the_job_is_done_saves_nothing(env: Env) -> None:
     job_id = await env.started()
+
+    assert await env.suggestions.take(CHAT, OWNER, 100, str(job_id)) is False
+    assert "directions" not in env.store.values
+
+
+async def test_take_after_the_niche_changed_is_stale(env: Env) -> None:
+    job_id = await env.started()
+    env.jobs.finish(job_id, OUTPUT)
+    env.store.values["niche"] = "ремонт квартир"
 
     assert await env.suggestions.take(CHAT, OWNER, 100, str(job_id)) is False
     assert "directions" not in env.store.values
@@ -219,10 +251,10 @@ async def test_more_reworks_the_same_message_avoiding_what_was_shown(env: Env) -
         "origin": ORIGIN,
         "exclude": ["торт на заказ", "закваска для хлеба", "хлеб бабушкин секрет"],
     }
-    _, message_id, text, markup = env.bot.edited[0]
+    _, message_id, text, markup = env.bot.edited[-1]
     assert message_id == 100 and text.startswith("⏳ Подбираю")
     assert button_data(markup) == [[f"dc:{ORIGIN}"]]
-    assert len(env.bot.sent) == 1  # no new message
+    assert env.bot.sent == []  # no new message
 
 
 async def test_more_after_more_keeps_excluding_earlier_rounds(env: Env) -> None:
