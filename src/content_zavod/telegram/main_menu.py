@@ -57,10 +57,11 @@ from .texts import (
     PLAN_STATE_APPROVED,
     PLAN_STATE_PENDING,
     TOPIC_QUESTION,
+    TOPIC_TOO_LONG_TEXT,
     WELCOME_TEXT,
     schedule_text,
 )
-from .topic_command import PlanProposal, handle_topic_command
+from .topic_command import TOPIC_MAX_LENGTH, PlanProposal, handle_topic_command
 from .types import PlanItemView, PlanView
 
 logger = logging.getLogger(__name__)
@@ -244,6 +245,13 @@ class MainMenu:
         pending = await self._prompts.take(workspace.id, chat_id, user_id, TOPIC_INPUT_KIND)
         if pending is None:
             return False
+        if len(text.strip()) > TOPIC_MAX_LENGTH:
+            # Refused before the wait is closed: the same question stays open (ADR-0015).
+            problem = TOPIC_TOO_LONG_TEXT.format(limit=TOPIC_MAX_LENGTH)
+            await self._prompts.ask_again(
+                workspace.id, chat_id, user_id, pending, problem, TOPIC_QUESTION
+            )
+            return True
         await self._prompts.close(chat_id, pending)
         await handle_topic_command(
             self._plan, self._gateway, workspace, chat_id, text, now=self._now

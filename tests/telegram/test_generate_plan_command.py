@@ -180,6 +180,9 @@ async def test_without_a_niche_it_asks_for_one_instead_of_drafting_by_the_defaul
     assert chat_id == 1 and text.startswith("Сначала скажите, о чём ваш блог")
     ((button,),) = keyboard.inline_keyboard
     assert (button.text, button.callback_data) == ("✏️ Указать Нишу", "sa:niche")
+    # The button is the Экран Настроек's question: a saved Ниша ends there, no Plan is made -
+    # so the text must not promise one (#118 PR 4 review).
+    assert "составлю План" not in text and "можно составить План" in text
 
 
 @pytest.mark.asyncio
