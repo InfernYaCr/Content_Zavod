@@ -313,6 +313,17 @@ async def test_a_temas_why_is_stored_and_shown_with_it(plan: Plan) -> None:
     ]
 
 
+async def test_a_regenerated_tema_loses_its_why(plan: Plan) -> None:
+    """#140 review: the replacement Тема was not chosen for that reason."""
+    plan_id = await plan.add_topics(WS_A, "Week 1", [TopicDraft(title="Растёт", why="📈 w")])
+    (item,) = (await plan.get(WS_A, plan_id)).items
+
+    await plan.apply_regeneration(WS_A, item.id, TopicDraft(title="Другая", summary="s"))
+
+    (item,) = (await plan.get(WS_A, plan_id)).items
+    assert (item.title, item.why) == ("Другая", "")
+
+
 async def test_add_topics_appends_to_the_existing_draft_for_a_repeated_week_label(
     plan: Plan,
 ) -> None:

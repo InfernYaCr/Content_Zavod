@@ -227,7 +227,8 @@ class WordstatSession:
         self._client = client
         self._recorder = recorder
         self._clock = clock
-        self._deadline = clock() + budget
+        self._budget = budget
+        self._deadline: float | None = None
         self.stopped = False
 
     async def top(self, phrase: str, *, num_phrases: int = 20) -> TopRequests | None:
@@ -257,6 +258,8 @@ class WordstatSession:
         params: dict[str, Any],
         call: Callable[[], Awaitable[T]],
     ) -> T | None:
+        if self._deadline is None:  # the budget runs from the first request, not before it
+            self._deadline = self._clock() + self._budget
         remaining = self._deadline - self._clock()
         if self.stopped or remaining <= 0:
             self.stopped = True
@@ -341,7 +344,7 @@ async def build_niche_map(
         questions = [
             stat
             for stat in (top.results if top is not None else [])
-            if stat.keyword != query and _QUESTION.match(stat.keyword)
+            if stat.keyword != query and _QUESTION.match(stat.keyword) and _is_query(stat.keyword)
         ]
         for stat in questions[:QUESTIONS_PER_SEED]:
             key = query_key(stat.keyword)

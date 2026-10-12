@@ -599,7 +599,9 @@ _Delivery = (
 
 
 def _empty_plan_text(week_label: str, empty_reason: str | None) -> str:
-    """Why a `generate_plan` run came back with no Темы, and what to do about it (#84)."""
+    """Why a `generate_plan` run came back with no Темы, and what to do about it (#84). Only for
+    notifications of Jobs finished before #128: today's `generate_plan` never returns an empty
+    Plan - it fails instead, and gets «Повторить»."""
     if empty_reason == "all_recently_used":
         why = "все подобранные Темы недавно уже были в Планах"
     else:

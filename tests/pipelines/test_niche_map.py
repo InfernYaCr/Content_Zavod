@@ -174,7 +174,12 @@ async def test_the_map_keeps_demanded_queries_widened_by_associations_and_questi
                 results={"как торт": 50000, "как испечь торт": 7000, "торт рецепт": 900},
             ),
             "как рецепт домашнего хлеба": top(
-                800, results={"как испечь хлеб дома": 300, "почему хлеб не поднимается": 200}
+                800,
+                results={
+                    "как испечь хлеб дома": 300,
+                    "почему хлеб не поднимается": 200,
+                    "как испечь хлеб дома в духовке без дрожжей и закваски": 100,
+                },
             ),
         }
     )
@@ -348,3 +353,19 @@ async def test_a_run_past_its_time_budget_stops_asking() -> None:
     assert await session.top("b") is None
     assert session.stopped
     assert len(recorder.as_output()) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_time_budget_starts_at_the_first_request() -> None:
+    class Clock:
+        now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = Clock()
+    session = WordstatSession(FakeWordstat({"a": top(5)}), StepRecorder(), budget=10, clock=clock)
+    clock.now = 100.0  # the Map's model call took long before Wordstat was first asked
+
+    assert await session.top("a") is not None
+    assert not session.stopped

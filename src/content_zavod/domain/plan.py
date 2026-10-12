@@ -639,7 +639,7 @@ class Plan:
         result = await self._pool.execute(
             """
             UPDATE plan_items
-            SET title = $2, summary = $3, keywords = $4::jsonb, updated_at = now()
+            SET title = $2, summary = $3, keywords = $4::jsonb, why = '', updated_at = now()
             WHERE id = $1 AND workspace_id = $5 AND status = 'pending_review'
             """,
             plan_item_id,
