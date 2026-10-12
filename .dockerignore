@@ -1,4 +1,6 @@
-.env
+# Any .env copy (.env.bak, .env.txt from Notepad...) holds secrets; only the template goes in.
+.env*
+!.env.example
 .venv
 .git
 .pytest_cache

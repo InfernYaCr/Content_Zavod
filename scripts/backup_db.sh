@@ -3,8 +3,11 @@
 # (first argument, default 14). Run from anywhere; it works relative to the repo root.
 #
 # Cron example (every night at 03:00, keep 14):
-#   0 3 * * * /opt/content-zavod/scripts/backup_db.sh 14 >> /opt/content-zavod/backups/backup.log 2>&1
+#   0 3 * * * /opt/content-zavod/scripts/backup_db.sh 14 >> /var/log/content-zavod-backup.log 2>&1
+# (the log is outside backups/: cron opens it before this script gets to create that directory)
 set -euo pipefail
+# Dumps hold every Plan, Article and stored token: readable by the owner only.
+umask 077
 
 keep="${1:-14}"
 if ! [[ "$keep" =~ ^[1-9][0-9]*$ ]]; then

@@ -46,6 +46,8 @@ MVP в разработке. Реализовано:
 
 - VPS с Ubuntu 22.04 или 24.04 (хватит 2 vCPU / 4 ГБ), доступ по SSH под `root`.
 - Токен Telegram-бота от `@BotFather` и id чата для результатов (`TELEGRAM_NOTIFY_CHAT_ID`).
+  Проще всего — ваш же Telegram id (см. ниже): результаты будут приходить вам в личный чат с
+  ботом. Для общего чата команды — см. подсказку в `.env.example`.
 - Yandex Cloud: id каталога и API-ключ сервисного аккаунта (или OAuth-токен).
 - Свой Telegram id (число) — узнать можно, например, у бота `@userinfobot`.
 
@@ -170,7 +172,7 @@ docker compose up -d --build
 сами. Чтобы бэкап делался каждую ночь в 03:00, откройте `crontab -e` и добавьте строку:
 
 ```cron
-0 3 * * * /opt/content-zavod/scripts/backup_db.sh 14 >> /opt/content-zavod/backups/backup.log 2>&1
+0 3 * * * /opt/content-zavod/scripts/backup_db.sh 14 >> /var/log/content-zavod-backup.log 2>&1
 ```
 
 Время от времени скачивайте свежий бэкап к себе (например, `scp root@IP_СЕРВЕРА:/opt/content-zavod/backups/<файл> .`)
@@ -205,7 +207,8 @@ docker compose start bot worker
    перезагрузки ПК бот поднимется сам.
 2. Скачать проект: `git clone https://github.com/InfernYaCr/Content_Zavod.git` или на GitHub
    «Code → Download ZIP» и распаковать.
-3. Открыть PowerShell в папке проекта и создать настройки:
+3. Открыть PowerShell в папке проекта (в Проводнике: правый клик по папке → «Открыть в
+   терминале») и создать настройки:
    ```powershell
    copy .env.example .env
    notepad .env
@@ -218,6 +221,7 @@ docker compose start bot worker
    docker compose ps
    docker compose logs -f bot worker
    ```
+   Что должно получиться — как в шаге 6 выше. Выйти из логов — `Ctrl+C`.
 5. Назначить себя Владельцем:
    ```powershell
    docker compose run --rm bot python scripts/add_owner.py 123456789
@@ -225,8 +229,9 @@ docker compose start bot worker
 6. Остановить: `docker compose stop`, запустить снова: `docker compose start`. Обновление:
    `git pull`, затем `docker compose up -d --build`.
 
-Бэкап на Windows — тем же скриптом из Git Bash (ставится вместе с Git for Windows):
-`bash scripts/backup_db.sh`.
+Бэкап на Windows — тем же скриптом из Git Bash (ставится вместе с Git for Windows; в Проводнике:
+правый клик по папке проекта → «Open Git Bash here»): `bash scripts/backup_db.sh`. Восстановление
+из бэкапа — те же команды, что выше, тоже в Git Bash (в PowerShell нет `gunzip`).
 
 ## Разработка
 
