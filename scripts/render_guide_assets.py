@@ -165,11 +165,20 @@ def _sample_plan(status: str) -> PlanView:
                 id="1",
                 title="Как посчитать окупаемость рекламы",
                 status="approved" if status == "mixed" else status,
+                why="❓ Частый вопрос: ~4\u00a0100 запросов в месяц",
             ),
             PlanItemView(
-                id="2", title="5 ошибок в воронке продаж малого бизнеса", status="pending_review"
+                id="2",
+                title="5 ошибок в воронке продаж малого бизнеса",
+                status="pending_review",
+                why="📈 Спрос растёт: +38 % за 4 недели",
             ),
-            PlanItemView(id="3", title="CRM за выходные: с чего начать", status="pending_review"),
+            PlanItemView(
+                id="3",
+                title="CRM за выходные: с чего начать",
+                status="pending_review",
+                why="📰 Инфоповод недели: rbc.ru",
+            ),
         ],
     )
 
@@ -185,7 +194,7 @@ async def _slide_mockup(slide: Slide) -> Mockup:
     elif slide.key == "sourcing":
         plan = _sample_plan("pending_review")
         bubbles = [
-            Bubble("По Расписанию приходит План с Темами по вашей Нише", service=True),
+            Bubble("По Расписанию приходит План: 3 Темы и повод под каждой", service=True),
             Bubble(render_plan_text(plan), _buttons(build_plan_keyboard(plan))),
         ]
     elif slide.key == "week":

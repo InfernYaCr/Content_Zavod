@@ -92,9 +92,11 @@ class WebSearch:
             **kwargs,
         )
 
-    async def search(self, query: str, *, limit: int) -> SearchResults:
+    async def search(self, query: str, *, limit: int, period: str | None = None) -> SearchResults:
+        """`period` (`PERIOD_2_WEEKS`, ...) keeps only fresh documents. The API silently ignores
+        a misnamed field (live check, #128), so the name is pinned by a test."""
         headers = await self._credentials.auth_header()
-        body = {
+        body: dict[str, Any] = {
             "query": {
                 "searchType": "SEARCH_TYPE_RU",
                 "queryText": query[:400],
@@ -115,6 +117,8 @@ class WebSearch:
             "folderId": self._folder_id,
             "responseFormat": "FORMAT_XML",
         }
+        if period is not None:
+            body["period"] = period
 
         async def call() -> HttpResponse:
             return await self._transport.post(self._url, headers=headers, json=body)

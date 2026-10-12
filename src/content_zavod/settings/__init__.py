@@ -26,12 +26,10 @@ from .persona import (
 from .project import CLEAR_PROJECT, PROJECT_KEY, Project, normalize_project_url, project_detail_text
 from .service import (
     DEFAULT_NICHE,
-    DIRECTIONS_KEY,
     NICHE_KEY,
     SETTING_STORE_KEYS,
     SettingsReader,
     SettingsService,
-    parse_directions,
 )
 from .values import OwnerSettings
 
@@ -43,7 +41,6 @@ __all__ = [
     "DEFAULT_NICHE",
     "DEFAULT_PERSONA_KEY",
     "DEFAULT_PERSONA_TITLE",
-    "DIRECTIONS_KEY",
     "NICHE_KEY",
     "ONBOARDING_KEY",
     "PERSONAS",
@@ -64,7 +61,6 @@ __all__ = [
     "format_custom_persona",
     "normalize_project_url",
     "parse_custom_persona",
-    "parse_directions",
     "persona_detail_text",
     "persona_display_title",
     "persona_setting_value",

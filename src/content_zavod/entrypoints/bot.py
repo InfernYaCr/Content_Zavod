@@ -615,7 +615,10 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> list
     if result.job_type == "generate_plan":
         topics = [
             TopicDraft(
-                title=t["title"], summary=t.get("summary", ""), keywords=t.get("keywords", [])
+                title=t["title"],
+                summary=t.get("summary", ""),
+                keywords=t.get("keywords", []),
+                why=t.get("why", ""),
             )
             for t in output["topics"]
         ]

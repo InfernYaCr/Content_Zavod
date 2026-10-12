@@ -4,7 +4,6 @@ from .article_pipeline import (
     make_regenerate_article_handler,
 )
 from .cover_pipeline import make_generate_cover_handler
-from .direction_suggestions import SUGGEST_DIRECTIONS_JOB, make_suggest_directions_handler
 from .page_fetcher import FetchedPage, HttpxPageFetcher, PageFetcher
 from .plan_pipeline import (
     PlanItemReader,
@@ -19,7 +18,6 @@ from .topic_research import (
 )
 
 __all__ = [
-    "SUGGEST_DIRECTIONS_JOB",
     "ArticleReader",
     "FetchedPage",
     "HttpxPageFetcher",
@@ -34,5 +32,4 @@ __all__ = [
     "make_generate_plan_handler",
     "make_regenerate_article_handler",
     "make_regenerate_topic_handler",
-    "make_suggest_directions_handler",
 ]

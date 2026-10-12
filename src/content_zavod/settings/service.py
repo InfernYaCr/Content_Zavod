@@ -21,9 +21,8 @@ accept, or `InvalidSettingValue("project")` for empty input; a lone
 `InvalidSettingValue("audience")` for empty input and `"audience_too_long"` past
 `AUDIENCE_MAX_LENGTH`; a lone `CLEAR_AUDIENCE` (`-`) removes it.
 
-Направления (#128) have no screen any more: the bot is to find its own queries from the Ниша
-(the Niche Map). Until that pipeline lands, a stored `directions` value is still read and
-seeds the Wordstat path of `generate_plan`; with none, Темы are drafted from the Ниша alone.
+Направления are gone (#128): the bot builds its own queries from the Ниша and Аудитория (the
+Карта Ниши, `pipelines/niche_map.py`).
 """
 
 from __future__ import annotations
@@ -55,8 +54,6 @@ from .values import OwnerSettings
 NICHE_KEY = "niche"
 DEFAULT_NICHE = "маркетинг"
 
-DIRECTIONS_KEY = "directions"
-
 # Every key a Настройка is stored under: any of them present means the Владелец has already
 # configured something, so the first-run wizard isn't forced on them (see `onboarding.py`).
 SETTING_STORE_KEYS: tuple[str, ...] = (
@@ -67,22 +64,15 @@ SETTING_STORE_KEYS: tuple[str, ...] = (
 )
 
 
-def parse_directions(value: str) -> list[str]:
-    return [item.strip() for item in value.split(",") if item.strip()]
-
-
 async def _read_settings(get: Callable[[str], Awaitable[str | None]]) -> OwnerSettings:
     niche_raw = await get(NICHE_KEY)
-    directions_raw = await get(DIRECTIONS_KEY)
     persona_raw = await get(PERSONA_KEY)
     project_raw = await get(PROJECT_KEY)
     audience_raw = await get(AUDIENCE_KEY)
     niche = niche_raw if niche_raw else DEFAULT_NICHE
-    directions = parse_directions(directions_raw) if directions_raw else None
     persona, custom_persona = resolve_persona(persona_raw)
     return OwnerSettings(
         niche=niche,
-        directions=tuple(directions or ()),
         persona=persona,
         custom_persona=custom_persona,
         project=parse_stored_project(project_raw),

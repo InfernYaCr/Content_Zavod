@@ -114,7 +114,6 @@ class FakeSettings:
     async def read(self, workspace_id: int) -> OwnerSettings:
         return OwnerSettings(
             niche="кофейни",
-            directions=(),
             persona=None,
             custom_persona=None,
             niche_saved=self.niche_saved,

@@ -92,6 +92,8 @@ def render_plan_text(plan: PlanView, *, page: int = 0) -> str:
         if start < index <= start + ITEMS_PER_PAGE:
             status = topic_status(item.status)
             lines.append(f"{index}. {item.title} — {status}")
+            if item.why:
+                lines.append(f"    {item.why}")
     return "\n".join(lines)
 
 

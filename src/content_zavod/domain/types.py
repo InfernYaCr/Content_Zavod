@@ -29,6 +29,8 @@ class PlanItemView:
     id: PlanItemId
     title: str
     status: str
+    # «Почему сейчас» (#128): the line under the Тема in the Plan message, "" for none.
+    why: str = ""
 
 
 @dataclass(frozen=True)
@@ -177,6 +179,8 @@ class TopicDraft:
     title: str
     summary: str = ""
     keywords: Sequence[str] = field(default_factory=tuple)
+    # «Почему сейчас» (#128), written by code from the Тема's signal; "" for a proposed one.
+    why: str = ""
 
 
 @dataclass(frozen=True)
