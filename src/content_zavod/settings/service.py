@@ -21,6 +21,11 @@ accept, or `InvalidSettingValue("project")` for empty input; a lone
 `InvalidSettingValue("audience")` for empty input and `"audience_too_long"` past
 `AUDIENCE_MAX_LENGTH`; a lone `CLEAR_AUDIENCE` (`-`) removes it.
 
+Every Настройка is the Owner's text in their own generations' prompts, so each has a length
+limit (ADR-0015, «Безопасность»), checked here rather than in the Telegram layer:
+`NICHE_MAX_LENGTH`, `PERSONA_MAX_LENGTH` and `PROJECT_MAX_LENGTH` (the whole input, link and
+description together) raise `"<field>_too_long"` and write nothing.
+
 Направления (#128) have no screen any more: the bot is to find its own queries from the Ниша
 (the Niche Map). Until that pipeline lands, a stored `directions` value is still read and
 seeds the Wordstat path of `generate_plan`; with none, Темы are drafted from the Ниша alone.
@@ -37,6 +42,7 @@ from ..workspaces import WorkspaceId
 from .audience import AUDIENCE_KEY, AUDIENCE_MAX_LENGTH, CLEAR_AUDIENCE, parse_stored_audience
 from .persona import (
     PERSONA_KEY,
+    PERSONA_MAX_LENGTH,
     PERSONA_VALUE_PREFIX,
     parse_custom_persona,
     resolve_persona,
@@ -45,6 +51,7 @@ from .persona import (
 from .project import (
     CLEAR_PROJECT,
     PROJECT_KEY,
+    PROJECT_MAX_LENGTH,
     Project,
     normalize_project_url,
     parse_stored_project,
@@ -54,6 +61,7 @@ from .values import OwnerSettings
 
 NICHE_KEY = "niche"
 DEFAULT_NICHE = "маркетинг"
+NICHE_MAX_LENGTH = 200
 
 DIRECTIONS_KEY = "directions"
 
@@ -117,6 +125,8 @@ class SettingsService:
         normalized = value.strip()
         if not normalized:
             raise InvalidSettingValue("niche")
+        if len(normalized) > NICHE_MAX_LENGTH:
+            raise InvalidSettingValue("niche_too_long")
         await self._store.set(workspace_id, NICHE_KEY, normalized)
         return normalized
 
@@ -124,6 +134,8 @@ class SettingsService:
         normalized = value.strip()
         if not normalized:
             raise InvalidSettingValue("persona")
+        if len(normalized) > PERSONA_MAX_LENGTH:
+            raise InvalidSettingValue("persona_too_long")
         if normalized.startswith(PERSONA_VALUE_PREFIX):
             await self._store.set(workspace_id, PERSONA_KEY, normalized)
             return normalized
@@ -139,6 +151,8 @@ class SettingsService:
         if value.strip() == CLEAR_PROJECT:
             await self._store.set(workspace_id, PROJECT_KEY, "")
             return None
+        if len(value.strip()) > PROJECT_MAX_LENGTH:
+            raise InvalidSettingValue("project_too_long")
         parts = value.split(maxsplit=1)
         if not parts:
             raise InvalidSettingValue("project")

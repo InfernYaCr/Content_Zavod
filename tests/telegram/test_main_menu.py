@@ -17,6 +17,7 @@ from content_zavod.telegram import (
 from content_zavod.telegram.asset_photos import AssetPhotos
 from content_zavod.telegram.input_prompt import InputPrompt
 from content_zavod.telegram.main_menu import TOPIC_INPUT_KIND, MainMenu, build_main_menu_keyboard
+from content_zavod.telegram.topic_command import TOPIC_MAX_LENGTH
 from content_zavod.workspaces import Workspace
 from tests.tenancy import WS_A
 
@@ -315,6 +316,21 @@ async def test_propose_topic_asks_then_adds_the_answer_to_the_plan() -> None:
     assert (USER, 100) in env.bot.deleted  # the question is cleaned up
     # The Plan message itself arrives in the private chat.
     assert "Как считать ROI" in env.bot.sent[-1][1]
+
+
+async def test_an_overlong_topic_is_refused_and_the_question_stays_open() -> None:
+    """ADR-0015: past `TOPIC_MAX_LENGTH` nothing is added; the same question asks again."""
+    env = Env()
+    await env.menu.ask_topic(WORKSPACE, USER, USER)
+
+    assert await env.menu.handle_reply(WORKSPACE, USER, USER, "я" * (TOPIC_MAX_LENGTH + 1))
+
+    assert env.plan.added == []
+    assert env.pending.rows[(USER, USER)].kind == TOPIC_INPUT_KIND
+    assert str(TOPIC_MAX_LENGTH) in env.bot.edited[-1][2]
+
+    assert await env.menu.handle_reply(WORKSPACE, USER, USER, "Как считать ROI")
+    assert env.plan.added[0][1][0].title == "Как считать ROI"
 
 
 async def test_reply_without_a_topic_question_is_not_consumed() -> None:

@@ -18,6 +18,9 @@ since this is an interactive command rather than a batch job.
 The Plan message goes to the Пространство owner's private chat, where every other delivery of
 the Workspace goes (ADR-0015); the week is counted in the Workspace's own time zone, like the
 Расписание tick does.
+
+A Тема is the Owner's text in their own generations' prompts, so it is capped at
+`TOPIC_MAX_LENGTH` (ADR-0015, «Безопасность»): a longer one is refused and nothing is added.
 """
 
 from __future__ import annotations
@@ -31,10 +34,11 @@ from ..workspaces import Workspace, WorkspaceId
 from .gateway import TelegramGateway
 from .generate_plan_command import workspace_week
 from .plan_delivery import PlanMessageRefs, deliver_plan_message
-from .texts import TOPIC_ADDED_TEXT
+from .texts import TOPIC_ADDED_TEXT, TOPIC_TOO_LONG_TEXT
 from .types import PlanView
 
 RECENT_HISTORY_DAYS = 90
+TOPIC_MAX_LENGTH = 300
 
 
 class PlanProposal(PlanMessageRefs, Protocol):
@@ -63,6 +67,9 @@ async def handle_topic_command(
     title = text.strip()
     if not title:
         await gateway.send_error(chat_id, "Укажите текст Темы: /topic <текст>")
+        return
+    if len(title) > TOPIC_MAX_LENGTH:
+        await gateway.send_error(chat_id, TOPIC_TOO_LONG_TEXT.format(limit=TOPIC_MAX_LENGTH))
         return
 
     current_time = now()
