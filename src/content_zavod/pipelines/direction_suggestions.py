@@ -1,5 +1,9 @@
 """suggest_directions Job Handler (#113): Направления proposed from the Ниша.
 
+Not registered in the worker since Направления lost their screen (#128): no bot button
+enqueues it any more. Kept for the Niche Map pipeline (#128), which is to reuse its
+model-and-Wordstat candidate selection; remove it if that pipeline doesn't.
+
 A Владелец outside marketing («домашняя выпечка», «ремонт квартир») rarely knows what to type
 as Направления - the Wordstat seed queries `generate_plan` grows Темы from. This step asks the
 model for 5-8 short queries the way people type them into Яндекс, then checks each one's demand

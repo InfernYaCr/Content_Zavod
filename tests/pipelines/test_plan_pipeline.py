@@ -8,7 +8,7 @@ from content_zavod.pipelines.plan_pipeline import (
     make_generate_plan_handler,
     make_regenerate_topic_handler,
 )
-from content_zavod.settings import DEFAULT_DIRECTIONS, WorkspaceSettingsReader
+from content_zavod.settings import SettingsService
 from content_zavod.yandex import Completion, KeywordDynamicsPoint, Message
 from tests.tenancy import WS_A, WS_B
 
@@ -101,7 +101,7 @@ async def test_handler_picks_growing_keywords_and_skips_declining_ones() -> None
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("growing kw", "declining kw"),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -132,7 +132,7 @@ async def test_handler_ranks_by_growth_and_respects_topics_per_plan() -> None:
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("small growth", "big growth"),
         topics_per_plan=1,
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
@@ -157,7 +157,7 @@ async def test_handler_skips_a_topic_whose_title_was_already_used_recently() -> 
         keyword_stats,
         text_generator,
         recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("growing kw",),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -176,7 +176,7 @@ async def test_handler_succeeds_empty_when_no_direction_grows() -> None:
         keyword_stats,
         FakeTextGenerator({}),
         _no_recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("declining kw", "broken kw"),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -195,7 +195,7 @@ async def test_handler_fails_when_every_wordstat_request_fails() -> None:
         FakeKeywordStats({}),
         FakeTextGenerator({}),
         _no_recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("broken kw", "another broken kw"),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -212,7 +212,7 @@ async def test_handler_swallows_a_keyword_dynamics_failure_for_one_keyword() -> 
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("broken kw", "ok kw"),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -230,7 +230,7 @@ async def test_handler_requests_a_six_month_monthly_dynamics_window() -> None:
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("missing kw",),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -255,7 +255,7 @@ async def test_handler_uses_default_niche_when_unset() -> None:
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore(None)),
+        SettingsService(FakeOwnerSettingsStore(None)),
         seed_keywords=("growing kw",),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -276,7 +276,7 @@ async def test_handler_reads_niche_from_owner_settings_store() -> None:
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore("edtech")),
+        SettingsService(FakeOwnerSettingsStore("edtech")),
         seed_keywords=("growing kw",),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -298,7 +298,7 @@ async def test_handler_reads_niche_fresh_on_each_run_without_being_rebuilt() -> 
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        WorkspaceSettingsReader(store),
+        SettingsService(store),
         seed_keywords=("growing kw",),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -311,22 +311,74 @@ async def test_handler_reads_niche_fresh_on_each_run_without_being_rebuilt() -> 
     assert "«b2b saas»" in text_generator.calls[-1][0].text
 
 
+class _ScriptedTextGenerator:
+    """Answers each call with the next reply, in order."""
+
+    def __init__(self, replies: list[str]) -> None:
+        self._replies = list(replies)
+        self.calls: list[list[Message]] = []
+
+    async def complete_with_usage(
+        self, messages: list[Message], *, temperature: float = 0.7
+    ) -> Completion:
+        self.calls.append(messages)
+        return Completion(text=self._replies.pop(0), model="yandexgpt/latest", tokens=10)
+
+
+def _topic(title: str) -> str:
+    return f"Title: {title}\nSummary: s\nKeywords: k"
+
+
 @pytest.mark.asyncio
-async def test_handler_uses_default_directions_when_seed_keywords_and_store_are_unset() -> None:
+async def test_without_directions_topics_are_drafted_from_the_niche_alone() -> None:
+    """#128: Направления have no screen - a new Пространство's Plan comes from its Ниша, with
+    no Wordstat call; a recent or just drafted Тема is dropped and the next one named."""
     keyword_stats = FakeKeywordStats({})
-    text_generator = FakeTextGenerator({})
+    text_generator = _ScriptedTextGenerator(
+        [_topic("Старая"), _topic("Первая"), _topic("Первая"), _topic("Вторая"), _topic("Третья")]
+    )
+
+    async def recent_titles(workspace_id: int, since: datetime) -> list[str]:
+        return ["старая"]
+
     handler = make_generate_plan_handler(
         keyword_stats,
         text_generator,
-        _no_recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
+        recent_titles,
+        SettingsService(FakeOwnerSettingsStore("кофейни", audience="владельцы кофеен")),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
-    with pytest.raises(JobPartialFailure, match="Wordstat"):
-        await handler(WS_A, {"week_label": "Week 1"})
+    output = await handler(WS_A, {"week_label": "Week 1"})
 
-    assert keyword_stats.calls == list(DEFAULT_DIRECTIONS)
+    assert keyword_stats.calls == []
+    assert [t["title"] for t in output["topics"]] == ["Первая", "Вторая", "Третья"]
+    assert "«кофейни»" in text_generator.calls[0][0].text
+    assert "владельцы кофеен" in text_generator.calls[0][1].text
+    assert "«Первая»" in text_generator.calls[-1][1].text
+    assert [step["step_name"] for step in output["steps"]] == ["topic_draft"] * 5
+
+
+@pytest.mark.asyncio
+async def test_niche_drafting_gives_up_after_twice_the_topics_and_says_why() -> None:
+    text_generator = _ScriptedTextGenerator([_topic("Старая")] * 6)
+
+    async def recent_titles(workspace_id: int, since: datetime) -> list[str]:
+        return ["Старая"]
+
+    handler = make_generate_plan_handler(
+        FakeKeywordStats({}),
+        text_generator,
+        recent_titles,
+        SettingsService(FakeOwnerSettingsStore("кофейни")),
+        now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
+    )
+
+    output = await handler(WS_A, {"week_label": "Week 1"})
+
+    assert output["topics"] == []
+    assert output["empty_reason"] == "all_recently_used"
+    assert len(text_generator.calls) == 6
 
 
 @pytest.mark.asyncio
@@ -339,7 +391,7 @@ async def test_handler_reads_directions_from_owner_settings_store() -> None:
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore(directions="новая ниша")),
+        SettingsService(FakeOwnerSettingsStore(directions="новая ниша")),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 
@@ -359,7 +411,7 @@ async def test_regenerate_topic_handler_redrafts_using_current_item_and_comment(
         {"Old Title": "Title: New Title\nSummary: new summary\nKeywords: new kw"}
     )
     handler = make_regenerate_topic_handler(
-        item_reader, text_generator, WorkspaceSettingsReader(FakeOwnerSettingsStore())
+        item_reader, text_generator, SettingsService(FakeOwnerSettingsStore())
     )
 
     output = await handler(WS_A, {"plan_item_id": "item-1", "comment": "make it punchier"})
@@ -378,7 +430,7 @@ async def test_regenerate_topic_handler_works_without_a_comment() -> None:
     item_reader = FakePlanItemReader(current)
     text_generator = FakeTextGenerator({"Old Title": "Title: New Title\nSummary: \nKeywords: "})
     handler = make_regenerate_topic_handler(
-        item_reader, text_generator, WorkspaceSettingsReader(FakeOwnerSettingsStore())
+        item_reader, text_generator, SettingsService(FakeOwnerSettingsStore())
     )
 
     output = await handler(WS_A, {"plan_item_id": "item-1", "comment": None})
@@ -392,7 +444,7 @@ async def test_regenerate_topic_handler_reads_niche_from_owner_settings_store() 
     item_reader = FakePlanItemReader(current)
     text_generator = FakeTextGenerator({"Old Title": "Title: New Title\nSummary: \nKeywords: "})
     handler = make_regenerate_topic_handler(
-        item_reader, text_generator, WorkspaceSettingsReader(FakeOwnerSettingsStore("edtech"))
+        item_reader, text_generator, SettingsService(FakeOwnerSettingsStore("edtech"))
     )
 
     await handler(WS_A, {"plan_item_id": "item-1", "comment": None})
@@ -409,9 +461,7 @@ async def test_regenerate_topic_handler_reads_niche_fresh_on_each_run_without_be
     item_reader = FakePlanItemReader(current)
     text_generator = FakeTextGenerator({"Old Title": "Title: New Title\nSummary: \nKeywords: "})
     store = FakeOwnerSettingsStore("edtech")
-    handler = make_regenerate_topic_handler(
-        item_reader, text_generator, WorkspaceSettingsReader(store)
-    )
+    handler = make_regenerate_topic_handler(item_reader, text_generator, SettingsService(store))
 
     await handler(WS_A, {"plan_item_id": "item-1", "comment": None})
     assert "«edtech»" in text_generator.calls[0][0].text
@@ -436,7 +486,7 @@ async def test_handler_reports_step_provenance_per_topic_draft() -> None:
         keyword_stats,
         text_generator,
         _no_recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("kw1", "kw2"),
         topics_per_plan=2,
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
@@ -462,7 +512,7 @@ async def test_regenerate_topic_handler_failure_raises_partial_failure() -> None
     handler = make_regenerate_topic_handler(
         FakePlanItemReader(current),
         _FailingTextGenerator(),
-        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
+        SettingsService(FakeOwnerSettingsStore()),
     )
 
     with pytest.raises(JobPartialFailure) as excinfo:
@@ -483,7 +533,7 @@ async def _topic_prompts(audience: str | None) -> list[list[Message]]:
             "Old Title": "Title: New Title\nSummary: s\nKeywords: kw",
         }
     )
-    settings = WorkspaceSettingsReader(FakeOwnerSettingsStore(audience=audience))
+    settings = SettingsService(FakeOwnerSettingsStore(audience=audience))
     await make_generate_plan_handler(
         FakeKeywordStats({"seo": _growing(100, 200)}),
         text_generator,
@@ -531,7 +581,7 @@ async def test_topic_prompt_versions_are_bumped_for_the_audience() -> None:
         FakeKeywordStats({"seo": _growing(100, 200)}),
         text_generator,
         _no_recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=["seo"],
     )(WS_A, {"week_label": "Week 1"})
 
@@ -545,7 +595,7 @@ async def test_every_wordstat_request_is_a_step_answered_or_not() -> None:
         FakeKeywordStats({"ok kw": _growing(100, 500)}),
         FakeTextGenerator({"ok kw": "Title: Ok Topic\nSummary: s\nKeywords: ok kw"}),
         _no_recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("broken kw", "ok kw"),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -565,7 +615,7 @@ async def test_a_wordstat_outage_still_carries_its_requests_as_steps() -> None:
         FakeKeywordStats({}),
         FakeTextGenerator({}),
         _no_recent_titles,
-        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
+        SettingsService(FakeOwnerSettingsStore()),
         seed_keywords=("broken kw", "another broken kw"),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
@@ -613,7 +663,7 @@ async def test_generate_plan_reads_only_the_jobs_own_workspace() -> None:
         keyword_stats,
         text_generator,
         recent_titles,
-        WorkspaceSettingsReader(store),
+        SettingsService(store),
         now=lambda: datetime(2026, 8, 7, tzinfo=UTC),
     )
 

@@ -14,11 +14,14 @@ from content_zavod.telegram import (
     PlanItemId,
     PlanItemView,
     PlanMessageRef,
+    PlanSummary,
     PlanView,
     TelegramGateway,
     deliver_plan_hub,
     deliver_plan_message,
 )
+from content_zavod.telegram.plan_delivery import resend_plan_message
+from tests.tenancy import WS_A
 
 PLAN_ID = PlanId("plan-1")
 VIEW = PlanView(
@@ -71,39 +74,45 @@ class FakePlan:
         self.ref: PlanMessageRef | None = None
         self.hub_status = hub_status
 
-    async def get_message_ref(self, plan_id):
+    async def get_message_ref(self, workspace_id, plan_id):
         await asyncio.sleep(0)
         return self.ref
 
-    async def record_message_ref(self, plan_id, chat_id, message_id) -> None:
+    async def record_message_ref(self, workspace_id, plan_id, chat_id, message_id) -> None:
         await asyncio.sleep(0)
         if self.ref is None:
             self.ref = PlanMessageRef(chat_id=chat_id, message_id=message_id)
 
-    async def replace_message_ref(self, plan_id, old, chat_id, message_id) -> bool:
+    async def replace_message_ref(self, workspace_id, plan_id, old, chat_id, message_id) -> bool:
         await asyncio.sleep(0)
         if self.ref != old:
             return False
         self.ref = PlanMessageRef(chat_id=chat_id, message_id=message_id)
         return True
 
-    async def get_hub(self, plan_id) -> PlanHubView:
+    async def get_hub(self, workspace_id, plan_id) -> PlanHubView:
         return PlanHubView(id=plan_id, week_label="2026-W41", status=self.hub_status, topics=[])
+
+    async def get_summary(self, workspace_id, plan_id) -> PlanSummary:
+        return PlanSummary(id=plan_id, week_label="2026-W41", status=self.hub_status)
+
+    async def get(self, workspace_id, plan_id) -> PlanView:
+        return VIEW
 
 
 async def test_deleted_plan_message_is_resent_and_the_ref_moves_to_it() -> None:
     bot, plan = ChatBot(), FakePlan()
     gateway = TelegramGateway(bot)
-    await deliver_plan_message(plan, gateway, 42, VIEW)
+    await deliver_plan_message(plan, gateway, WS_A, 42, VIEW)
     bot.delete_by_a_person(42, 100)
 
-    sent_new = await deliver_plan_message(plan, gateway, 42, VIEW)
+    sent_new = await deliver_plan_message(plan, gateway, WS_A, 42, VIEW)
 
     assert sent_new is True
     assert bot.sent == [(42, 100), (42, 101)]
     assert plan.ref == PlanMessageRef(chat_id=42, message_id=101)
 
-    sent_new = await deliver_plan_message(plan, gateway, 42, VIEW)  # the next one just edits
+    sent_new = await deliver_plan_message(plan, gateway, WS_A, 42, VIEW)  # the next one just edits
 
     assert sent_new is False
     assert bot.sent == [(42, 100), (42, 101)]
@@ -115,8 +124,8 @@ async def test_deleted_hub_message_is_resent_and_the_ref_moves_to_it() -> None:
     gateway = TelegramGateway(bot)
     plan.ref = PlanMessageRef(chat_id=42, message_id=5)  # deleted before this delivery
 
-    await deliver_plan_hub(plan, gateway, 42, PLAN_ID)
-    await deliver_plan_hub(plan, gateway, 42, PLAN_ID)
+    await deliver_plan_hub(plan, gateway, WS_A, 42, PLAN_ID)
+    await deliver_plan_hub(plan, gateway, WS_A, 42, PLAN_ID)
 
     assert bot.sent == [(42, 100)]
     assert plan.ref == PlanMessageRef(chat_id=42, message_id=100)
@@ -131,8 +140,8 @@ async def test_racing_deliveries_after_a_deletion_leave_one_message() -> None:
     plan.ref = PlanMessageRef(chat_id=42, message_id=5)
 
     await asyncio.gather(
-        deliver_plan_hub(plan, gateway, 42, PLAN_ID),
-        deliver_plan_message(plan, gateway, 42, VIEW),
+        deliver_plan_hub(plan, gateway, WS_A, 42, PLAN_ID),
+        deliver_plan_message(plan, gateway, WS_A, 42, VIEW),
     )
 
     assert len(bot.sent) == 2
@@ -154,7 +163,7 @@ async def test_a_delivery_that_loses_the_race_edits_the_winners_message() -> Non
 
     bot.send_message = send_while_another_delivery_wins  # type: ignore[method-assign]
 
-    await deliver_plan_message(plan, gateway, 42, VIEW)
+    await deliver_plan_message(plan, gateway, WS_A, 42, VIEW)
 
     assert plan.ref == PlanMessageRef(chat_id=42, message_id=77)
     assert bot.deleted == [(42, 100)]
@@ -172,6 +181,30 @@ async def test_other_edit_failures_still_propagate() -> None:
     bot.edit_message_text = flaky  # type: ignore[method-assign]
 
     with pytest.raises(RuntimeError):
-        await deliver_plan_message(plan, TelegramGateway(bot), 42, VIEW)
+        await deliver_plan_message(plan, TelegramGateway(bot), WS_A, 42, VIEW)
     assert bot.sent == []
     assert plan.ref == PlanMessageRef(chat_id=42, message_id=5)
+
+
+@pytest.mark.parametrize("status", ["pending_review", "approved"])
+async def test_resend_moves_the_plan_to_the_bottom_of_the_chat(status: str) -> None:
+    """«📋 План недели» in a private chat (no link to an older message): the Plan - or its
+    Хаб - is sent anew, becomes the canonical message, and the old copy goes."""
+    bot, plan = ChatBot(), FakePlan(hub_status=status)
+    gateway = TelegramGateway(bot)
+    await deliver_plan_message(plan, gateway, WS_A, 42, VIEW)  # message 100
+
+    await resend_plan_message(plan, gateway, WS_A, 42, PLAN_ID)
+
+    assert plan.ref == PlanMessageRef(chat_id=42, message_id=101)
+    assert bot.deleted == [(42, 100)]
+    assert list(bot.messages) == [(42, 101)]
+
+
+async def test_resend_of_a_never_delivered_plan_records_it() -> None:
+    bot, plan = ChatBot(), FakePlan(hub_status="pending_review")
+
+    await resend_plan_message(plan, TelegramGateway(bot), WS_A, 42, PLAN_ID)
+
+    assert plan.ref == PlanMessageRef(chat_id=42, message_id=100)
+    assert bot.deleted == []

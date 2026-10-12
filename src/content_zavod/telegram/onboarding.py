@@ -1,14 +1,15 @@
-"""Onboarding (#96): the Владелец's first-run wizard, in the spirit of «Постодел».
+"""Onboarding (#96): the first-run wizard of a new Пространство, in the spirit of «Постодел».
 
-`/start` from a Владелец whose bot isn't set up yet (`OnboardingState.needed`) opens an intro
-- what the bot does and what is about to happen - with «▶ Начать настройку» / «Позже». The
-wizard then asks the Настройки one at a time, in `ONBOARDING_ORDER` (Ниша → Аудитория →
-Персона → Направления → Проект), ends on a «🔎 Проверьте вводные» card with «🚀 Запустить» and
+`/start` in a Workspace that isn't set up yet (`OnboardingState.needed` - every new one, ADR-0015)
+opens an intro - what the bot does and what is about to happen - with «▶ Начать настройку» /
+«Позже». The wizard then asks the Настройки one at a time, in `ONBOARDING_ORDER` (Ниша →
+Аудитория → Стиль автора → Ваш канал или сайт), ends on a «🔎 Проверьте вводные» card with
+«🚀 Запустить» and
 an «✏️ Изменить …» per step, and «🚀 Запустить» starts the first Plan at once through the same
 path as /generate_plan and «🪄 Составить План».
 
-Every step is a `SettingField` from `settings_screen.SETTING_FIELDS`: its Пресеты (Персона's
-become buttons plus «✏️ Своя Персона»), its validation and its save are exactly the Экран
+Every step is a `SettingField` from `settings_screen.SETTING_FIELDS`: its Пресеты (the Стиль
+автора's become buttons plus «✏️ Свой стиль»), its validation and its save are exactly the Экран
 Настроек's. A key of `ONBOARDING_ORDER` with no such field is skipped, and a new field only needs
 its key added there. The per-step extras are `ONBOARDING_STEPS`: may it be skipped, a note above
 the question, and the first-run wording of the question - the Экран Настроек asks to *change* a
@@ -23,13 +24,8 @@ ids and its wait's target (`StepRef`), never in memory. Any command - /menu incl
 the wizard's open question (`interrupt`), so the wizard never blocks the rest of the bot; /start
 offers it again until it's finished.
 
-The Направления step also offers «✨ Предложить по Нише» (#113): `DirectionSuggestions` picks
-them from the Ниша and Аудитория and comes back here (`suggestion_*`) with the step's
-`StepRef` as its origin `o:<StepRef>` - «✅ Взять» moves on like an answer, «✏️ Написать свои»
-and «Отмена» reopen the step.
-
-The wizard only runs in the private chat: a Владелец pressing /start in a group gets the usual
-menu plus a pointer to the private chat.
+The Направления step is gone (#128): the bot finds its own Темы from the Ниша. Every method acts
+in the Пространство of the update, passed in as a `Workspace`.
 """
 
 from __future__ import annotations
@@ -40,15 +36,10 @@ from typing import Protocol
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from ..access import Role
 from ..domain.errors import InvalidSettingValue
 from ..scheduling import DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE
-from ..settings import (
-    PERSONAS,
-    OwnerSettings,
-    SettingsService,
-    directions_mismatch,
-)
+from ..settings import PERSONAS, OwnerSettings, SettingsService
+from ..workspaces import Workspace, WorkspaceId
 from .asset_photos import AssetPhotos
 from .callback_codec import Action, SimpleAction, encode_callback_data
 from .gateway import BotClient
@@ -60,27 +51,21 @@ from .settings_screen import (
     ScheduleStore,
     SettingField,
     current_line,
-    suggest_rows,
 )
 from .texts import (
     BACK_BUTTON,
+    NICHE_ASK_BUTTON,
+    NICHE_MISSING_TEXT,
     ONBOARDING_ALREADY_LAUNCHED,
     ONBOARDING_AUDIENCE_QUESTION,
     ONBOARDING_CANCELLED,
-    ONBOARDING_DIRECTIONS_MISMATCH,
-    ONBOARDING_DIRECTIONS_QUESTION,
-    ONBOARDING_IN_PRIVATE,
     ONBOARDING_INTRO,
     ONBOARDING_LATER_BUTTON,
     ONBOARDING_LAUNCH_BUTTON,
     ONBOARDING_LAUNCHED,
     ONBOARDING_NICHE_QUESTION,
-    ONBOARDING_OPEN_PRIVATE_BUTTON,
     ONBOARDING_PERSONA_CHOOSE,
-    ONBOARDING_PLAN_HERE,
-    ONBOARDING_PLAN_IN_TEAM,
     ONBOARDING_PROJECT_QUESTION,
-    ONBOARDING_REVIEW_DIRECTIONS_MISMATCH,
     ONBOARDING_REVIEW_HINT,
     ONBOARDING_REVIEW_TITLE,
     ONBOARDING_SKIP_BUTTON,
@@ -95,7 +80,7 @@ from .texts import (
 ONBOARDING_INPUT_KIND = "onboarding_input"
 """`PendingInputs.kind` of every wizard question; the target is the step's `StepRef`."""
 
-ONBOARDING_ORDER: tuple[str, ...] = ("niche", "audience", "persona", "directions", "project")
+ONBOARDING_ORDER: tuple[str, ...] = ("niche", "audience", "persona", "project")
 """The wizard's steps, by `SettingField.key`. Аудитория follows Ниша (the Владелец's decision on
 #96), whatever its place on the Экран Настроек."""
 
@@ -119,12 +104,6 @@ class OnboardingStep:
     """For a step with Пресеты: the first-run text above the Пресет buttons."""
 
 
-def _directions_note(current: OwnerSettings) -> str | None:
-    if directions_mismatch(current):
-        return ONBOARDING_DIRECTIONS_MISMATCH.format(niche=current.niche)
-    return None
-
-
 _PERSONA_CHOOSE = ONBOARDING_PERSONA_CHOOSE.format(
     presets="\n".join(f"• {persona.title} — {persona.role}" for persona in PERSONAS.values())
 )
@@ -134,7 +113,6 @@ ONBOARDING_STEPS: Mapping[str, OnboardingStep] = {
     "niche": OnboardingStep(skippable=False, question=ONBOARDING_NICHE_QUESTION),
     "audience": OnboardingStep(question=ONBOARDING_AUDIENCE_QUESTION),
     "persona": OnboardingStep(choose=_PERSONA_CHOOSE),
-    "directions": OnboardingStep(note=_directions_note, question=ONBOARDING_DIRECTIONS_QUESTION),
     "project": OnboardingStep(question=ONBOARDING_PROJECT_QUESTION),
 }
 _DEFAULT_STEP = OnboardingStep()
@@ -172,29 +150,27 @@ class MenuEntry(Protocol):
     """What the wizard needs from the Главное меню: show it, and start a Plan the way
     «🪄 Составить План» does."""
 
-    async def show(self, chat_id: int, message_id: int, role: Role) -> None: ...
+    async def show(self, chat_id: int, message_id: int) -> None: ...
 
-    async def generate_plan(self, chat_id: int, *, announce: bool = True) -> None: ...
+    async def generate_plan(
+        self, workspace: Workspace, chat_id: int, *, announce: bool = True
+    ) -> None: ...
 
 
 class OnboardingFlag(Protocol):
-    async def needed(self) -> bool: ...
+    async def needed(self, workspace_id: WorkspaceId) -> bool: ...
 
-    async def begin(self) -> None: ...
+    async def begin(self, workspace_id: WorkspaceId) -> None: ...
 
-    async def finish(self) -> bool: ...
+    async def finish(self, workspace_id: WorkspaceId) -> bool: ...
 
-    async def skip(self) -> None: ...
+    async def skip(self, workspace_id: WorkspaceId) -> None: ...
 
 
 def _button(text: str, action: Action, id_: str = "") -> InlineKeyboardButton:
     return InlineKeyboardButton(
         text=text, callback_data=encode_callback_data(SimpleAction(action, id_))
     )
-
-
-def _is_private(chat_id: int, user_id: int) -> bool:
-    return chat_id == user_id
 
 
 def _with_notice(text: str, notice: str | None) -> str:
@@ -222,10 +198,7 @@ def render_review_text(
     fields: Sequence[SettingField], current: OwnerSettings, *, notice: str | None = None
 ) -> str:
     lines = "\n".join(f"{setting.label}: {setting.show(current)}" for setting in fields)
-    blocks = [ONBOARDING_REVIEW_TITLE, lines]
-    if any(setting.key == "directions" for setting in fields) and directions_mismatch(current):
-        blocks.append(ONBOARDING_REVIEW_DIRECTIONS_MISMATCH.format(niche=current.niche))
-    blocks.append(ONBOARDING_REVIEW_HINT)
+    blocks = [ONBOARDING_REVIEW_TITLE, lines, ONBOARDING_REVIEW_HINT]
     return _with_notice("\n\n".join(blocks), notice)
 
 
@@ -249,14 +222,10 @@ class Onboarding:
         menu: MenuEntry,
         schedule: ScheduleStore,
         *,
-        bot_username: str | None = None,
-        team_chat_id: int | None = None,
         fields: Sequence[SettingField] | None = None,
         photos: AssetPhotos | None = None,
     ) -> None:
-        """`team_chat_id` - where Plans are delivered (`TELEGRAM_NOTIFY_CHAT_ID`): the launch
-        says «в чат команды», or «сюда» when that is this very private chat. `photos` - the
-        intro goes out with its picture (#114); without it, as text."""
+        """`photos` - the intro goes out with its picture (#114); without it, as text."""
         self._photos = photos
         self._state = state
         self._settings = settings
@@ -264,29 +233,23 @@ class Onboarding:
         self._bot = bot
         self._menu = menu
         self._schedule = schedule
-        self._bot_username = bot_username
-        self._team_chat_id = team_chat_id
         self._fields = tuple(fields) if fields is not None else onboarding_fields()
         self._keys = [setting.key for setting in self._fields]
 
     # --- entry points ---
 
-    async def offer(self, chat_id: int, user_id: int, role: Role | None) -> bool:
-        """/start: the intro, if this is a Владелец whose bot still needs setting up - `True`
-        when it took /start's place. In a group it only points to the private chat and
-        returns `False`, so the group still gets its menu."""
-        if role != "owner" or not await self._state.needed():
-            return False
-        if not _is_private(chat_id, user_id):
-            await self._point_to_private(chat_id)
+    async def offer(self, workspace: Workspace, chat_id: int) -> bool:
+        """/start: the intro, if this Пространство still needs setting up - `True` when it took
+        /start's place."""
+        if not await self._state.needed(workspace.id):
             return False
         await self._send_intro(chat_id)
         return True
 
-    async def interrupt(self, chat_id: int, user_id: int) -> None:
+    async def interrupt(self, workspace: Workspace, chat_id: int, user_id: int) -> None:
         """Any command: drop the wizard's open question, so the next message isn't taken for
         an answer. The wizard itself stays unfinished - /start offers it again."""
-        await self._prompts.cancel(chat_id, user_id, ONBOARDING_INPUT_KIND)
+        await self._prompts.cancel(workspace.id, chat_id, user_id, ONBOARDING_INPUT_KIND)
 
     async def cancelled(self, chat_id: int) -> None:
         """After «Отмена» on a wizard question: how to come back."""
@@ -296,60 +259,72 @@ class Onboarding:
 
     # --- buttons ---
 
-    async def go(self, chat_id: int, user_id: int, message_id: int, step_id: str) -> None:
-        """`onboarding_step`: «Начать настройку», «◀ Назад», «Пропустить ⏭», «✏️ Своя …» and
+    async def go(
+        self, workspace: Workspace, chat_id: int, user_id: int, message_id: int, step_id: str
+    ) -> None:
+        """`onboarding_step`: «Начать настройку», «◀ Назад», «Пропустить ⏭», «✏️ Свой …» and
         «✏️ Изменить …» all just open another screen in place of the pressed one."""
-        if not _is_private(chat_id, user_id):
-            await self._point_to_private(chat_id)
-            return
-        if step_id == START and not await self._state.needed():
+        if step_id == START and not await self._state.needed(workspace.id):
             # A stale intro, after «Позже» or a launch: it must not re-arm the wizard.
-            await self._menu.show(chat_id, message_id, "owner")
+            await self._menu.show(chat_id, message_id)
             return
-        await self._leave(chat_id, user_id, message_id)
+        await self._leave(workspace, chat_id, user_id, message_id)
         if step_id == START:
-            await self._state.begin()
+            await self._state.begin(workspace.id)
             step_id = self._keys[0] if self._keys else REVIEW
-        await self._open(chat_id, user_id, step_id)
+        await self._open(workspace, chat_id, user_id, step_id)
 
-    async def pick(self, chat_id: int, user_id: int, message_id: int, pick_id: str) -> None:
+    async def pick(
+        self, workspace: Workspace, chat_id: int, user_id: int, message_id: int, pick_id: str
+    ) -> None:
         """`onboarding_pick`: a Пресет button - saved as if typed, then the next screen."""
-        if not _is_private(chat_id, user_id):
-            await self._point_to_private(chat_id)
-            return
         ref_text, _, index_text = pick_id.rpartition(":")
         ref = StepRef.decode(ref_text)
         setting = self._field(ref.key)
         index = int(index_text) if index_text.isdigit() else -1
         if setting is None or not 0 <= index < len(setting.presets):
-            await self.go(chat_id, user_id, message_id, ref.encode())
+            await self.go(workspace, chat_id, user_id, message_id, ref.encode())
             return
-        notice = await setting.save(self._settings, setting.presets[index][1])
-        await self._leave(chat_id, user_id, message_id)
-        await self._open(chat_id, user_id, self._after(ref), notice=notice)
+        notice = await setting.save(self._settings, workspace.id, setting.presets[index][1])
+        await self._leave(workspace, chat_id, user_id, message_id)
+        await self._open(workspace, chat_id, user_id, self._after(ref), notice=notice)
 
-    async def later(self, chat_id: int, user_id: int, message_id: int) -> None:
+    async def later(self, workspace: Workspace, chat_id: int, message_id: int) -> None:
         """«Позже — открыть меню»: the wizard is not offered again; Настройки are in the menu."""
-        await self._state.skip()
-        await self._menu.show(chat_id, message_id, "owner")
+        await self._state.skip(workspace.id)
+        await self._menu.show(chat_id, message_id)
 
-    async def launch(self, chat_id: int, user_id: int, message_id: int) -> None:
+    async def launch(self, workspace: Workspace, chat_id: int, message_id: int) -> None:
         """«🚀 Запустить»: finish and start the first Plan. Only the press that actually
-        finished the wizard starts it - a double tap, a stale card or a second Владелец
-        launching too only hear it's already on its way."""
-        if not _is_private(chat_id, user_id):
-            await self._point_to_private(chat_id)
-            return
-        where = ONBOARDING_PLAN_HERE if chat_id == self._team_chat_id else ONBOARDING_PLAN_IN_TEAM
-        if not await self._state.finish():
+        finished the wizard starts it - a double tap or a stale card only hear it's already on
+        its way. Without a Ниша nothing is launched yet: the card turns into its question."""
+        if not (await self._settings.read(workspace.id)).niche_saved:
             await self._bot.edit_message_text(
                 chat_id,
                 message_id,
-                ONBOARDING_ALREADY_LAUNCHED.format(where=where),
+                NICHE_MISSING_TEXT,
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            _button(
+                                NICHE_ASK_BUTTON,
+                                "onboarding_step",
+                                StepRef("niche", review=True).encode(),
+                            )
+                        ]
+                    ]
+                ),
+            )
+            return
+        if not await self._state.finish(workspace.id):
+            await self._bot.edit_message_text(
+                chat_id,
+                message_id,
+                ONBOARDING_ALREADY_LAUNCHED,
                 reply_markup=build_open_menu_keyboard(),
             )
             return
-        schedule = await self._schedule.get()
+        schedule = await self._schedule.get(workspace.id)
         when = (
             schedule_text(schedule.day_of_week, schedule.hour, schedule.minute)
             if schedule is not None
@@ -358,74 +333,50 @@ class Onboarding:
         await self._bot.edit_message_text(
             chat_id,
             message_id,
-            ONBOARDING_LAUNCHED.format(where=where, schedule=when),
+            ONBOARDING_LAUNCHED.format(schedule=when),
             reply_markup=build_open_menu_keyboard(),
         )
         # The card above already says what is happening and where the Plan will land.
-        await self._menu.generate_plan(chat_id, announce=False)
-
-    # --- Направления suggested from the Ниша (#113): the wizard as their origin ---
-
-    async def suggestion_opened(
-        self, chat_id: int, user_id: int, message_id: int, place: str
-    ) -> None:
-        """«✨» was pressed on the step's question: its wait goes - the question message itself
-        turns into «⏳ Подбираю…»."""
-        await self._prompts.release(chat_id, user_id, ONBOARDING_INPUT_KIND, message_id=message_id)
-
-    async def suggestion_taken(self, chat_id: int, user_id: int, place: str, notice: str) -> None:
-        """Saved as if typed: on to the next step (or back to «Проверьте вводные»)."""
-        await self._open(chat_id, user_id, self._after(StepRef.decode(place)), notice=notice)
-
-    async def suggestion_declined(
-        self, chat_id: int, user_id: int, place: str, *, write_own: bool
-    ) -> None:
-        """Both reopen the step: its question is where they are typed."""
-        await self._open(chat_id, user_id, place)
+        await self._menu.generate_plan(workspace, chat_id, announce=False)
 
     # --- typed answers ---
 
     async def handle_reply(
-        self,
-        chat_id: int,
-        user_id: int,
-        text: str,
-        reply_to_message_id: int | None,
-        *,
-        role: Role | None,
+        self, workspace: Workspace, chat_id: int, user_id: int, text: str
     ) -> bool:
         """A message that may answer a wizard question; `False` if it doesn't."""
-        pending = await self._prompts.take(
-            chat_id, user_id, ONBOARDING_INPUT_KIND, reply_to_message_id
-        )
+        pending = await self._prompts.take(workspace.id, chat_id, user_id, ONBOARDING_INPUT_KIND)
         if pending is None:
             return False
-        if role != "owner":  # no longer a Владелец since the question was asked
-            await self._prompts.close(chat_id, pending)
-            return True
         ref = StepRef.decode(pending.target_id)
         setting = self._field(ref.key)
-        if setting is None:  # a step this build no longer has
+        if setting is None:  # a step this build no longer has (Направления, #128)
             await self._prompts.close(chat_id, pending)
-            await self._open(chat_id, user_id, REVIEW)
+            await self._open(workspace, chat_id, user_id, REVIEW)
             return True
         try:
-            notice = await setting.save(self._settings, text)
+            notice = await setting.save(self._settings, workspace.id, text)
         except InvalidSettingValue as exc:
             problem = setting.invalid_by_field.get(exc.field, setting.invalid)
-            question, buttons = await self._step_screen(ref)
+            question, buttons = await self._step_screen(workspace, ref)
             await self._prompts.ask_again(
-                chat_id, user_id, pending, problem, question, buttons=buttons
+                workspace.id, chat_id, user_id, pending, problem, question, buttons=buttons
             )
             return True
         await self._prompts.close(chat_id, pending)
-        await self._open(chat_id, user_id, self._after(ref), notice=notice)
+        await self._open(workspace, chat_id, user_id, self._after(ref), notice=notice)
         return True
 
     # --- screens ---
 
     async def _open(
-        self, chat_id: int, user_id: int, step_id: str, *, notice: str | None = None
+        self,
+        workspace: Workspace,
+        chat_id: int,
+        user_id: int,
+        step_id: str,
+        *,
+        notice: str | None = None,
     ) -> None:
         if step_id == INTRO:
             await self._send_intro(chat_id)
@@ -433,30 +384,30 @@ class Onboarding:
         ref = StepRef.decode(step_id)
         setting = self._field(ref.key)
         if step_id == REVIEW or setting is None:  # unknown: a button from another build
-            current = await self._settings.read()
+            current = await self._settings.read(workspace.id)
             await self._bot.send_message(
                 chat_id,
                 render_review_text(self._fields, current, notice=notice),
                 reply_markup=build_review_keyboard(self._fields),
             )
             return
-        question, buttons = await self._step_screen(ref, notice=notice)
+        question, buttons = await self._step_screen(workspace, ref, notice=notice)
         await self._prompts.ask(
+            workspace.id,
             chat_id,
             user_id,
             ONBOARDING_INPUT_KIND,
             ref.encode(),
             question,
-            placeholder=setting.placeholder,
             buttons=buttons,
         )
 
     async def _step_screen(
-        self, ref: StepRef, *, notice: str | None = None
+        self, workspace: Workspace, ref: StepRef, *, notice: str | None = None
     ) -> tuple[str, list[list[InlineKeyboardButton]]]:
         setting = self._fields[self._keys.index(ref.key)]
         step = ONBOARDING_STEPS.get(ref.key, _DEFAULT_STEP)
-        current = await self._settings.read()
+        current = await self._settings.read(workspace.id)
         chooser = bool(setting.presets) and not ref.custom
 
         blocks = [
@@ -501,8 +452,6 @@ class Onboarding:
                     )
                 ]
             )
-        if not chooser:
-            rows += suggest_rows(setting, f"o:{ref.encode()}")
         nav = [_button(BACK_BUTTON, "onboarding_step", self._before(ref))]
         if step.skippable and not ref.review:
             nav.append(_button(ONBOARDING_SKIP_BUTTON, "onboarding_step", self._after(ref)))
@@ -536,25 +485,12 @@ class Onboarding:
         index = self._keys.index(ref.key)
         return self._keys[index + 1] if index + 1 < len(self._keys) else REVIEW
 
-    async def _leave(self, chat_id: int, user_id: int, message_id: int) -> None:
+    async def _leave(
+        self, workspace: Workspace, chat_id: int, user_id: int, message_id: int
+    ) -> None:
         """Remove the screen a button was pressed on: with its wait if it is the open question,
         else (the intro, the review card, a stale question) just the message."""
         if not await self._prompts.cancel(
-            chat_id, user_id, ONBOARDING_INPUT_KIND, message_id=message_id
+            workspace.id, chat_id, user_id, ONBOARDING_INPUT_KIND, message_id=message_id
         ):
             await self._bot.delete_message(chat_id, message_id)
-
-    async def _point_to_private(self, chat_id: int) -> None:
-        keyboard = None
-        if self._bot_username:
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text=ONBOARDING_OPEN_PRIVATE_BUTTON,
-                            url=f"https://t.me/{self._bot_username}?start=setup",
-                        )
-                    ]
-                ]
-            )
-        await self._bot.send_message(chat_id, ONBOARDING_IN_PRIVATE, reply_markup=keyboard)

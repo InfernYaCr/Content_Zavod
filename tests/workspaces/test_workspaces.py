@@ -4,7 +4,6 @@ import asyncio
 
 import asyncpg
 
-from content_zavod.entrypoints._team_workspace import TeamScoped
 from content_zavod.workspaces import Workspaces
 
 
@@ -44,14 +43,16 @@ async def test_unknown_workspace_or_owner_is_none(pool: asyncpg.Pool) -> None:
     assert await workspaces.get(10**12) is None
 
 
-async def test_team_scoped_passes_the_workspace_first_and_keeps_plain_attributes() -> None:
-    class Repository:
-        limit = 3
+async def test_a_403_marks_the_workspace_blocked_until_the_next_start(pool: asyncpg.Pool) -> None:
+    workspaces = Workspaces(pool)
+    created = await workspaces.get_or_create(5003, timezone="Europe/Moscow")
 
-        async def get(self, workspace_id: int, item_id: str) -> tuple[int, str]:
-            return workspace_id, item_id
+    await workspaces.mark_blocked(created.id)
+    blocked = await pool.fetchval("SELECT bot_blocked_at FROM workspaces WHERE id = $1", created.id)
+    await workspaces.get_or_create(5003, timezone="Europe/Moscow")
+    after_start = await pool.fetchval(
+        "SELECT bot_blocked_at FROM workspaces WHERE id = $1", created.id
+    )
 
-    scoped = TeamScoped(Repository(), 7)
-
-    assert await scoped.get("x") == (7, "x")
-    assert scoped.limit == 3
+    assert blocked is not None
+    assert after_start is None

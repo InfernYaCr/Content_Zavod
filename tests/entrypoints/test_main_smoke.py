@@ -36,7 +36,7 @@ async def _settings_on_fresh_db(container: PostgresContainer, name: str) -> Sett
     return load_settings(
         {
             "TELEGRAM_BOT_TOKEN": "123456:smoke-test",
-            "TELEGRAM_NOTIFY_CHAT_ID": "-100125",
+            "GLOBAL_ADMIN_TELEGRAM_IDS": "125",
             "POSTGRES_DSN": f"postgresql://{credentials}/{name}",
             "YANDEX_FOLDER_ID": "folder",
             "YANDEX_API_KEY": "key",

@@ -13,7 +13,7 @@ from content_zavod.pipelines.direction_suggestions import (
     make_suggest_directions_handler,
     parse_suggested_queries,
 )
-from content_zavod.settings import WorkspaceSettingsReader
+from content_zavod.settings import SettingsService
 from content_zavod.yandex import Completion, KeywordStat, KeywordStatsUsage, Message
 from tests.tenancy import WS_A
 
@@ -193,7 +193,7 @@ async def test_queries_without_wordstat_demand_are_dropped() -> None:
     handler = make_suggest_directions_handler(
         FakeTextGenerator(ANSWER),
         stats,
-        WorkspaceSettingsReader(FakeStore({"niche": "домашняя выпечка"})),
+        SettingsService(FakeStore({"niche": "домашняя выпечка"})),
     )
 
     output = await handler(WS_A, {"chat_id": 1, "message_id": 2, "origin": "s:0"})
@@ -214,7 +214,7 @@ async def test_thin_demand_is_dropped_when_enough_queries_have_real_demand() -> 
         {"торт": 900, "эклеры": 500, "закваска": 300, "хлеб на пиве": 40, "кекс без глютена": 0}
     )
     handler = make_suggest_directions_handler(
-        FakeTextGenerator(answer), stats, WorkspaceSettingsReader(FakeStore())
+        FakeTextGenerator(answer), stats, SettingsService(FakeStore())
     )
 
     output = await handler(WS_A, {})
@@ -227,7 +227,7 @@ async def test_a_narrow_niche_keeps_thin_demand_rather_than_nothing() -> None:
     answer = "торт\nхлеб на пиве\nкекс без глютена"
     stats = FakeKeywordStats({"торт": 900, "хлеб на пиве": 40, "кекс без глютена": 0})
     handler = make_suggest_directions_handler(
-        FakeTextGenerator(answer), stats, WorkspaceSettingsReader(FakeStore())
+        FakeTextGenerator(answer), stats, SettingsService(FakeStore())
     )
 
     output = await handler(WS_A, {})
@@ -238,7 +238,7 @@ async def test_a_narrow_niche_keeps_thin_demand_rather_than_nothing() -> None:
 
 async def test_unavailable_wordstat_keeps_the_model_list_and_says_so() -> None:
     handler = make_suggest_directions_handler(
-        FakeTextGenerator(ANSWER), FakeKeywordStats({}), WorkspaceSettingsReader(FakeStore())
+        FakeTextGenerator(ANSWER), FakeKeywordStats({}), SettingsService(FakeStore())
     )
 
     output = await handler(WS_A, {})
@@ -253,7 +253,7 @@ async def test_slow_wordstat_counts_as_unavailable() -> None:
     handler = make_suggest_directions_handler(
         FakeTextGenerator("торт"),
         FakeKeywordStats({"торт": 5}, delay=1.0),
-        WorkspaceSettingsReader(FakeStore()),
+        SettingsService(FakeStore()),
         wordstat_timeout=0.01,
     )
 
@@ -267,7 +267,7 @@ async def test_a_query_wordstat_skipped_is_kept_without_a_number() -> None:
     handler = make_suggest_directions_handler(
         FakeTextGenerator("торт\nэклер"),
         FakeKeywordStats({"торт": 5}),
-        WorkspaceSettingsReader(FakeStore()),
+        SettingsService(FakeStore()),
     )
 
     output = await handler(WS_A, {})
@@ -284,7 +284,7 @@ async def test_more_variants_exclude_what_was_shown_and_read_the_audience() -> N
     handler = make_suggest_directions_handler(
         generator,
         FakeKeywordStats({"торт": 5, "эклер": 7}),
-        WorkspaceSettingsReader(FakeStore({"niche": "выпечка", "audience": "сладкоежки"})),
+        SettingsService(FakeStore({"niche": "выпечка", "audience": "сладкоежки"})),
     )
 
     output = await handler(WS_A, {"exclude": ["Торты"]})
@@ -301,7 +301,7 @@ async def test_at_most_eight_queries_are_kept() -> None:
     answer = "\n".join(f"запрос {n}" for n in range(12))
     stats = FakeKeywordStats({f"запрос {n}": 10 for n in range(12)})
     handler = make_suggest_directions_handler(
-        FakeTextGenerator(answer), stats, WorkspaceSettingsReader(FakeStore())
+        FakeTextGenerator(answer), stats, SettingsService(FakeStore())
     )
 
     output = await handler(WS_A, {})
@@ -314,7 +314,7 @@ async def test_the_llm_call_is_recorded_as_a_provenance_step() -> None:
     handler = make_suggest_directions_handler(
         FakeTextGenerator("торт"),
         FakeKeywordStats({"торт": 5}),
-        WorkspaceSettingsReader(FakeStore()),
+        SettingsService(FakeStore()),
     )
 
     output = await handler(WS_A, {})
@@ -336,7 +336,7 @@ async def test_a_failing_llm_call_fails_the_job() -> None:
     handler = make_suggest_directions_handler(
         FakeTextGenerator(RuntimeError("boom")),
         FakeKeywordStats({}),
-        WorkspaceSettingsReader(FakeStore()),
+        SettingsService(FakeStore()),
     )
 
     with pytest.raises(JobPartialFailure) as raised:

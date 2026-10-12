@@ -1,17 +1,16 @@
 """Главное меню (#95): the one inline-keyboard message `/start` and `/menu` open, instead of a
 command list.
 
-Every Role gets «📋 План недели», «✍️ Предложить Тему» and «🗂 История»; a Владелец also gets
-«⚙️ Настройки», «👥 Участники», «🕘 Расписание» and «📌 Памятка в чат команды»; everyone ends with
-«📖 Как пользоваться», the Инструкция (#114). Which buttons are shown is only a convenience
-- each button's Действие is still gated by `ACTION_ROLE` in the callback dispatcher.
+Everyone gets the same buttons - there are no Roles, every user is the Владелец of their own
+Пространство (ADR-0015): «📋 План недели», «✍️ Предложить Тему», «🗂 История», «⚙️ Настройки»,
+«🕘 Расписание» and «📖 Как пользоваться», the Инструкция (#114).
 
-«📋 План недели» doesn't copy the Plan (it lives as one canonical message in the team chat,
-ADR-0005): it says how far the week's Plan is and links to that message, or - with no Plan yet -
-says when the next one is due and offers «🪄 Составить План» (the same path as /generate_plan).
-«✍️ Предложить Тему» asks for the Тема through `InputPrompt` and hands the answer to the same
-handler as /topic. «🗂 История» and «👥 Участники» turn the menu message into their existing
-screens, whose «🏠 В меню» row turns it back.
+«📋 План недели» says how far the week's Plan is and sends its message anew at the bottom of the
+chat (a private chat has no link to an earlier message), or - with no Plan yet - says when the
+next one is due and offers «🪄 Составить План» (the same path as /generate_plan). The week is
+counted in the Пространство's own time zone, like its Расписание. «✍️ Предложить Тему» asks for
+the Тема through `InputPrompt` and hands the answer to the same handler as /topic. «🗂 История»
+turns the menu message into its screen, whose «🏠 В меню» row turns it back.
 """
 
 from __future__ import annotations
@@ -20,55 +19,62 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
-from zoneinfo import ZoneInfo
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from ..access import Role
-from ..scheduling import DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE, week_label_for
+from ..scheduling import DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE
+from ..workspaces import Workspace, WorkspaceId
 from .asset_photos import AssetPhotos
 from .callback_codec import Action, SimpleAction, encode_callback_data
 from .gateway import BotClient, TelegramGateway, format_week_range
-from .generate_plan_command import GenerationJobs, PlanGeneration, handle_generate_plan_command
+from .generate_plan_command import (
+    GenerationJobs,
+    NicheSource,
+    PlanGeneration,
+    handle_generate_plan_command,
+    niche_button,
+    workspace_week,
+)
 from .guide import guide_button
-from .guide_texts import MENU_TEAM_NOTE_BUTTON
 from .input_prompt import InputPrompt
+from .plan_delivery import PlanResendSource, resend_plan_message
 from .settings_screen import BACK_TO_MENU, ScheduleStore
 from .texts import (
     BACK_BUTTON,
-    HELP_OWNER_TEXT,
-    HELP_TEXT,
     MENU_HISTORY_BUTTON,
-    MENU_MEMBERS_BUTTON,
     MENU_PLAN_BUTTON,
     MENU_SCHEDULE_BUTTON,
     MENU_SETTINGS_BUTTON,
     MENU_TEXT,
     MENU_TOPIC_BUTTON,
+    NICHE_MISSING_TEXT,
     OPEN_MENU_BUTTON,
+    PLAN_EMPTY_TEXT,
     PLAN_GENERATE_BUTTON,
-    PLAN_IN_TEAM_CHAT,
-    PLAN_IN_TEAM_CHAT_NO_LINK,
+    PLAN_MISSING_MANUAL_TEXT,
     PLAN_MISSING_TEXT,
-    PLAN_OPEN_BUTTON,
+    PLAN_SENT_BELOW,
     PLAN_STATE_APPROVED,
     PLAN_STATE_PENDING,
-    TOPIC_PLACEHOLDER,
     TOPIC_QUESTION,
     WELCOME_TEXT,
     schedule_text,
 )
 from .topic_command import PlanProposal, handle_topic_command
-from .types import PlanMessageRef, PlanView
+from .types import PlanItemView, PlanView
 
 logger = logging.getLogger(__name__)
 
 TOPIC_INPUT_KIND = "topic_input"
 
 
-class MenuPlan(PlanGeneration, PlanProposal, Protocol):
-    """Plan operations the menu needs: finding the week's Plan and its message, generating
-    one (/generate_plan's path) and adding a proposed Тема (/topic's path)."""
+class OnboardingNeed(Protocol):
+    async def needed(self, workspace_id: WorkspaceId) -> bool: ...
+
+
+class MenuPlan(PlanGeneration, PlanProposal, PlanResendSource, Protocol):
+    """Plan operations the menu needs: finding the week's Plan and sending its message anew,
+    generating one (/generate_plan's path) and adding a proposed Тема (/topic's path)."""
 
 
 def _button(text: str, action: Action, id_: str = "") -> InlineKeyboardButton:
@@ -77,41 +83,29 @@ def _button(text: str, action: Action, id_: str = "") -> InlineKeyboardButton:
     )
 
 
-def build_main_menu_keyboard(role: Role) -> InlineKeyboardMarkup:
-    rows = [
-        [_button(MENU_PLAN_BUTTON, "menu_plan")],
-        [_button(MENU_TOPIC_BUTTON, "menu_topic")],
-        [_button(MENU_HISTORY_BUTTON, "menu_history")],
-    ]
-    if role == "owner":
-        rows += [
+def build_main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_button(MENU_PLAN_BUTTON, "menu_plan")],
+            [_button(MENU_TOPIC_BUTTON, "menu_topic")],
+            [_button(MENU_HISTORY_BUTTON, "menu_history")],
             [_button(MENU_SETTINGS_BUTTON, "settings")],
-            [_button(MENU_MEMBERS_BUTTON, "menu_members")],
             [_button(MENU_SCHEDULE_BUTTON, "schedule", BACK_TO_MENU)],
-            [_button(MENU_TEAM_NOTE_BUTTON, "guide_pin")],
+            [guide_button(from_menu=True)],
         ]
-    rows.append([guide_button(from_menu=True)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    )
 
 
 def build_open_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[_button(OPEN_MENU_BUTTON, "menu")]])
 
 
-def render_help_text(role: Role) -> str:
-    return HELP_TEXT + (HELP_OWNER_TEXT if role == "owner" else "")
+def _live_items(view: PlanView) -> list[PlanItemView]:
+    return [item for item in view.items if item.status in ("pending_review", "approved")]
 
 
-def plan_message_link(ref: PlanMessageRef) -> str | None:
-    """`t.me/c/…` link to a message - only a supergroup's (`-100…` id) messages have one."""
-    chat = str(ref.chat_id)
-    if not chat.startswith("-100"):
-        return None
-    return f"https://t.me/c/{chat[4:]}/{ref.message_id}"
-
-
-def render_plan_status_text(view: PlanView, *, linked: bool) -> str:
-    live = [item for item in view.items if item.status in ("pending_review", "approved")]
+def render_plan_status_text(view: PlanView) -> str:
+    live = _live_items(view)
     state = (
         PLAN_STATE_PENDING
         if any(item.status == "pending_review" for item in live)
@@ -119,8 +113,7 @@ def render_plan_status_text(view: PlanView, *, linked: bool) -> str:
     )
     return (
         f"📋 План на {format_week_range(view.week_label)}\n"
-        f"Тем: {len(live)} — {state}.\n\n"
-        f"{PLAN_IN_TEAM_CHAT if linked else PLAN_IN_TEAM_CHAT_NO_LINK}"
+        f"Тем: {len(live)} — {state}.\n\n{PLAN_SENT_BELOW}"
     )
 
 
@@ -134,13 +127,16 @@ class MainMenu:
         gateway: TelegramGateway,
         prompts: InputPrompt,
         *,
-        team_chat_id: int,
-        tz: ZoneInfo,
+        settings: NicheSource,
+        onboarding: OnboardingNeed,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         photos: AssetPhotos | None = None,
     ) -> None:
-        """`photos` - where the /start welcome picture comes from (#114); without it the
-        welcome is text, as before."""
+        """`settings` and `onboarding` say whether the Расписание will make the week's Plan by
+        itself (a Ниша told, the wizard not mid-way - what the tick checks). `photos` - where the
+        /start welcome picture comes from (#114); without it the welcome is text, as before."""
+        self._settings = settings
+        self._onboarding = onboarding
         self._photos = photos
         self._plan = plan
         self._queue = queue
@@ -148,11 +144,9 @@ class MainMenu:
         self._bot = bot
         self._gateway = gateway
         self._prompts = prompts
-        self._team_chat_id = team_chat_id
-        self._tz = tz
         self._now = now
 
-    async def send(self, chat_id: int, role: Role, *, welcome: bool = False) -> None:
+    async def send(self, chat_id: int, *, welcome: bool = False) -> None:
         """The menu as a new message. `welcome` (/start) puts the greeting above it - as its own
         picture when there are pictures (#114), since the menu itself is edited in place and a
         photo message can't turn into a text one."""
@@ -161,75 +155,97 @@ class MainMenu:
             await self._photos.send(chat_id, "welcome", WELCOME_TEXT)
         elif welcome:
             text = f"{WELCOME_TEXT}\n\n{MENU_TEXT}"
-        await self._bot.send_message(chat_id, text, reply_markup=build_main_menu_keyboard(role))
+        await self._bot.send_message(chat_id, text, reply_markup=build_main_menu_keyboard())
 
-    async def show(self, chat_id: int, message_id: int, role: Role) -> None:
+    async def show(self, chat_id: int, message_id: int) -> None:
         """The menu in place of the pressed message - or, when that one can't become the menu
-        (a photo: the КМ welcome, the onboarding intro), as a new message below it."""
+        (a photo: the onboarding intro), as a new message below it."""
         try:
             await self._bot.edit_message_text(
-                chat_id, message_id, MENU_TEXT, reply_markup=build_main_menu_keyboard(role)
+                chat_id, message_id, MENU_TEXT, reply_markup=build_main_menu_keyboard()
             )
         except Exception:
             logger.info("could not turn message %s into the menu", message_id, exc_info=True)
-            await self.send(chat_id, role)
+            await self.send(chat_id)
 
-    async def show_plan(self, chat_id: int, message_id: int) -> None:
-        week_label = week_label_for(self._now(), self._tz)
-        view = await self._plan.find_active(week_label)
+    async def show_plan(self, workspace: Workspace, chat_id: int, message_id: int) -> None:
+        week_label = workspace_week(workspace, self._now())
+        view = await self._plan.find_active(workspace.id, week_label)
+        back = [_button(BACK_BUTTON, "menu")]
         if view is None:
-            schedule = await self._schedule.get()
-            day, hour, minute = (
-                (schedule.day_of_week, schedule.hour, schedule.minute)
-                if schedule is not None
-                else (DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE)
+            text, rows = await self._missing_plan_screen(workspace, week_label)
+            await self._bot.edit_message_text(
+                chat_id,
+                message_id,
+                text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[*rows, back]),
             )
-            text = PLAN_MISSING_TEXT.format(
-                week=format_week_range(week_label), schedule=schedule_text(day, hour, minute)
+            return
+        if not _live_items(view):
+            # Every Тема was removed: nothing worth sending again.
+            rows = [[_button(MENU_TOPIC_BUTTON, "menu_topic")], back]
+            await self._bot.edit_message_text(
+                chat_id,
+                message_id,
+                PLAN_EMPTY_TEXT.format(week=format_week_range(week_label)),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
             )
-            rows = [[_button(PLAN_GENERATE_BUTTON, "menu_generate_plan")]]
-        else:
-            ref = await self._plan.get_message_ref(view.id)
-            link = plan_message_link(ref) if ref is not None else None
-            text = render_plan_status_text(view, linked=link is not None)
-            rows = [[InlineKeyboardButton(text=PLAN_OPEN_BUTTON, url=link)]] if link else []
-        rows.append([_button(BACK_BUTTON, "menu")])
+            return
         await self._bot.edit_message_text(
-            chat_id, message_id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+            chat_id,
+            message_id,
+            render_plan_status_text(view),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[back]),
         )
+        await resend_plan_message(self._plan, self._gateway, workspace.id, chat_id, view.id)
 
-    async def generate_plan(self, chat_id: int, *, announce: bool = True) -> None:
+    async def _missing_plan_screen(
+        self, workspace: Workspace, week_label: str
+    ) -> tuple[str, list[list[InlineKeyboardButton]]]:
+        """No Plan this week: what happens next. The Расписание only makes one once a Ниша is
+        told and the wizard isn't mid-way - otherwise its time isn't promised."""
+        if not (await self._settings.read(workspace.id)).niche_saved:
+            return NICHE_MISSING_TEXT, [[niche_button()]]
+        week = format_week_range(week_label)
+        rows = [[_button(PLAN_GENERATE_BUTTON, "menu_generate_plan")]]
+        if await self._onboarding.needed(workspace.id):
+            return PLAN_MISSING_MANUAL_TEXT.format(week=week), rows
+        schedule = await self._schedule.get(workspace.id)
+        day, hour, minute = (
+            (schedule.day_of_week, schedule.hour, schedule.minute)
+            if schedule is not None
+            else (DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE)
+        )
+        return PLAN_MISSING_TEXT.format(week=week, schedule=schedule_text(day, hour, minute)), rows
+
+    async def generate_plan(
+        self, workspace: Workspace, chat_id: int, *, announce: bool = True
+    ) -> None:
         await handle_generate_plan_command(
             self._plan,
             self._gateway,
+            workspace,
             chat_id,
             queue=self._queue,
-            team_chat_id=self._team_chat_id,
-            tz=self._tz,
+            settings=self._settings,
             now=self._now,
             announce=announce,
         )
 
-    async def ask_topic(self, chat_id: int, user_id: int) -> None:
+    async def ask_topic(self, workspace: Workspace, chat_id: int, user_id: int) -> None:
         await self._prompts.ask(
-            chat_id, user_id, TOPIC_INPUT_KIND, "", TOPIC_QUESTION, placeholder=TOPIC_PLACEHOLDER
+            workspace.id, chat_id, user_id, TOPIC_INPUT_KIND, "", TOPIC_QUESTION
         )
 
     async def handle_reply(
-        self, chat_id: int, user_id: int, text: str, reply_to_message_id: int | None
+        self, workspace: Workspace, chat_id: int, user_id: int, text: str
     ) -> bool:
         """A message that may answer «✍️ Предложить Тему»; `False` if it doesn't."""
-        pending = await self._prompts.take(chat_id, user_id, TOPIC_INPUT_KIND, reply_to_message_id)
+        pending = await self._prompts.take(workspace.id, chat_id, user_id, TOPIC_INPUT_KIND)
         if pending is None:
             return False
         await self._prompts.close(chat_id, pending)
         await handle_topic_command(
-            self._plan,
-            self._gateway,
-            chat_id,
-            text,
-            team_chat_id=self._team_chat_id,
-            tz=self._tz,
-            now=self._now,
+            self._plan, self._gateway, workspace, chat_id, text, now=self._now
         )
         return True

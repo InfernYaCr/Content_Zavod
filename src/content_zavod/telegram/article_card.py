@@ -1,5 +1,5 @@
 """The ready-Статья card's text (#92): title, Площадка and a plain-text preview, so a
-Контент-менеджер can judge the text on a phone without downloading a file. The full text is
+Владелец can judge the text on a phone without downloading a file. The full text is
 one tap away - the «📖 Читать» Страница для чтения, or the .docx/.md Выгрузка. A Версия
 written without verified evidence (#94) gets a warning line - kept out of the text itself."""
 
@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from typing import Protocol
 
+from ..workspaces import WorkspaceId
 from .texts import ARTICLE_CARD_NO_EVIDENCE, ARTICLE_CARD_PLATFORM, platform_name
 from .types import ArticleView
 
@@ -72,9 +73,10 @@ def _normalize(value: str) -> str:
 
 
 class ArticlePagePublisher(Protocol):
-    """See `telegraph.TelegraphPublisher`: the Статья's page URL, `None` on failure."""
+    """See `telegraph.TelegraphPublisher`: the Статья's page URL, `None` on failure. The
+    Пространство names whose «Ваш канал или сайт» closes the page (ADR-0015)."""
 
-    async def publish(self, article: ArticleView) -> str | None: ...
+    async def publish(self, workspace_id: WorkspaceId, article: ArticleView) -> str | None: ...
 
 
 class ArticleCardSender(Protocol):
@@ -85,6 +87,7 @@ class ArticleCardSender(Protocol):
 
 async def send_article_card(
     gateway: ArticleCardSender,
+    workspace_id: WorkspaceId,
     chat_id: int,
     view: ArticleView,
     publisher: ArticlePagePublisher | None,
@@ -93,5 +96,5 @@ async def send_article_card(
     «📖 Читать» (#92). `publish` returns `None` on any Telegraph failure - the card still goes
     out, just without that button. Shared by a «✏️ Доработать» result and the Хаб's «📄»
     button (#91)."""
-    read_url = await publisher.publish(view) if publisher is not None else None
+    read_url = await publisher.publish(workspace_id, view) if publisher is not None else None
     await gateway.send_article_ready(chat_id, view, read_url=read_url)

@@ -25,15 +25,12 @@ from .persona import (
 )
 from .project import CLEAR_PROJECT, PROJECT_KEY, Project, normalize_project_url, project_detail_text
 from .service import (
-    DEFAULT_DIRECTIONS,
     DEFAULT_NICHE,
     DIRECTIONS_KEY,
     NICHE_KEY,
     SETTING_STORE_KEYS,
     SettingsReader,
     SettingsService,
-    WorkspaceSettingsReader,
-    directions_mismatch,
     parse_directions,
 )
 from .values import OwnerSettings
@@ -43,7 +40,6 @@ __all__ = [
     "AUDIENCE_MAX_LENGTH",
     "CLEAR_AUDIENCE",
     "CLEAR_PROJECT",
-    "DEFAULT_DIRECTIONS",
     "DEFAULT_NICHE",
     "DEFAULT_PERSONA_KEY",
     "DEFAULT_PERSONA_TITLE",
@@ -62,11 +58,9 @@ __all__ = [
     "Project",
     "SettingsReader",
     "SettingsService",
-    "WorkspaceSettingsReader",
     "audience_detail_text",
     "audience_screen_text",
     "custom_persona_label",
-    "directions_mismatch",
     "format_custom_persona",
     "normalize_project_url",
     "parse_custom_persona",

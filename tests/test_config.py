@@ -4,7 +4,6 @@ from content_zavod.config import ConfigError, load_settings
 
 _BASE_ENV = {
     "TELEGRAM_BOT_TOKEN": "123:abc",
-    "TELEGRAM_NOTIFY_CHAT_ID": "42",
     "POSTGRES_DSN": "postgresql://localhost/content_zavod",
     "YANDEX_FOLDER_ID": "folder-1",
     "YANDEX_API_KEY": "api-key",
@@ -15,7 +14,7 @@ def test_load_settings_with_api_key() -> None:
     settings = load_settings(_BASE_ENV)
 
     assert settings.telegram_bot_token == "123:abc"
-    assert settings.telegram_notify_chat_id == 42
+    assert settings.global_admin_telegram_ids == frozenset()
     assert settings.postgres_dsn == "postgresql://localhost/content_zavod"
     assert settings.yandex.folder_id == "folder-1"
     assert settings.yandex.api_key == "api-key"
@@ -41,9 +40,7 @@ def test_load_settings_uses_custom_timezone() -> None:
     assert str(settings.timezone) == "UTC"
 
 
-@pytest.mark.parametrize(
-    "missing", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_NOTIFY_CHAT_ID", "POSTGRES_DSN", "YANDEX_FOLDER_ID"]
-)
+@pytest.mark.parametrize("missing", ["TELEGRAM_BOT_TOKEN", "POSTGRES_DSN", "YANDEX_FOLDER_ID"])
 def test_load_settings_raises_for_missing_required_var(missing: str) -> None:
     env = dict(_BASE_ENV)
     del env[missing]
@@ -66,8 +63,14 @@ def test_load_settings_raises_when_both_yandex_credentials_are_set() -> None:
         load_settings(env)
 
 
-def test_load_settings_raises_for_non_integer_notify_chat_id() -> None:
-    env = {**_BASE_ENV, "TELEGRAM_NOTIFY_CHAT_ID": "not-a-number"}
+def test_global_admins_are_a_comma_separated_list_of_ids() -> None:
+    env = {**_BASE_ENV, "GLOBAL_ADMIN_TELEGRAM_IDS": " 42, 7 ,"}
+
+    assert load_settings(env).global_admin_telegram_ids == frozenset({42, 7})
+
+
+def test_load_settings_raises_for_a_non_integer_global_admin_id() -> None:
+    env = {**_BASE_ENV, "GLOBAL_ADMIN_TELEGRAM_IDS": "42,@admin"}
 
     with pytest.raises(ConfigError):
         load_settings(env)

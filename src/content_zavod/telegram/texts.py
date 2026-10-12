@@ -11,12 +11,6 @@ from __future__ import annotations
 
 from datetime import date
 
-from ..access.errors import (
-    CannotRemoveSelf,
-    JoinRequestNotFound,
-    LastOwnerRemoval,
-    MemberNotFound,
-)
 from ..domain.errors import (
     ArticleNotFound,
     ArticleNotReady,
@@ -27,6 +21,7 @@ from ..domain.errors import (
     PlanItemNotFound,
     PlanNotFound,
 )
+from ..job_queue import JobNotFound
 
 ARTICLE_STATUSES = {
     "queued": "в очереди",
@@ -50,8 +45,6 @@ TOPIC_STATUSES = {
     "rejected": "убрана",
     "archived": "в архиве",
 }
-
-ROLES = {"owner": "Владелец", "content_manager": "Контент-менеджер"}
 
 PLATFORMS = {"zen": "Дзен", "vc": "VC.ru"}
 # «Статья для …»: Дзен declines, VC.ru doesn't.
@@ -104,7 +97,6 @@ JOB_FAILURES = {
     "generate_article": "Не удалось написать Статью.",
     "regenerate_article": "Не удалось переписать Статью.",
     "generate_cover": "Не удалось сгенерировать обложку.",
-    "suggest_directions": "Не удалось подобрать Направления.",
 }
 JOB_FAILURE_FALLBACK = "Не удалось выполнить задачу."
 
@@ -150,19 +142,20 @@ COVER_CAPTION = "🖼 Обложка: {title}"
 COVER_REQUESTED = "Генерирую обложку — пришлю её сюда."
 COVERS_OFF = "Обложки сейчас выключены."
 
+# A button naming an object this Пространство doesn't have - deleted, another Workspace's, or
+# never existed - gets the same answer: it must not hint that the id exists elsewhere
+# (ADR-0015, «Безопасность»).
+STALE_BUTTON = "Кнопка устарела."
 ERROR_ALERTS: dict[type[Exception], str] = {
-    PlanNotFound: "План не найден.",
-    PlanItemNotFound: "Тема не найдена.",
+    PlanNotFound: STALE_BUTTON,
+    PlanItemNotFound: STALE_BUTTON,
+    ArticleNotFound: STALE_BUTTON,
+    ArticleVersionNotFound: STALE_BUTTON,
+    JobNotFound: STALE_BUTTON,
     PlanItemNotEditable: "Эту Тему уже нельзя изменить.",
-    ArticleNotFound: "Статья не найдена.",
     ArticleNotReady: "Статья ещё не готова.",
     ArticleNotRegenerable: "Эту Статью сейчас нельзя перегенерировать.",
-    ArticleVersionNotFound: "Версия Статьи не найдена.",
     InvalidSettingValue: "Значение не может быть пустым.",
-    MemberNotFound: "Участник не найден.",
-    JoinRequestNotFound: "Заявка не найдена.",
-    CannotRemoveSelf: "Нельзя удалить самого себя.",
-    LastOwnerRemoval: "Нельзя удалить последнего Владельца.",
 }
 ERROR_ALERT_FALLBACK = "Не получилось, попробуйте ещё раз"
 
@@ -187,7 +180,7 @@ def format_week_range(week_label: str) -> str:
     """Render an ISO week_label (e.g. "2026-W33") as a human date range, e.g.
     "10–16 августа 2026". `week_label` itself stays the Plan's idempotency
     key (see `week_label_for` in scheduling/weekly_plan_trigger.py) and is
-    never shown to the Контент-менеджер directly."""
+    never shown to the Владелец directly."""
     year_part, _, week_part = week_label.partition("-W")
     monday = date.fromisocalendar(int(year_part), int(week_part), 1)
     sunday = date.fromisocalendar(int(year_part), int(week_part), 7)
@@ -210,10 +203,6 @@ def plan_status(status: str) -> str:
 
 def topic_status(status: str) -> str:
     return TOPIC_STATUSES.get(status, status)
-
-
-def role_name(role: str) -> str:
-    return ROLES.get(role, role)
 
 
 def platform_name(platform: str) -> str:
@@ -283,47 +272,61 @@ BACK_BUTTON = "◀ Назад"
 CANCEL_BUTTON = "Отмена"
 
 WELCOME_TEXT = (
-    "👋 Добро пожаловать! Я составляю для команды План Тем на неделю "
+    "👋 Добро пожаловать! Я составляю для вас План Тем на неделю "
     "и пишу по нему Статьи для Дзена и VC.ru."
 )
-# /start from someone without a Role, above «Запросить доступ».
-UNREGISTERED_TEXT = (
-    "👋 Здравствуйте! Доступа к боту у вас пока нет. Нажмите «Запросить доступ» — "
-    "Владелец получит заявку и одобрит её."
+# /start in a group: the bot works in the private chat only (ADR-0015).
+GROUP_START_TEXT = "Я работаю только в личном чате: откройте его и нажмите /start."
+OPEN_PRIVATE_CHAT_BUTTON = "💬 Открыть личный чат"
+# A message before the first /start (or from before the Пространства, #118).
+NO_WORKSPACE_TEXT = "👋 Нажмите /start — я всё подготовлю."
+# `/admin` (ADR-0015): for now only proves the Глобальный администратор is recognised; the
+# list of Пространства and their Лимиты come with the Лимит itself.
+ADMIN_PENDING_TEXT = (
+    "Вы Глобальный администратор. Список Пространств, их расход и Лимиты появятся здесь "
+    "вместе с Лимитом."
 )
 MENU_TEXT = "🏠 Главное меню\nВыберите, что сделать:"
 MENU_PLAN_BUTTON = "📋 План недели"
 MENU_TOPIC_BUTTON = "✍️ Предложить Тему"
 MENU_HISTORY_BUTTON = "🗂 История"
 MENU_SETTINGS_BUTTON = "⚙️ Настройки"
-MENU_MEMBERS_BUTTON = "👥 Участники"
 MENU_SCHEDULE_BUTTON = "🕘 Расписание"
 OPEN_MENU_BUTTON = "🏠 Открыть меню"
-# Under the История and Участники screens, which the menu edits in place (their own
-# «◀ Назад» already means "previous page").
+# Under the История screens, which the menu edits in place (their own «◀ Назад» already
+# means "previous page").
 TO_MENU_BUTTON = "🏠 В меню"
 
 HELP_TEXT = (
-    "Я составляю для команды План Тем на неделю и пишу по нему Статьи для Дзена и VC.ru.\n\n"
+    "Я составляю для вас План Тем на неделю и пишу по нему Статьи для Дзена и VC.ru.\n\n"
     "Всё делается кнопками в меню — откройте его командой /menu:\n"
     "📋 План недели — где сейчас План и как составить новый\n"
     "✍️ Предложить Тему — добавить свою Тему в План\n"
-    "🗂 История — прошлые Планы и готовые Статьи"
-)
-HELP_OWNER_TEXT = (
-    "\n\nТолько для Владельца:\n"
-    "⚙️ Настройки — Ниша, Персона, Аудитория, Направления, Проект\n"
-    "👥 Участники — у кого есть доступ к боту\n"
+    "🗂 История — прошлые Планы и готовые Статьи\n"
+    "⚙️ Настройки — Ниша, Аудитория, Стиль автора, ваш канал или сайт\n"
     "🕘 Расписание — когда составляется новый План"
 )
 UNKNOWN_MESSAGE_TEXT = "Чтобы что-то сделать, откройте меню 👇"
 
-PLAN_OPEN_BUTTON = "📋 Открыть План"
 PLAN_GENERATE_BUTTON = "🪄 Составить План"
 PLAN_STATE_PENDING = "ждёт согласования"
 PLAN_STATE_APPROVED = "утверждён"
-PLAN_IN_TEAM_CHAT = "Он в чате команды — откройте его кнопкой ниже."
-PLAN_IN_TEAM_CHAT_NO_LINK = "Он в чате команды — найдите там сообщение с Планом."
+PLAN_SENT_BELOW = "Прислал его ниже 👇"
+# A Тема proposed into a Plan whose message is further up the chat: where to find it.
+TOPIC_ADDED_TEXT = f"Тема добавлена в План. Открыть его: /menu → {MENU_PLAN_BUTTON}"
+# What to do when a generated Plan came out empty (#84).
+TOPIC_PROPOSE_HINT = f"Предложите Тему сами: /menu → {MENU_TOPIC_BUTTON}"
+PLAN_EMPTY_TEXT = (
+    "📋 План на {week} пока пуст: все Темы из него убраны. Можно предложить свою Тему."
+)
+# No Ниша told yet (#118): no Plan is drafted by the default one, and the Расписание tick waits.
+NICHE_MISSING_TEXT = (
+    "Сначала скажите, о чём ваш блог: без Ниши я не подберу Темы. Укажите её — и составлю План."
+)
+NICHE_ASK_BUTTON = "✏️ Указать Нишу"
+NICHE_UNSET = "не задана"
+# The week's Plan is missing, but the Расписание won't make one either (the wizard isn't finished).
+PLAN_MISSING_MANUAL_TEXT = "📋 Плана на {week} пока нет. Можно составить его прямо сейчас."
 PLAN_MISSING_TEXT = (
     "📋 Плана на {week} пока нет.\n"
     "Новый План составляется автоматически по расписанию: {schedule}.\n"
@@ -334,13 +337,8 @@ TOPIC_QUESTION = (
     "✍️ Напишите Тему — она добавится в План этой недели.\n\n"
     "Например: Как малому бизнесу посчитать окупаемость рекламы"
 )
-TOPIC_PLACEHOLDER = "Тема для Плана"
-
-# Appended to every typed-input question (#88's two chat shapes): a private chat takes the
-# next message as is, a group needs a reply to the ForceReply line that follows.
-INPUT_HINT_PRIVATE = "Напишите ответ следующим сообщением или нажмите «Отмена»."
-INPUT_HINT_GROUP = "Ответьте на сообщение ниже или нажмите «Отмена»."
-INPUT_FORCE_REPLY = '✏️ <a href="tg://user?id={user_id}">Ваш ответ</a> — ответом на это сообщение.'
+# Appended to every typed-input question (#88): the next message in the chat is the answer.
+INPUT_HINT = "Напишите ответ следующим сообщением или нажмите «Отмена»."
 
 SETTINGS_TITLE = "⚙️ Настройки\nДействуют на каждую следующую генерацию."
 SETTINGS_CURRENT = "Сейчас: {value}"
@@ -359,7 +357,6 @@ SCHEDULE_TIME_SAVED = "Время изменено: {schedule}"
 SCHEDULE_TIME_QUESTION = (
     "🕐 Во сколько составлять новый План? Напишите время в формате ЧЧ:ММ.\n\nНапример: 09:30"
 )
-SCHEDULE_TIME_PLACEHOLDER = "Например: 09:30"
 SCHEDULE_TIME_INVALID = "Не понял время «{text}». Нужно ЧЧ:ММ, например 09:30."
 SCHEDULE_TIMEZONE_LINE = "Часовой пояс: {timezone}"
 SCHEDULE_TIMEZONE_BUTTON = "🌍 Часовой пояс"
@@ -379,23 +376,21 @@ def schedule_text(day: str, hour: int, minute: int) -> str:
 # setMyShortDescription (≤ 120) - the profile and the share card; setMyDescription (≤ 512) - the
 # «What can this bot do?» card a new user sees before pressing «Начать».
 BOT_SHORT_DESCRIPTION = (
-    "Нахожу растущие Темы в Wordstat и пишу по ним Статьи для Дзена и VC.ru — для вашей команды."
+    "Каждую неделю подбираю Темы по вашей Нише и пишу по ним Статьи для Дзена и VC.ru."
 )
 BOT_DESCRIPTION = (
-    "Контент-план и Статьи для вашей команды.\n\n"
-    "📈 Каждую неделю нахожу в Wordstat растущие запросы по вашей Нише и составляю по ним "
-    "План — до трёх Тем.\n"
-    "✅ Команда согласует План прямо в чате.\n"
+    "Контент-план и Статьи для вашего блога.\n\n"
+    "📋 Каждую неделю подбираю Темы по вашей Нише и присылаю План.\n"
+    "✅ Вы согласуете его прямо здесь, в чате.\n"
     "✍️ По каждой Теме пишу Статьи для Дзена и VC.ru — с проверенными источниками.\n"
     "📄 Готовое читайте прямо в Telegram или скачивайте .docx/.md.\n\n"
-    "Нажмите «Начать», чтобы настроить бота или запросить доступ."
+    "Нажмите «Начать» — настройка займёт пару минут."
 )
 
 ONBOARDING_INTRO = (
-    "👋 Здравствуйте! Я помогаю команде вести блог на Дзене и VC.ru.\n\n"
-    "Каждую неделю я нахожу в Wordstat растущие запросы по вашей Нише и составляю по ним "
-    "План — до трёх Тем. Когда команда его согласует, пишу по каждой Теме Статьи "
-    "с проверенными источниками.\n\n"
+    "👋 Здравствуйте! Я помогаю вести блог на Дзене и VC.ru.\n\n"
+    "Каждую неделю я подбираю Темы по вашей Нише и присылаю План. Когда вы его согласуете, "
+    "пишу по каждой Теме Статьи с проверенными источниками.\n\n"
     "Настроим меня под вас: {count} — {steps}. Сразу после этого я составлю первый План.\n\n"
     "Выйти в меню можно в любой момент: /menu"
 )
@@ -418,30 +413,15 @@ ONBOARDING_AUDIENCE_QUESTION = (
     "поток гостей без агентства. В терминах не разбираются — нужны простые шаги и примеры."
 )
 ONBOARDING_PERSONA_CHOOSE = (
-    "Выберите автора кнопкой ниже или опишите своего — «✏️ Своя Персона».\n\n{presets}"
+    "Выберите стиль кнопкой ниже или опишите свой — «✏️ Свой стиль».\n\n{presets}"
 )
-ONBOARDING_DIRECTIONS_QUESTION = (
-    "✏️ Что ваши читатели ищут в Яндексе? Напишите 3–8 запросов через запятую — я буду "
-    "смотреть в Wordstat, какие из них растут, и предлагать по ним Темы.\n\n"
-    "Например: фитнес дома, правильное питание, похудение после родов"
-)
+# «Ваш канал или сайт» (#133): the owner's wording, with the formats the link may come in.
+PROJECT_EXAMPLES = "Подойдёт: @my_channel · t.me/my_channel · example.ru · https://example.ru/blog"
 ONBOARDING_PROJECT_QUESTION = (
-    "✏️ Есть канал или сайт, куда приводить читателей? Пришлите ссылку и через пробел — "
-    "пару слов о нём. Ссылка будет в конце каждой Статьи.\n\n"
-    "Например: @my_channel Канал о маркетинге для малого бизнеса\n\n"
-    "Нет канала — просто нажмите «Пропустить ⏭»."
-)
-# Directions default to marketing queries: if the Ниша isn't marketing, say so before
-# the Владелец skips the step and gets a marketing Plan.
-ONBOARDING_DIRECTIONS_MISMATCH = (
-    "⚠️ Сейчас здесь стандартные запросы про маркетинг (CRM, SEO, воронка продаж…). "
-    "Для Ниши «{niche}» нажмите «✨ Предложить по Нише» — я подберу запросы сам, или "
-    "напишите свои — то, что ищут ваши читатели. Если пропустить, Темы будут про маркетинг."
-)
-# The same mismatch on «Проверьте вводные», right before «🚀 Запустить».
-ONBOARDING_REVIEW_DIRECTIONS_MISMATCH = (
-    "⚠️ Направления — стандартные, про маркетинг, а Ниша — «{niche}». Первый План будет "
-    "про маркетинг: лучше нажать «✏️ Изменить Направления» и подобрать их по Нише."
+    "✏️ Куда приглашать читателей в конце Статьи? Пришлите ссылку на ваш Telegram-канал или "
+    "сайт — я аккуратно упомяну её в последнем абзаце, по теме Статьи.\n\n"
+    f"{PROJECT_EXAMPLES}\n\n"
+    "Можно через пробел добавить пару слов, что там. Нет канала — нажмите «Пропустить ⏭»."
 )
 ONBOARDING_REVIEW_TITLE = "🔎 Проверьте вводные"
 ONBOARDING_REVIEW_HINT = (
@@ -449,42 +429,19 @@ ONBOARDING_REVIEW_HINT = (
     "Что-то не так — поправьте кнопкой ниже."
 )
 ONBOARDING_LAUNCH_BUTTON = "🚀 Запустить"
-# Where the Plan lands: the team chat (`TELEGRAM_NOTIFY_CHAT_ID`), or this chat if that is it.
-ONBOARDING_PLAN_IN_TEAM = "в чат команды"
-ONBOARDING_PLAN_HERE = "сюда"
-# The first Plan is a Job: a Wordstat call per Направление, one after another, then an LLM call
-# per Тема - a few minutes, longer when Wordstat is slow (it can take a minute per request).
+# The first Plan is a Job: a model call per Тема - usually a few minutes.
 ONBOARDING_LAUNCHED = (
-    "🚀 Запускаю! Смотрю в Wordstat, какие запросы по вашим Направлениям сейчас растут, "
-    "и подбираю по ним Темы. Обычно это 2–5 минут, иногда дольше — Wordstat бывает "
-    "медленным.\n\n"
-    "План придёт {where} одним сообщением: в нём Темы можно заменить, убрать или утвердить, "
+    "🚀 Запускаю! Подбираю Темы по вашей Нише — обычно это занимает несколько минут.\n\n"
+    "План придёт сюда одним сообщением: в нём Темы можно заменить, убрать или утвердить, "
     "и по утверждённым я напишу Статьи. Дальше новый План будет приходить сам — {schedule}.\n\n"
     "Всё остальное — в меню: /menu"
 )
 ONBOARDING_ALREADY_LAUNCHED = (
-    "✅ Вводные сохранены. Первый План уже составляется — он придёт {where}.\n\n"
+    "✅ Вводные сохранены. Первый План уже составляется — он придёт сюда.\n\n"
     "Всё остальное — в меню: /menu"
 )
 ONBOARDING_CANCELLED = (
     "Хорошо, настройку можно продолжить в любой момент: /start\nВсё остальное — в меню: /menu"
-)
-ONBOARDING_IN_PRIVATE = (
-    "⚙️ Бот ещё не настроен. Настройка займёт пару минут, и её лучше пройти в личном чате "
-    "со мной: откройте его и нажмите /start."
-)
-ONBOARDING_OPEN_PRIVATE_BUTTON = "💬 Открыть личный чат"
-
-# Sent to a Контент-менеджер the moment their заявка is approved.
-CONTENT_MANAGER_WELCOME = (
-    "🎉 Доступ выдан — вы Контент-менеджер.\n\n"
-    "Что я делаю: раз в неделю составляю План — до трёх Тем, а после согласования пишу по ним "
-    "Статьи для Дзена и VC.ru.\n\n"
-    "Где План: в чате команды, одним сообщением. Там же его согласуют: 🔄 — заменить Тему, "
-    "🗑 — убрать, «✅ Утвердить всё» — запустить Статьи. После утверждения это же сообщение "
-    "показывает, что готово, и открывает готовые Статьи. Если вас ещё нет в чате команды — "
-    "попросите Владельца добавить.\n\n"
-    "Что нажимать: /menu — План недели, Предложить Тему, История."
 )
 
 
@@ -495,43 +452,3 @@ def steps_count_text(count: int) -> str:
     if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
         return f"{count} коротких шага"
     return f"{count} коротких шагов"
-
-
-# Направления suggested from the Ниша (#113): «✨ Предложить по Нише» on the Направления
-# question (Экран Настроек and onboarding), then a list the Владелец takes, rerolls or declines.
-DIRECTIONS_SUGGEST_BUTTON = "✨ Предложить по Нише"
-DIRECTIONS_TAKE_BUTTON = "✅ Взять"
-DIRECTIONS_MORE_BUTTON = "🔄 Ещё варианты"
-DIRECTIONS_RETRY_BUTTON = "🔄 Попробовать ещё"
-DIRECTIONS_OWN_BUTTON = "✏️ Написать свои"
-DIRECTIONS_WORKING = (
-    "⏳ Подбираю Направления для Ниши «{niche}» — запросы, по которым я буду искать в "
-    "Wordstat растущие Темы. Обычно это занимает до минуты."
-)
-# Said first when the suggestion started by itself, right after the Ниша changed.
-DIRECTIONS_NICHE_CHANGED = (
-    "Ниша сменилась, а Направления остались стандартными — про маркетинг. Без новых "
-    "Направлений Темы будут про маркетинг."
-)
-DIRECTIONS_SUGGESTED_TITLE = "✨ Направления для Ниши «{niche}»"
-DIRECTIONS_SUGGESTED_LINE = "• {query} — ищут {frequency} раз в месяц"
-DIRECTIONS_SUGGESTED_LINE_UNCHECKED = "• {query}"
-DIRECTIONS_DROPPED = "Убрал — их почти не ищут в Яндексе: {queries}."
-DIRECTIONS_WORDSTAT_UNAVAILABLE = (
-    "⚠️ Wordstat сейчас не ответил — спрос по этим запросам я не проверил."
-)
-DIRECTIONS_SUGGESTED_HINT = (
-    "«✅ Взять» — сохранить их как Направления (текущий список заменится целиком). "
-    "Пока не нажмёте, ничего не меняется."
-)
-DIRECTIONS_NONE_FOUND = (
-    "😕 Для Ниши «{niche}» не нашлось запросов, которые ищут в Яндексе. Попробуйте ещё "
-    "варианты или напишите свои."
-)
-DIRECTIONS_FAILED = "😕 Не получилось подобрать Направления. Попробуйте ещё раз или напишите свои."
-DIRECTIONS_STALE = "Эти варианты уже недоступны — подберите заново."
-
-
-def frequency_text(frequency: int) -> str:
-    """«12 400» - Wordstat's monthly count, grouped by thousands."""
-    return f"{frequency:,}".replace(",", " ")

@@ -15,12 +15,9 @@ already does for the automatic path (ADR-0006: "дедуп по истории �
 skip-and-try-next-keyword, a rejected manual proposal gets an explicit reply,
 since this is an interactive command rather than a batch job.
 
-The Plan message is always delivered to the team chat (`team_chat_id`, i.e.
-`TELEGRAM_NOTIFY_CHAT_ID`), never to the chat /topic was typed in (#82): the
-first delivery records the chat it sent to as the Plan's canonical place, so
-a /topic from a private chat used to move the whole week's Plan out of the
-team's sight. Called from anywhere else, the caller just gets a short
-confirmation pointing at the team chat.
+The Plan message goes to the Пространство owner's private chat, where every other delivery of
+the Workspace goes (ADR-0015); the week is counted in the Workspace's own time zone, like the
+Расписание tick does.
 """
 
 from __future__ import annotations
@@ -28,12 +25,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
-from zoneinfo import ZoneInfo
 
 from ..domain import PlanId, TopicDraft
-from ..scheduling import week_label_for
+from ..workspaces import Workspace, WorkspaceId
 from .gateway import TelegramGateway
+from .generate_plan_command import workspace_week
 from .plan_delivery import PlanMessageRefs, deliver_plan_message
+from .texts import TOPIC_ADDED_TEXT
 from .types import PlanView
 
 RECENT_HISTORY_DAYS = 90
@@ -42,21 +40,24 @@ RECENT_HISTORY_DAYS = 90
 class PlanProposal(PlanMessageRefs, Protocol):
     """The Plan operations a manual Topic proposal needs (see #10)."""
 
-    async def recent_topic_titles(self, since: datetime) -> list[str]: ...
+    async def recent_topic_titles(
+        self, workspace_id: WorkspaceId, since: datetime
+    ) -> list[str]: ...
 
-    async def add_topics(self, week_label: str, topics: list[TopicDraft]) -> PlanId: ...
+    async def add_topics(
+        self, workspace_id: WorkspaceId, week_label: str, topics: list[TopicDraft]
+    ) -> PlanId: ...
 
-    async def get(self, plan_id: PlanId) -> PlanView: ...
+    async def get(self, workspace_id: WorkspaceId, plan_id: PlanId) -> PlanView: ...
 
 
 async def handle_topic_command(
     plan: PlanProposal,
     gateway: TelegramGateway,
+    workspace: Workspace,
     chat_id: int,
     text: str,
     *,
-    team_chat_id: int,
-    tz: ZoneInfo,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> None:
     title = text.strip()
@@ -66,20 +67,20 @@ async def handle_topic_command(
 
     current_time = now()
     since = current_time - timedelta(days=RECENT_HISTORY_DAYS)
-    recent_titles = {existing.lower() for existing in await plan.recent_topic_titles(since)}
+    recent_titles = {
+        existing.lower() for existing in await plan.recent_topic_titles(workspace.id, since)
+    }
     if title.lower() in recent_titles:
         await gateway.send_error(chat_id, f"Тема «{title}» уже использовалась недавно.")
         return
 
-    week_label = week_label_for(current_time, tz)
-    plan_id = await plan.add_topics(week_label, [TopicDraft(title=title)])
-    view = await plan.get(plan_id)
-    sent_new = await deliver_plan_message(plan, gateway, team_chat_id, view)
-    if chat_id != team_chat_id:
-        await gateway.send_notice(chat_id, "Тема добавлена в План — он в чате команды.")
-    elif not sent_new:
+    week_label = workspace_week(workspace, current_time)
+    plan_id = await plan.add_topics(workspace.id, week_label, [TopicDraft(title=title)])
+    view = await plan.get(workspace.id, plan_id)
+    sent_new = await deliver_plan_message(
+        plan, gateway, workspace.id, workspace.owner_telegram_id, view
+    )
+    if not sent_new:
         # The Plan message was edited in place, maybe far up the chat - without a reply the
         # /topic would look like it did nothing.
-        await gateway.send_notice(
-            chat_id, "Тема добавлена в План — сообщение Плана выше обновлено."
-        )
+        await gateway.send_notice(chat_id, TOPIC_ADDED_TEXT)

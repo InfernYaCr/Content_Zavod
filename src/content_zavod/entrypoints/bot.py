@@ -1,14 +1,15 @@
 """bot_main: the process that talks to Telegram (ADR-0004).
 
-Registers PlanReview / CommentGatedRegeneration (#4/#9), the manual /topic
-command (#10), /generate_plan, member/access management, and schedule
-management behind the Membership allowlist (#8) - an unregistered
-telegram_id gets a "Запросить доступ" prompt from /start rather than silent
-refusal everywhere else. Runs `run_notifications` (#2) to deliver finished
-Job results back to the team chat, and the Расписание tick (`schedule_weekly_plan_tick`,
-#7, ADR-0015) via APScheduler in the same process. Never runs a Job Handler itself (see
-entrypoints/worker.py) - it only enqueues (through Plan/Article) and renders
-results.
+Every update is served in the Пространство of whoever sent it (ADR-0015): `/start` in a private
+chat creates the Workspace (`Workspaces.get_or_create`), every other update resolves it by
+`from_user.id`, and that `Workspace` is passed down to every flow - never taken from
+`callback_data`, text or a Job payload. The bot works in private chats only: in a group it
+answers `/start` with a pointer to the private chat and ignores the rest. Runs
+`run_notifications` (#2) to deliver each finished Job's result to the private chat of the
+Workspace that owns the Job (a 403 marks it `bot_blocked_at`), and the Расписание tick
+(`schedule_weekly_plan_tick`, #7, ADR-0015) via APScheduler in the same process. Never runs a
+Job Handler itself (see entrypoints/worker.py) - it only enqueues (through Plan/Article) and
+renders results.
 """
 
 from __future__ import annotations
@@ -16,13 +17,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from functools import wraps
+from typing import Protocol
 
 import asyncpg
 from aiogram import Bot, Dispatcher, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
     BotCommand,
@@ -30,14 +32,13 @@ from aiogram.types import (
     BotCommandScopeDefault,
     BufferedInputFile,
     CallbackQuery,
-    ForceReply,
+    InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaPhoto,
     Message,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from ..access import COMMAND_ROLE, JoinRequests, Membership, Role, require_role
 from ..config import Settings, load_settings
 from ..domain import (
     Article,
@@ -53,15 +54,12 @@ from ..owner_settings import BotStateStore, WorkspaceSettingsStore
 from ..scheduling import ScheduleSettings, schedule_weekly_plan_tick
 from ..settings import OnboardingState, SettingsService
 from ..telegram import (
-    ACCESS_DENIED_TEXT,
     MENU_COMMANDS,
-    OWNER_ONLY_TEXT,
     ArticleId,
     BotClient,
     CallbackDispatcher,
     CommentGatedRegeneration,
     InputPrompt,
-    JoinRequestFlow,
     MainMenu,
     MessageGone,
     PlanReview,
@@ -69,42 +67,35 @@ from ..telegram import (
     TelegramCommentPrompt,
     TelegramGateway,
     build_open_menu_keyboard,
-    build_request_access_keyboard,
     deliver_plan_hub,
     deliver_plan_message,
-    handle_generate_plan_command,
     handle_history_command,
-    handle_members_command,
     handle_topic_command,
-    render_help_text,
-    resync_member_commands,
-    sync_commands,
+    sync_admin_commands,
     unpack_callback_query,
 )
 from ..telegram.article_card import ArticlePagePublisher, send_article_card
 from ..telegram.asset_photos import AssetPhotos
-from ..telegram.direction_suggestions import (
-    ONBOARDING_ORIGIN,
-    SETTINGS_ORIGIN,
-    SUGGEST_DIRECTIONS_JOB,
-    DirectionSuggestions,
-)
 from ..telegram.gateway import SentPhoto, format_week_range
-from ..telegram.guide import DEEP_LINK as GUIDE_DEEP_LINK
-from ..telegram.guide import Guide, TeamNote
+from ..telegram.guide import Guide
 from ..telegram.onboarding import Onboarding
 from ..telegram.pending_inputs import PendingInputs
 from ..telegram.texts import (
+    ADMIN_PENDING_TEXT,
     BOT_DESCRIPTION,
     BOT_SHORT_DESCRIPTION,
+    GROUP_START_TEXT,
+    HELP_TEXT,
+    NO_WORKSPACE_TEXT,
+    OPEN_PRIVATE_CHAT_BUTTON,
+    STALE_BUTTON,
+    TOPIC_PROPOSE_HINT,
     UNKNOWN_MESSAGE_TEXT,
-    UNREGISTERED_TEXT,
     job_failure_text,
 )
 from ..telegraph import HttpxTelegraphClient, TelegraphPublisher, project_footer
-from ..workspaces import Workspaces
+from ..workspaces import Workspace, WorkspaceId, Workspaces
 from ._process import register_shutdown
-from ._team_workspace import TeamScoped, team_workspace_id
 
 logger = logging.getLogger(__name__)
 
@@ -139,12 +130,9 @@ class _AiogramBotClient:
         self,
         chat_id: int,
         text: str,
-        reply_markup: InlineKeyboardMarkup | ForceReply | None = None,
-        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
     ) -> int:
-        message = await self._bot.send_message(
-            chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode
-        )
+        message = await self._bot.send_message(chat_id, text, reply_markup=reply_markup)
         return message.message_id
 
     async def send_document(
@@ -233,15 +221,73 @@ class _AiogramBotClient:
         await self._bot.set_my_commands(commands, scope=scope)
 
 
+class WorkspaceDirectory(Protocol):
+    """What the bot needs from `Workspaces`: create one on /start, find the sender's otherwise,
+    find a Job's for its notification, and mark one whose owner blocked the bot."""
+
+    async def get_or_create(
+        self, owner_telegram_id: int, *, timezone: str, owner_username: str | None = None
+    ) -> Workspace: ...
+
+    async def get(self, workspace_id: WorkspaceId) -> Workspace | None: ...
+
+    async def get_by_owner(self, owner_telegram_id: int) -> Workspace | None: ...
+
+    async def mark_blocked(self, workspace_id: WorkspaceId) -> None: ...
+
+
+async def answer_text(
+    workspace: Workspace,
+    chat_id: int,
+    user_id: int,
+    text: str,
+    *,
+    plan_review: PlanReview,
+    article_regeneration: CommentGatedRegeneration[ArticleId],
+    settings_screen: SettingsScreen,
+    main_menu: MainMenu,
+    onboarding: Onboarding,
+    prompts: InputPrompt,
+    gateway: TelegramGateway,
+) -> None:
+    """A text in the private chat that no command took: a comment for a pending regeneration
+    (#4/#9), or an answer to a menu/Настройки/onboarding question (#95) - each looked up in the
+    sender's own Пространство, so it can only ever close that Workspace's wait (ADR-0015). A
+    `/command` the bot doesn't know (or one not meant for this user, like /admin) is never an
+    answer: it gets the same pointer to the menu as an unsolicited message."""
+    command = text.startswith("/")
+    consumed = not command and (
+        await plan_review.handle_comment_reply(workspace.id, chat_id, user_id, text)
+        or await article_regeneration.handle_comment_reply(workspace.id, chat_id, user_id, text)
+        or await settings_screen.handle_reply(workspace, chat_id, user_id, text)
+        or await main_menu.handle_reply(workspace, chat_id, user_id, text)
+        or await onboarding.handle_reply(workspace, chat_id, user_id, text)
+    )
+    if consumed:
+        return
+    if command or not await prompts.is_waiting(workspace.id, chat_id, user_id):
+        # Nothing was asked: point at the menu rather than staying silent (#95). A live wait
+        # no handler above took (a flow added later and not wired in here) is left alone.
+        await gateway.send_notice(
+            chat_id, UNKNOWN_MESSAGE_TEXT, reply_markup=build_open_menu_keyboard()
+        )
+
+
+def _private_chat_button(bot_username: str | None) -> InlineKeyboardMarkup | None:
+    if not bot_username:
+        return None
+    button = InlineKeyboardButton(text=OPEN_PRIVATE_CHAT_BUTTON, url=f"https://t.me/{bot_username}")
+    return InlineKeyboardMarkup(inline_keyboard=[[button]])
+
+
 def _build_router(
-    membership: Membership,
+    workspaces: WorkspaceDirectory,
     plan: Plan,
     article: Article,
     gateway: TelegramGateway,
     bot_client: BotClient,
     plan_review: PlanReview,
     article_regeneration: CommentGatedRegeneration[ArticleId],
-    join_request_flow: JoinRequestFlow,
     settings_screen: SettingsScreen,
     main_menu: MainMenu,
     prompts: InputPrompt,
@@ -249,178 +295,159 @@ def _build_router(
     settings: Settings,
     onboarding: Onboarding,
     guide: Guide,
-    team_note: TeamNote,
     *,
     publisher: ArticlePagePublisher | None = None,
-    directions: DirectionSuggestions | None = None,
+    bot_username: str | None = None,
 ) -> Router:
     router = Router()
+    admin_ids: Collection[int] = settings.global_admin_telegram_ids
 
-    def gated(
-        required: Role | None,
-    ) -> Callable[[Callable[..., Awaitable[None]]], Callable[..., Awaitable[None]]]:
-        """Resolve the caller's Role, refuse via `gateway.send_error` on mismatch, otherwise
-        run the wrapped handler. `@wraps` keeps the handler's own signature visible to aiogram's
-        argument injection, so `message`/`command` still reach it unchanged."""
+    async def private_workspace(message: Message) -> Workspace | None:
+        """The sender's Пространство for a private-chat update; `None` (and nothing done) in a
+        group, or - with a nudge to /start - for someone who hasn't pressed it yet."""
+        if message.from_user is None or message.chat.type != "private":
+            return None
+        workspace = await workspaces.get_by_owner(message.from_user.id)
+        if workspace is None:
+            await gateway.send_notice(message.chat.id, NO_WORKSPACE_TEXT)
+        return workspace
 
-        def decorator(handler: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
-            @wraps(handler)
-            async def wrapper(message: Message, **kwargs: object) -> None:
-                if message.from_user is None:
-                    return
-                actual = await membership.role_for(message.from_user.id)
-                if not require_role(actual, required):
-                    text = ACCESS_DENIED_TEXT if actual is None else OWNER_ONLY_TEXT
-                    await gateway.send_error(message.chat.id, text)
-                    return
-                # Any command interrupts the onboarding wizard (#96): its open question is
-                # dropped, so the next message isn't taken for an answer - never blocked.
-                await onboarding.interrupt(message.chat.id, message.from_user.id)
-                await handler(message, **kwargs)
+    def in_workspace(
+        handler: Callable[..., Awaitable[None]],
+    ) -> Callable[..., Awaitable[None]]:
+        """Resolve the sender's Workspace and pass it as `workspace`. `@wraps` keeps the
+        handler's own signature visible to aiogram's argument injection, so `command` still
+        reaches it unchanged."""
 
-            return wrapper
+        @wraps(handler)
+        async def wrapper(message: Message, **kwargs: object) -> None:
+            workspace = await private_workspace(message)
+            if workspace is None:
+                return
+            assert message.from_user is not None
+            # Any command interrupts the onboarding wizard (#96): its open question is
+            # dropped, so the next message isn't taken for an answer - never blocked.
+            await onboarding.interrupt(workspace, message.chat.id, message.from_user.id)
+            await handler(message, workspace=workspace, **kwargs)
 
-        return decorator
+        return wrapper
 
     @router.message(Command("start"))
-    async def on_start(message: Message, command: CommandObject) -> None:
+    async def on_start(message: Message) -> None:
         if message.from_user is None:
             return
         chat_id = message.chat.id
-        telegram_id = message.from_user.id
-        role = await membership.role_for(telegram_id)
-        if role is None:
-            if command.args == GUIDE_DEEP_LINK:
-                # A newcomer from the team chat's pinned note: the Инструкция first, so they
-                # see what they are asking access to, then the usual заявка (#114).
-                await guide.send(chat_id, None)
+        if message.chat.type != "private":
             await gateway.send_message(
-                chat_id,
-                UNREGISTERED_TEXT,
-                reply_markup=build_request_access_keyboard(telegram_id),
+                chat_id, GROUP_START_TEXT, reply_markup=_private_chat_button(bot_username)
             )
             return
-        await sync_commands(bot_client, telegram_id, role)
-        await onboarding.interrupt(chat_id, telegram_id)
-        if command.args == GUIDE_DEEP_LINK:
-            # «📖 Инструкция» on the team chat's pinned note opens it here (#114).
-            await guide.send(chat_id, role)
+        workspace = await workspaces.get_or_create(
+            message.from_user.id,
+            timezone=settings.timezone.key,
+            owner_username=message.from_user.username,
+        )
+        await onboarding.interrupt(workspace, chat_id, message.from_user.id)
+        # A Пространство that isn't set up yet gets the wizard's intro instead (#96).
+        if await onboarding.offer(workspace, chat_id):
             return
-        # A Владелец whose bot isn't set up yet gets the wizard's intro instead (#96) - in a
-        # group only a pointer to the private chat, followed by the usual menu.
-        if await onboarding.offer(chat_id, telegram_id, role):
-            return
-        await main_menu.send(chat_id, role, welcome=True)
+        await main_menu.send(chat_id, welcome=True)
+
+    async def is_global_admin(message: Message) -> bool:
+        return (
+            message.from_user is not None
+            and message.chat.type == "private"
+            and message.from_user.id in admin_ids
+        )
+
+    @router.message(Command("admin"), is_global_admin)
+    async def on_admin(message: Message) -> None:
+        # Anyone else's /admin falls through to `on_message`: an unknown command (ADR-0015).
+        await gateway.send_notice(message.chat.id, ADMIN_PENDING_TEXT)
 
     @router.message(Command("menu"))
-    @gated(COMMAND_ROLE["menu"])
-    async def on_menu(message: Message) -> None:
-        role = await membership.role_for(message.from_user.id)
-        if role is not None:
-            await main_menu.send(message.chat.id, role)
+    @in_workspace
+    async def on_menu(message: Message, workspace: Workspace) -> None:
+        await main_menu.send(message.chat.id)
 
     @router.message(Command("help"))
-    @gated(COMMAND_ROLE["help"])
-    async def on_help(message: Message) -> None:
-        # gated() already confirmed message.from_user has a registered Role; re-fetch it here
-        # because the Инструкция's slides differ by Role (#114).
-        role = await membership.role_for(message.from_user.id)
-        if role is None:
-            return
+    @in_workspace
+    async def on_help(message: Message, workspace: Workspace) -> None:
         try:
-            await guide.send(message.chat.id, role)
+            await guide.send(message.chat.id)
         except Exception:
             # Not even its text went out: the short help, so /help never stays silent.
             logger.warning("could not send the guide", exc_info=True)
             await gateway.send_notice(
-                message.chat.id, render_help_text(role), reply_markup=build_open_menu_keyboard()
+                message.chat.id, HELP_TEXT, reply_markup=build_open_menu_keyboard()
             )
 
     @router.message(Command("topic"))
-    @gated(COMMAND_ROLE["topic"])
-    async def on_topic(message: Message) -> None:
+    @in_workspace
+    async def on_topic(message: Message, workspace: Workspace) -> None:
+        assert message.from_user is not None
         parts = (message.text or "").split(maxsplit=1)
         text = parts[1] if len(parts) > 1 else ""
         if not text.strip():
             # A bare /topic asks for the Тема, like «✍️ Предложить Тему» (#95).
-            await main_menu.ask_topic(message.chat.id, message.from_user.id)
+            await main_menu.ask_topic(workspace, message.chat.id, message.from_user.id)
             return
-        await handle_topic_command(
-            plan,
-            gateway,
-            message.chat.id,
-            text,
-            team_chat_id=settings.telegram_notify_chat_id,
-            tz=settings.timezone,
-        )
+        await handle_topic_command(plan, gateway, workspace, message.chat.id, text)
 
     @router.message(Command("generate_plan"))
-    @gated(COMMAND_ROLE["generate_plan"])
-    async def on_generate_plan(message: Message) -> None:
-        await handle_generate_plan_command(
-            plan,
-            gateway,
-            message.chat.id,
-            queue=queue,
-            team_chat_id=settings.telegram_notify_chat_id,
-            tz=settings.timezone,
-        )
+    @in_workspace
+    async def on_generate_plan(message: Message, workspace: Workspace) -> None:
+        await main_menu.generate_plan(workspace, message.chat.id)
 
     @router.message(Command("history"))
-    @gated(COMMAND_ROLE["history"])
-    async def on_history(message: Message) -> None:
-        await handle_history_command(plan, gateway, message.chat.id)
-
-    @router.message(Command("members"))
-    @gated(COMMAND_ROLE["members"])
-    async def on_members(message: Message) -> None:
-        await handle_members_command(membership, gateway, message.chat.id)
+    @in_workspace
+    async def on_history(message: Message, workspace: Workspace) -> None:
+        await handle_history_command(plan, gateway, workspace.id, message.chat.id)
 
     # Hidden aliases (#95): no longer in Telegram's command menu - the Экран Настроек and the
     # Расписание screen replace them - but kept working for muscle memory and older messages.
     @router.message(Command("schedule"))
-    @gated(COMMAND_ROLE["schedule"])
-    async def on_schedule(message: Message) -> None:
-        await settings_screen.send_schedule(message.chat.id)
+    @in_workspace
+    async def on_schedule(message: Message, workspace: Workspace) -> None:
+        await settings_screen.send_schedule(workspace, message.chat.id)
 
     @router.message(Command("set_schedule"))
-    @gated(COMMAND_ROLE["set_schedule"])
-    async def on_set_schedule(message: Message, command: CommandObject) -> None:
-        await settings_screen.set_schedule_command(message.chat.id, command.args or "")
+    @in_workspace
+    async def on_set_schedule(
+        message: Message, command: CommandObject, workspace: Workspace
+    ) -> None:
+        await settings_screen.set_schedule_command(workspace, message.chat.id, command.args or "")
 
-    @router.message(Command("settings", "niche", "directions", "persona", "project", "audience"))
-    @gated(COMMAND_ROLE["settings"])
-    async def on_settings(message: Message) -> None:
-        await settings_screen.send(message.chat.id)
+    @router.message(Command("settings", "niche", "persona", "project", "audience"))
+    @in_workspace
+    async def on_settings(message: Message, workspace: Workspace) -> None:
+        await settings_screen.send(workspace, message.chat.id)
 
-    @router.message(
-        Command("set_niche", "set_directions", "set_persona", "set_project", "set_audience")
-    )
-    @gated(COMMAND_ROLE["set_niche"])
-    async def on_set_setting(message: Message, command: CommandObject) -> None:
+    @router.message(Command("set_niche", "set_persona", "set_project", "set_audience"))
+    @in_workspace
+    async def on_set_setting(
+        message: Message, command: CommandObject, workspace: Workspace
+    ) -> None:
+        assert message.from_user is not None
         key = command.command.removeprefix("set_")
         await settings_screen.apply_command(
-            message.chat.id, message.from_user.id, key, command.args or ""
+            workspace, message.chat.id, message.from_user.id, key, command.args or ""
         )
 
     dispatcher = CallbackDispatcher(
-        membership,
         plan,
         article,
         gateway,
         bot_client,
         plan_review,
         article_regeneration,
-        join_request_flow,
         settings_screen,
         queue,
         main_menu,
         prompts,
         onboarding,
         guide=guide,
-        team_note=team_note,
         publisher=publisher,
-        directions=directions,
     )
 
     @router.callback_query()
@@ -431,54 +458,41 @@ def _build_router(
             await callback.answer()
             return
         if callback_input is None:
+            await callback.answer()  # nothing to act on, but no spinner left on the button
             return
-        await dispatcher.dispatch(callback_input, callback.answer)
+        if callback_input.chat_id != callback_input.user_id:
+            # A private chat's id is its user's id. A button anywhere else - the old team chat
+            # - acts on nothing (ADR-0015).
+            await callback.answer(STALE_BUTTON, show_alert=True)
+            return
+        workspace = await workspaces.get_by_owner(callback_input.user_id)
+        if workspace is None:
+            # A button from before the Пространства (#118), pressed before any /start.
+            await callback.answer(NO_WORKSPACE_TEXT, show_alert=True)
+            return
+        await dispatcher.dispatch(workspace, callback_input, callback.answer)
 
     @router.message()
     async def on_message(message: Message) -> None:
-        """Any non-command message: a possible comment for a pending regeneration (#4/#9), or
-        an answer to a menu/Настройки question (#95).
-
-        In a group only a reply can be one - it must answer the comment prompt (#88) - so
-        everything else is dropped before Membership is even looked up, and a non-member
-        writing in the group gets no "Доступ запрещён" back; that refusal is private-only."""
-        if message.from_user is None:
+        """Any other message in a private chat: see `answer_text`. A sticker/photo/voice is
+        not a comment - a wait stays open."""
+        workspace = await private_workspace(message)
+        if workspace is None or message.text is None:
             return
-        private = message.chat.type == "private"
-        if private:
-            reply_to_message_id = None
-        elif message.reply_to_message is not None:
-            reply_to_message_id = message.reply_to_message.message_id
-        else:
-            return
-        actual = await membership.role_for(message.from_user.id)
-        if not require_role(actual, None):
-            if private:
-                await gateway.send_error(message.chat.id, ACCESS_DENIED_TEXT)
-            return
-        if message.text is None:
-            return  # a sticker/photo/voice is not a comment - the wait stays open
-        chat_id, user_id, text = message.chat.id, message.from_user.id, message.text
-        consumed = (
-            await plan_review.handle_comment_reply(chat_id, user_id, text, reply_to_message_id)
-            or await article_regeneration.handle_comment_reply(
-                chat_id, user_id, text, reply_to_message_id
-            )
-            or await settings_screen.handle_reply(
-                chat_id, user_id, text, reply_to_message_id, role=actual
-            )
-            or await main_menu.handle_reply(chat_id, user_id, text, reply_to_message_id)
-            or await onboarding.handle_reply(
-                chat_id, user_id, text, reply_to_message_id, role=actual
-            )
+        assert message.from_user is not None
+        await answer_text(
+            workspace,
+            message.chat.id,
+            message.from_user.id,
+            message.text,
+            plan_review=plan_review,
+            article_regeneration=article_regeneration,
+            settings_screen=settings_screen,
+            main_menu=main_menu,
+            onboarding=onboarding,
+            prompts=prompts,
+            gateway=gateway,
         )
-        if not consumed and private and not await prompts.is_waiting(chat_id, user_id):
-            # Nothing was asked: point at the menu rather than staying silent (#95). A live
-            # wait no handler above took (a flow added later and not wired in here) is left
-            # alone rather than answered with the hint.
-            await gateway.send_notice(
-                chat_id, UNKNOWN_MESSAGE_TEXT, reply_markup=build_open_menu_keyboard()
-            )
 
     return router
 
@@ -549,14 +563,10 @@ _Delivery = (
 def _empty_plan_text(week_label: str, empty_reason: str | None) -> str:
     """Why a `generate_plan` run came back with no Темы, and what to do about it (#84)."""
     if empty_reason == "all_recently_used":
-        why = "все найденные Темы недавно уже были в Планах"
+        why = "все подобранные Темы недавно уже были в Планах"
     else:
-        why = "ни одно Направление сейчас не растёт в Wordstat"
-    return (
-        f"План на {format_week_range(week_label)} не создан: {why}.\n"
-        "Предложите Тему сами: /topic <текст>\n"
-        "Или пусть Владелец проверит Направления: /directions"
-    )
+        why = "не нашлось подходящих Тем"
+    return f"План на {format_week_range(week_label)} не создан: {why}.\n{TOPIC_PROPOSE_HINT}"
 
 
 async def _apply_failure(plan: Plan, article: Article, result: JobResult) -> list[_Delivery]:
@@ -565,26 +575,27 @@ async def _apply_failure(plan: Plan, article: Article, result: JobResult) -> lis
     «🖼 Обложка» re-request, a Plan/Тема generation - also gets its «Не удалось …» message."""
     # The chat gets a plain Russian «Не удалось …» (#89); the technical error stays in the log.
     logger.warning("Job %s (%s) failed: %s", result.job_id, result.job_type, result.error)
+    ws = result.workspace_id
     if result.job_type in ("generate_article", "regenerate_article"):
-        article_id = await article.mark_generation_failed(result.job_id)
+        article_id = await article.mark_generation_failed(ws, result.job_id)
         if article_id is None:
             logger.info("Ignoring stale Article failure for job_id=%s", result.job_id)
             return []
-        hub = _HubDelivery(plan_id=await article.get_plan_id(article_id))
+        hub = _HubDelivery(plan_id=await article.get_plan_id(ws, article_id))
         if result.job_type == "generate_article":
             return [hub]
-        summary = await article.get_summary(article_id)
+        summary = await article.get_summary(ws, article_id)
         text = job_failure_text(result.job_type, title=summary.title, platform=summary.platform)
         return [_ErrorDelivery(text=text, job_id=result.job_id), hub]
     if result.job_type == "generate_cover":
-        plan_item_id = await plan.mark_cover_generation_failed(result.job_id)
+        plan_item_id = await plan.mark_cover_generation_failed(ws, result.job_id)
         if plan_item_id is None:
             logger.info("Ignoring stale cover failure for job_id=%s", result.job_id)
             return []
-        hub = _HubDelivery(plan_id=await plan.get_plan_id_for_item(plan_item_id))
-        if not await plan.is_manual_cover_job(result.job_id):
+        hub = _HubDelivery(plan_id=await plan.get_plan_id_for_item(ws, plan_item_id))
+        if not await plan.is_manual_cover_job(ws, result.job_id):
             return [hub]
-        title = (await plan.get_item(plan_item_id)).title
+        title = (await plan.get_item(ws, plan_item_id)).title
         text = job_failure_text(result.job_type, title=title)
         return [_ErrorDelivery(text=text, job_id=result.job_id), hub]
     return [_ErrorDelivery(text=job_failure_text(result.job_type), job_id=result.job_id)]
@@ -592,13 +603,14 @@ async def _apply_failure(plan: Plan, article: Article, result: JobResult) -> lis
 
 async def _apply_result(plan: Plan, article: Article, result: JobResult) -> list[_Delivery]:
     """The DB half of notification handling (#73): applies a finished Job's result to
-    domain state and returns what still needs delivering to Telegram - nothing for a stale
-    result. Pure DB writes only; no Telegram call happens here, so retrying this half alone
-    (as a redelivered notification does) is exactly as idempotent as the domain operations
-    it calls."""
+    domain state - in the Job's own Пространство (ADR-0015) - and returns what still needs
+    delivering to Telegram - nothing for a stale result. Pure DB writes only; no Telegram call
+    happens here, so retrying this half alone (as a redelivered notification does) is exactly
+    as idempotent as the domain operations it calls."""
     if result.status == "failed":
         return await _apply_failure(plan, article, result)
 
+    ws = result.workspace_id
     output = result.output or {}
     if result.job_type == "generate_plan":
         topics = [
@@ -609,27 +621,29 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> list
         ]
         if not topics:
             # #84: an empty result creates no Plan (one with only "Утвердить всё" on it would
-            # start nothing) - the team chat gets what happened and what to do instead.
+            # start nothing) - the owner gets what happened and what to do instead.
             return [
                 _NoticeDelivery(
                     text=_empty_plan_text(output["week_label"], output.get("empty_reason"))
                 )
             ]
-        plan_id = await plan.add_topics(output["week_label"], topics)
+        plan_id = await plan.add_topics(ws, output["week_label"], topics)
         return [_PlanDelivery(plan_id=plan_id)]
     if result.job_type == "regenerate_topic":
         plan_item_id = PlanItemId(output["plan_item_id"])
         await plan.apply_regeneration(
+            ws,
             plan_item_id,
             TopicDraft(
                 title=output["title"], summary=output["summary"], keywords=output["keywords"]
             ),
         )
         # #81: the new title shows up in the Plan message itself, not in a separate notice.
-        return [_PlanDelivery(plan_id=await plan.get_plan_id_for_item(plan_item_id))]
+        return [_PlanDelivery(plan_id=await plan.get_plan_id_for_item(ws, plan_item_id))]
     if result.job_type in ("generate_article", "regenerate_article"):
         article_id = ArticleId(output["article_id"])
         application = await article.record_version(
+            ws,
             article_id,
             GeneratedVersion(
                 content=output["content"],
@@ -644,16 +658,16 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> list
         if application == "stale":
             logger.info("Ignoring stale Article result for job_id=%s", result.job_id)
             return []
-        hub = _HubDelivery(plan_id=await article.get_plan_id(article_id))
+        hub = _HubDelivery(plan_id=await article.get_plan_id(ws, article_id))
         if result.job_type == "generate_article":
             return [_PagePublishDelivery(article_id=article_id), hub]
         return [_ArticleDelivery(article_id=article_id), hub]
     if result.job_type == "generate_cover":
         plan_item_id = PlanItemId(output["plan_item_id"])
         image = base64.b64decode(output["image"])
-        await plan.apply_cover(plan_item_id, image, output["mime_type"])
-        hub = _HubDelivery(plan_id=await plan.get_plan_id_for_item(plan_item_id))
-        if not await plan.is_manual_cover_job(result.job_id):
+        await plan.apply_cover(ws, plan_item_id, image, output["mime_type"])
+        hub = _HubDelivery(plan_id=await plan.get_plan_id_for_item(ws, plan_item_id))
+        if not await plan.is_manual_cover_job(ws, result.job_id):
             return [hub]
         cover = _CoverDelivery(
             plan_item_id=plan_item_id, image=image, mime_type=output["mime_type"]
@@ -668,59 +682,75 @@ async def _deliver(
     plan: Plan,
     article: Article,
     gateway: TelegramGateway,
-    notify_chat_id: int,
+    workspace_id: WorkspaceId,
+    chat_id: int,
     delivery: _Delivery,
     publisher: ArticlePagePublisher | None = None,
 ) -> None:
     """The Telegram half of notification handling (#73): turns an `_apply_result` outcome
-    into the actual message. A Plan delivery goes through `deliver_plan_message`, a Хаб one
-    through `deliver_plan_hub` - both send only the first time and edit the Plan's canonical
-    message every time after, the fix for #73's duplicate-message gap."""
+    into the actual message in the Workspace owner's chat. A Plan delivery goes through
+    `deliver_plan_message`, a Хаб one through `deliver_plan_hub` - both send only the first time
+    and edit the Plan's canonical message every time after, the fix for #73's duplicate-message
+    gap."""
     if isinstance(delivery, _PlanDelivery):
-        view = await plan.get(delivery.plan_id)
-        await deliver_plan_message(plan, gateway, notify_chat_id, view)
+        view = await plan.get(workspace_id, delivery.plan_id)
+        await deliver_plan_message(plan, gateway, workspace_id, chat_id, view)
     elif isinstance(delivery, _HubDelivery):
-        await deliver_plan_hub(plan, gateway, notify_chat_id, delivery.plan_id)
+        await deliver_plan_hub(plan, gateway, workspace_id, chat_id, delivery.plan_id)
     elif isinstance(delivery, _NoticeDelivery):
-        await gateway.send_notice(notify_chat_id, delivery.text)
+        await gateway.send_notice(chat_id, delivery.text)
     elif isinstance(delivery, _ArticleDelivery):
-        view = await article.get(delivery.article_id)
-        await send_article_card(gateway, notify_chat_id, view, publisher)
+        view = await article.get(workspace_id, delivery.article_id)
+        await send_article_card(gateway, workspace_id, chat_id, view, publisher)
     elif isinstance(delivery, _PagePublishDelivery):
         if publisher is not None:
-            await publisher.publish(await article.get(delivery.article_id))
+            await publisher.publish(
+                workspace_id, await article.get(workspace_id, delivery.article_id)
+            )
     elif isinstance(delivery, _CoverDelivery):
-        item = await plan.get_item(delivery.plan_item_id)
-        await gateway.send_cover(notify_chat_id, delivery.image, delivery.mime_type, item.title)
+        item = await plan.get_item(workspace_id, delivery.plan_item_id)
+        await gateway.send_cover(chat_id, delivery.image, delivery.mime_type, item.title)
     elif isinstance(delivery, _ErrorDelivery):
-        await gateway.send_error_with_retry(notify_chat_id, delivery.text, delivery.job_id)
+        await gateway.send_error_with_retry(chat_id, delivery.text, delivery.job_id)
 
 
 def _make_notification_handler(
     plan: Plan,
     article: Article,
     gateway: TelegramGateway,
-    notify_chat_id: int,
+    workspaces: WorkspaceDirectory,
     *,
     publisher: ArticlePagePublisher | None = None,
-    team_note: TeamNote | None = None,
-    directions: DirectionSuggestions | None = None,
 ):
     async def handle(result: JobResult) -> None:
-        if directions is not None and result.job_type == SUGGEST_DIRECTIONS_JOB:
-            # Not domain state and not the team chat: the Владелец's own «⏳» message turns
-            # into the list (or says it failed) wherever it was asked (#113).
-            await directions.deliver(result)
+        # The Job's own Пространство and its owner's private chat - never the chat of whoever
+        # wrote last (ADR-0015).
+        workspace = await workspaces.get(result.workspace_id)
+        if workspace is None:  # the composite FK on `jobs` makes this unreachable
+            logger.error("Job %s has no Workspace %s", result.job_id, result.workspace_id)
             return
         deliveries = await _apply_result(plan, article, result)
-        if team_note is not None and any(
-            not isinstance(delivery, _PagePublishDelivery) for delivery in deliveries
-        ):
-            # The bot's first message in the team chat is preceded by the pinned «📌 Как мы
-            # работаем» (#114) - posted once, never failing the delivery itself.
-            await team_note.ensure()
-        for delivery in deliveries:
-            await _deliver(plan, article, gateway, notify_chat_id, delivery, publisher)
+        if workspace.blocked or workspace.owner_telegram_id < 0:
+            # Nobody would read it: the owner blocked the bot, or this is the interim team
+            # Workspace of a group chat (a Job from before 0013). The result is stored above.
+            logger.info("Job %s: Workspace %s is not delivered to", result.job_id, workspace.id)
+            return
+        try:
+            for delivery in deliveries:
+                await _deliver(
+                    plan,
+                    article,
+                    gateway,
+                    workspace.id,
+                    workspace.owner_telegram_id,
+                    delivery,
+                    publisher,
+                )
+        except TelegramForbiddenError:
+            # The owner blocked the bot: delivered as far as it goes, no 5 retries, and the
+            # Расписание tick leaves the Workspace alone until its next /start.
+            logger.info("Workspace %s blocked the bot", workspace.id)
+            await workspaces.mark_blocked(workspace.id)
 
     return handle
 
@@ -735,31 +765,22 @@ async def main(settings: Settings | None = None) -> None:
         await run_migrations(pool)
 
         queue = JobQueue(pool)
-        membership = Membership(pool)
-        join_requests = JoinRequests(pool)
-        # shortcut: the whole Telegram layer acts in the team Workspace (ADR-0015,
-        # «Промежуточное состояние») until PR 4 of #118 resolves one per update.
-        workspace_id = await team_workspace_id(pool, settings)
-        team_queue = TeamScoped(queue, workspace_id)
-        schedule_settings = TeamScoped(ScheduleSettings(pool), workspace_id)
-        owner_settings = TeamScoped(WorkspaceSettingsStore(pool), workspace_id)
-        owner_settings_service = SettingsService(owner_settings)
+        workspaces = Workspaces(pool)
+        schedule_settings = ScheduleSettings(pool)
+        settings_store = WorkspaceSettingsStore(pool)
+        settings_service = SettingsService(settings_store)
         bot_state = BotStateStore(pool)
-        # The Расписание tick acts in every Workspace, so it gets the unbound Plan.
-        all_plans = Plan(pool, queue, covers_enabled=settings.covers_enabled)
-        plan = TeamScoped(all_plans, workspace_id)
-        article = TeamScoped(Article(pool, queue), workspace_id)
+        plan = Plan(pool, queue, covers_enabled=settings.covers_enabled)
+        article = Article(pool, queue)
 
         bot = Bot(token=settings.telegram_bot_token)
         bot_client = _AiogramBotClient(bot)
         gateway = TelegramGateway(bot_client, covers=settings.covers_enabled)
-        pending_inputs = TeamScoped(PendingInputs(pool), workspace_id)
-        comment_prompt = TelegramCommentPrompt(bot_client)
-        plan_review = PlanReview(plan, comment_prompt, pending_inputs)
-        article_comment_prompt = TelegramCommentPrompt(bot_client, action="regenerate_article")
+        pending_inputs = PendingInputs(pool)
+        plan_review = PlanReview(plan, TelegramCommentPrompt(bot_client), pending_inputs)
         article_regeneration = CommentGatedRegeneration[ArticleId](
             article.request_regeneration,
-            article_comment_prompt,
+            TelegramCommentPrompt(bot_client, action="regenerate_article"),
             pending_inputs,
             kind="article_comment",
         )
@@ -767,95 +788,71 @@ async def main(settings: Settings | None = None) -> None:
         # The Инструкция's pictures and the banners (#114), uploaded once and reused by file_id.
         photos = AssetPhotos(bot_client, bot_state)
         guide = Guide(photos, bot_client)
-        team_note = TeamNote(
-            photos,
-            bot_client,
-            bot_state,
-            team_chat_id=settings.telegram_notify_chat_id,
-            bot_username=bot_username,
-        )
-        join_request_flow = JoinRequestFlow(join_requests, membership, gateway, photos=photos)
         prompts = InputPrompt(bot_client, pending_inputs)
 
         # Its first run, right away, also catches up a deadline missed while the bot was down.
         scheduler = AsyncIOScheduler()
-        schedule_weekly_plan_tick(scheduler, pool, all_plans)
+        schedule_weekly_plan_tick(scheduler, pool, plan)
         scheduler.start()
 
-        # Направления suggested from the Ниша (#113): the model call is a Job in the worker.
-        directions = DirectionSuggestions(team_queue, owner_settings_service, bot_client)
         settings_screen = SettingsScreen(
-            owner_settings_service,
-            schedule_settings,
-            TeamScoped(Workspaces(pool), workspace_id),
-            bot_client,
-            prompts,
-            directions=directions,
+            settings_service, schedule_settings, workspaces, bot_client, prompts
         )
+        onboarding_state = OnboardingState(settings_store)
         main_menu = MainMenu(
             plan,
-            team_queue,
+            queue,
             schedule_settings,
             bot_client,
             gateway,
             prompts,
-            team_chat_id=settings.telegram_notify_chat_id,
-            tz=settings.timezone,
+            settings=settings_service,
+            onboarding=onboarding_state,
             photos=photos,
         )
-        # The default list - what a group chat, or a user /start hasn't synced yet, sees (#95).
+        # Everyone's list (#95); a Глобальный администратор's own chat also lists /admin.
         await bot.set_my_commands(MENU_COMMANDS, scope=BotCommandScopeDefault())
+        await sync_admin_commands(bot_client, settings.global_admin_telegram_ids)
         # What a new user sees before /start (#96): the empty-chat card and the profile.
         await bot.set_my_description(BOT_DESCRIPTION)
         await bot.set_my_short_description(BOT_SHORT_DESCRIPTION)
         onboarding = Onboarding(
-            OnboardingState(owner_settings),
-            owner_settings_service,
+            onboarding_state,
+            settings_service,
             prompts,
             bot_client,
             main_menu,
             schedule_settings,
-            bot_username=bot_username,
-            team_chat_id=settings.telegram_notify_chat_id,
             photos=photos,
         )
-        directions.attach(SETTINGS_ORIGIN, settings_screen)
-        directions.attach(ONBOARDING_ORIGIN, onboarding)
-        # Every Участник's own scope still holds the pre-#95 list until it is rewritten.
-        await resync_member_commands(bot_client, await membership.list_all())
 
         telegraph_client = HttpxTelegraphClient()
-        publisher = TeamScoped(
-            TelegraphPublisher(
-                telegraph_client,
-                Article(pool, queue),
-                bot_state,
-                access_token=settings.telegraph_access_token,
-                footer_link=project_footer(WorkspaceSettingsStore(pool)),
-            ),
-            workspace_id,
+        publisher = TelegraphPublisher(
+            telegraph_client,
+            article,
+            bot_state,
+            access_token=settings.telegraph_access_token,
+            footer_link=project_footer(settings_store),
         )
         dispatcher = Dispatcher()
         dispatcher.include_router(
             _build_router(
-                membership,
+                workspaces,
                 plan,
                 article,
                 gateway,
                 bot_client,
                 plan_review,
                 article_regeneration,
-                join_request_flow,
                 settings_screen,
                 main_menu,
                 prompts,
-                team_queue,
+                queue,
                 settings,
                 onboarding,
                 guide,
-                team_note,
                 publisher=publisher,
-                directions=directions,
+                bot_username=bot_username,
             )
         )
 
@@ -863,13 +860,7 @@ async def main(settings: Settings | None = None) -> None:
         register_shutdown(stop)
 
         notify_handler = _make_notification_handler(
-            plan,
-            article,
-            gateway,
-            settings.telegram_notify_chat_id,
-            publisher=publisher,
-            team_note=team_note,
-            directions=directions,
+            plan, article, gateway, workspaces, publisher=publisher
         )
         polling_task = asyncio.create_task(dispatcher.start_polling(bot, handle_signals=False))
         notifications_task = asyncio.create_task(

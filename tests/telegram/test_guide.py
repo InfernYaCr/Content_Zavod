@@ -1,5 +1,5 @@
-"""The Инструкция (#114): slides, the carousel, pictures with their file_id cache and text
-fallback, and the pinned «📌 Как мы работаем»."""
+"""The Инструкция (#114): slides, the carousel, and pictures with their file_id cache and text
+fallback."""
 
 from __future__ import annotations
 
@@ -19,20 +19,12 @@ from content_zavod.telegram.guide import (
     BANNERS,
     CAPTION_LIMIT,
     GUIDE_SLIDES,
-    TEAM_NOTE_KEY,
     Guide,
-    TeamNote,
     build_guide_keyboard,
     build_slides,
     clamp_index,
     example_of,
     parse_slide_id,
-    slides_for,
-)
-from content_zavod.telegram.guide_texts import (
-    TEAM_NOTE,
-    TEAM_NOTE_NOT_PINNED,
-    TEAM_NOTE_POSTED,
 )
 from content_zavod.telegram.settings_screen import SETTING_FIELDS
 from content_zavod.telegram.texts import ONBOARDING_NICHE_QUESTION
@@ -40,8 +32,6 @@ from content_zavod.telegram.texts import ONBOARDING_NICHE_QUESTION
 from .fakes import RecordingBot, button_data, button_texts
 
 CHAT = 7
-TEAM = -100500
-SETTING_KEYS = {"niche", "audience", "persona", "directions", "project", "schedule"}
 
 
 class FakeStore:
@@ -90,12 +80,23 @@ def test_every_caption_fits_a_photo_caption(slide) -> None:
     assert 0 < len(slide.caption) <= CAPTION_LIMIT
 
 
-def test_slide_keys_are_unique_and_cover_the_spec() -> None:
+def test_slides_are_the_owners_feed_in_order() -> None:
+    """#118: one feed for everyone - no Роли, Направления or team slides."""
+    assert [slide.title for slide in GUIDE_SLIDES] == [
+        "🤖 Что делает бот",
+        "🗺 Как я нахожу Темы",
+        "🗓 Как проходит неделя",
+        "🎯 Ниша",
+        "👥 Аудитория",
+        "🎙 Стиль автора",
+        "🔗 Ваш канал или сайт",
+        "🕘 Расписание",
+        "✍️ Предложить Тему",
+        "📄 Карточка Статьи",
+        "❓ Частые вопросы",
+    ]
     keys = [slide.key for slide in GUIDE_SLIDES]
     assert len(keys) == len(set(keys))
-    assert keys[:2] == ["about", "week"]
-    assert keys[-3:] == ["article", "roles", "faq"]
-    assert set(keys[2:-3]) == SETTING_KEYS
 
 
 @pytest.mark.parametrize("name", [slide.key for slide in GUIDE_SLIDES] + list(BANNERS))
@@ -105,14 +106,6 @@ def test_every_picture_is_committed_and_light(name: str) -> None:
     assert path.stat().st_size < 250 * 1024
     width, height = png_size(path)
     assert width >= 800 and width / height <= 2.5
-
-
-def test_a_content_manager_gets_no_settings_slides() -> None:
-    owner = [slide.key for slide in slides_for("owner")]
-    manager = [slide.key for slide in slides_for("content_manager")]
-
-    assert owner == [slide.key for slide in GUIDE_SLIDES]
-    assert manager == ["about", "week", "article", "roles", "faq"]
 
 
 def test_setting_slides_reuse_the_bots_own_words() -> None:
@@ -127,6 +120,8 @@ def test_setting_slides_reuse_the_bots_own_words() -> None:
     assert "фитнес и здоровое питание" in by_key["niche"].caption
     assert "(необязательно)" in by_key["audience"].caption
     assert "(необязательно)" not in by_key["niche"].caption
+    assert "(необязательно)" in by_key["project"].caption
+    assert "✏️ Изменить канал или сайт" in by_key["project"].caption
 
 
 def test_a_setting_this_build_lacks_has_no_slide() -> None:
@@ -167,10 +162,6 @@ def test_a_text_carousels_buttons_remember_it_is_text() -> None:
     markup = build_guide_keyboard(1, 3, text_mode=True)
 
     assert button_data(markup)[0] == ["gs:0t", "gs:1t", "gs:2t"]
-
-
-def test_a_guest_carousel_has_no_menu_button() -> None:
-    assert button_texts(build_guide_keyboard(0, 3, guest=True)) == [["◀", "1/3", "▶"]]
 
 
 # --- pictures: file_id cache and fallbacks ---
@@ -249,34 +240,35 @@ def make_guide(bot: RecordingBot, store: FakeStore | None = None) -> Guide:
 async def test_send_opens_the_carousel_on_the_first_slide() -> None:
     bot = RecordingBot()
 
-    await make_guide(bot).send(CHAT, "content_manager")
+    await make_guide(bot).send(CHAT)
 
     ((chat, photo, caption, markup),) = bot.photos
     assert chat == CHAT and isinstance(photo, BufferedInputFile)
     assert photo.filename == "about.png"
     assert caption == GUIDE_SLIDES[0].caption
-    assert button_texts(markup)[0] == ["◀", "1/5", "▶"]
+    assert button_texts(markup)[0] == ["◀", f"1/{len(GUIDE_SLIDES)}", "▶"]
 
 
 async def test_show_turns_the_page_in_place_with_the_cached_picture() -> None:
     bot, store = RecordingBot(), FakeStore()
     guide = make_guide(bot, store)
 
-    await guide.show(CHAT, 55, "owner", "2")
-    await guide.show(CHAT, 55, "owner", "2")
+    await guide.show(CHAT, 55, "3")
+    await guide.show(CHAT, 55, "3")
 
     (_, message_id, photo, caption, markup), (*_, again, _, _) = bot.edited_media
     assert message_id == 55 and isinstance(photo, BufferedInputFile)
     assert photo.filename == "niche.png"
     assert caption.startswith("🎯 Ниша")
-    assert button_texts(markup)[0][1] == f"3/{len(GUIDE_SLIDES)}"
+    assert button_texts(markup)[0][1] == f"4/{len(GUIDE_SLIDES)}"
     assert again == "file-edit-55"  # the file_id Telegram returned, not a second upload
 
 
-async def test_a_content_managers_stale_index_lands_on_their_last_slide() -> None:
+async def test_a_stale_index_lands_on_the_last_slide() -> None:
+    """A button from a carousel that had more slides (Роли, Направления, #118)."""
     bot = RecordingBot()
 
-    await make_guide(bot).show(CHAT, 55, "content_manager", "9")
+    await make_guide(bot).show(CHAT, 55, "99")
 
     (_, _, photo, caption, _) = bot.edited_media[0]
     assert photo.filename == "faq.png"
@@ -287,15 +279,15 @@ async def test_a_photo_that_cannot_go_sends_a_text_carousel_that_turns_as_text()
     bot = FailingPhotosBot()
     guide = make_guide(bot)
 
-    await guide.send(CHAT, "owner")
+    await guide.send(CHAT)
     ((_, _, markup, _),) = bot.sent
     next_id = button_data(markup)[0][2].removeprefix("gs:")
-    await guide.show(CHAT, 100, "owner", next_id)
+    await guide.show(CHAT, 100, next_id)
 
     assert next_id == "1t"
     assert bot.edited_media == []  # no wasted editMessageMedia (and no upload) on a text one
     ((_, message_id, text, turned),) = bot.edited
-    assert message_id == 100 and text.startswith("🗓")
+    assert message_id == 100 and text.startswith("🗺")
     assert button_data(turned)[0][1] == "gs:1t"
 
 
@@ -306,10 +298,10 @@ async def test_a_photo_carousel_that_turned_out_text_is_redrawn_as_text() -> Non
 
     bot = TextOnlyBot()
 
-    await make_guide(bot).show(CHAT, 55, "owner", "1")
+    await make_guide(bot).show(CHAT, 55, "1")
 
     ((_, message_id, text, markup),) = bot.edited
-    assert message_id == 55 and text.startswith("🗓")
+    assert message_id == 55 and text.startswith("🗺")
     assert button_data(markup)[0][1] == "gs:1t"  # from now on, turned as text
 
 
@@ -317,9 +309,9 @@ async def test_show_sends_a_new_carousel_when_the_old_one_is_gone() -> None:
     bot = RecordingBot()
     bot.fail_edits = True
 
-    await make_guide(bot).show(CHAT, 55, "owner", "1")
+    await make_guide(bot).show(CHAT, 55, "1")
 
-    assert bot.photos[0][2].startswith("🗓")
+    assert bot.photos[0][2].startswith("🗺")
 
 
 async def test_a_gone_message_is_not_reuploaded_to(tmp_path: Path) -> None:
@@ -339,82 +331,6 @@ async def test_a_gone_message_is_not_reuploaded_to(tmp_path: Path) -> None:
     edited = await AssetPhotos(bot, store, directory=directory).edit(CHAT, 55, "about", "x")
 
     assert edited is False and bot.media_attempts == 1
-
-
-async def test_a_guest_sees_the_content_manager_slides_without_the_menu() -> None:
-    bot = RecordingBot()
-
-    await make_guide(bot).send(CHAT, None)
-    await make_guide(bot).show(CHAT, 55, None, "9")
-
-    ((_, _, _, markup),) = bot.photos
-    assert button_texts(markup) == [["◀", "1/5", "▶"]]
-    (_, _, photo, _, turned) = bot.edited_media[0]
-    assert photo.filename == "faq.png" and button_texts(turned) == [["◀", "5/5", "▶"]]
-
-
-# --- TeamNote ---
-
-
-def make_note(bot: RecordingBot, store: FakeStore, username: str | None = "zavod_bot") -> TeamNote:
-    return TeamNote(AssetPhotos(bot, store), bot, store, team_chat_id=TEAM, bot_username=username)
-
-
-async def test_the_note_is_posted_and_pinned_once() -> None:
-    bot, store = RecordingBot(), FakeStore()
-    note = make_note(bot, store)
-
-    await note.ensure()
-    await note.ensure()
-
-    ((chat, _photo, caption, markup),) = bot.photos
-    assert (chat, caption) == (TEAM, TEAM_NOTE)
-    assert markup.inline_keyboard[0][0].url == "https://t.me/zavod_bot?start=guide"
-    assert bot.pinned == [(TEAM, 100)]
-    assert store.values[TEAM_NOTE_KEY] == f"{TEAM}:100"
-
-
-async def test_a_new_team_chat_gets_the_note_again() -> None:
-    bot, store = RecordingBot(), FakeStore({TEAM_NOTE_KEY: "-42:7"})
-
-    await make_note(bot, store).ensure()
-
-    assert len(bot.photos) == 1
-
-
-async def test_no_pin_rights_is_not_an_error() -> None:
-    bot, store = RecordingBot(), FakeStore()
-    bot.fail_pins = True
-
-    assert await make_note(bot, store).post() == TEAM_NOTE_NOT_PINNED
-    assert store.values[TEAM_NOTE_KEY] == f"{TEAM}:100"
-
-
-async def test_post_reports_a_pinned_note() -> None:
-    assert await make_note(RecordingBot(), FakeStore()).post() == TEAM_NOTE_POSTED
-
-
-async def test_ensure_never_fails_the_delivery_it_precedes() -> None:
-    class DeadBot(RecordingBot):
-        async def send_message(self, *args, **kwargs):
-            raise RuntimeError("chat not found")
-
-        async def send_photo(self, *args, **kwargs):
-            raise RuntimeError("chat not found")
-
-    store = FakeStore()
-
-    await make_note(DeadBot(), store).ensure()
-
-    assert TEAM_NOTE_KEY not in store.values  # tried again next time
-
-
-async def test_without_a_username_the_note_opens_the_guide_by_callback() -> None:
-    bot, store = RecordingBot(), FakeStore()
-
-    await make_note(bot, store, username=None).post()
-
-    assert button_data(bot.photos[0][3]) == [["gd:"]]
 
 
 # --- the pictures follow the texts ---

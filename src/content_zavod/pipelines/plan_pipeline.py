@@ -14,6 +14,11 @@ A Wordstat error for one Направление is skipped, but every one of the
 failing fails the Job (#84); "nothing grows" and "every draft was a recent
 repeat" are successes with empty `topics` and an `empty_reason` instead.
 
+Направления lost their screen (#128): the bot is to build its own queries from the Ниша (the
+Niche Map, a later pipeline). Until then a Пространство without stored Направления - every new
+one - gets its Темы drafted by the model from the Ниша (and Аудитория) alone, still checked
+against its recent Темы, with no Wordstat call.
+
 With an Аудитория set (#100), both Тема prompts (selection and regeneration) get a fixed
 system rule about the `audience` field and the reader portrait itself as a delimited
 INPUT_DATA block after the request - never inside the system text. Without one, the prompts
@@ -53,6 +58,7 @@ RECENT_HISTORY_DAYS = 90
 
 # Bumped whenever a step's prompt-building function changes shape (#74).
 _TOPIC_DRAFT_PROMPT_VERSION = "topic-draft-v2"
+_TOPIC_NICHE_PROMPT_VERSION = "topic-niche-v1"
 _TOPIC_REGENERATE_PROMPT_VERSION = "topic-regenerate-v2"
 
 _AUDIENCE_RULE = (
@@ -87,6 +93,17 @@ def _topic_prompt_system(niche: str) -> str:
     )
 
 
+def _niche_topic_prompt_system(niche: str) -> str:
+    return (
+        f"Ты - контент-стратег в Нише «{niche}». Предложи одну Тему для контент-плана "
+        "блога на эту неделю: конкретную и полезную читателю, а не общую. Ответь строго в "
+        "формате:\n"
+        "Title: <заголовок>\n"
+        "Summary: <краткое описание в 1-2 предложения>\n"
+        "Keywords: <ключевые слова через запятую>"
+    )
+
+
 def make_generate_plan_handler(
     keyword_stats: KeywordStats,
     text_generator: TextGenerator,
@@ -106,6 +123,16 @@ def make_generate_plan_handler(
         audience = owner_settings.audience
         directions = seed_keywords if seed_keywords is not None else owner_settings.directions
         recorder = StepRecorder()
+        since = current_time - timedelta(days=RECENT_HISTORY_DAYS)
+        if not directions:
+            used = {title.lower() for title in await recent_topic_titles(workspace_id, since)}
+            topics = await _draft_from_niche(
+                text_generator, recorder, niche, audience, used, topics_per_plan
+            )
+            output = {"week_label": week_label, "topics": topics, "steps": recorder.as_output()}
+            if not topics:
+                output["empty_reason"] = "all_recently_used"
+            return output
 
         growing: list[tuple[float, str]] = []
         errors: list[Exception] = []
@@ -141,7 +168,6 @@ def make_generate_plan_handler(
             raise recorder.fail(outage) from errors[-1]
         growing.sort(key=lambda pair: pair[0], reverse=True)
 
-        since = current_time - timedelta(days=RECENT_HISTORY_DAYS)
         used_titles = {title.lower() for title in await recent_topic_titles(workspace_id, since)}
 
         topics: list[dict[str, Any]] = []
@@ -170,6 +196,50 @@ def make_generate_plan_handler(
         return output
 
     return handle
+
+
+async def _draft_from_niche(
+    text_generator: TextGenerator,
+    recorder: StepRecorder,
+    niche: str,
+    audience: str | None,
+    used_titles: set[str],
+    topics_per_plan: int,
+) -> list[dict[str, Any]]:
+    """Up to `topics_per_plan` Темы from the Ниша alone - one model call each, the ones
+    already drafted named so the next differs. A repeat of a recent Тема is dropped."""
+    # ponytail: a fixed budget of twice the Темы - a model that keeps repeating recent Темы
+    # gives a shorter (or empty) Plan; the Niche Map (#128) replaces this whole path.
+    topics: list[dict[str, Any]] = []
+    try:
+        for _ in range(topics_per_plan * 2):
+            if len(topics) >= topics_per_plan:
+                break
+            taken = "; ".join(f"«{topic['title']}»" for topic in topics)
+            user_text = "Предложи Тему." + (f" Не повторяй эти Темы: {taken}." if taken else "")
+            text = await _complete_step(
+                text_generator,
+                recorder,
+                "topic_draft",
+                _TOPIC_NICHE_PROMPT_VERSION,
+                _with_audience(
+                    [
+                        Message(role="system", text=_niche_topic_prompt_system(niche)),
+                        Message(role="user", text=user_text),
+                    ],
+                    audience,
+                ),
+            )
+            draft = _parse_topic(text, fallback_keyword=niche)
+            if draft.title.lower() in used_titles:
+                continue
+            used_titles.add(draft.title.lower())
+            topics.append(
+                {"title": draft.title, "summary": draft.summary, "keywords": list(draft.keywords)}
+            )
+    except Exception as exc:
+        raise recorder.fail(exc) from exc
+    return topics
 
 
 class PlanItemReader(Protocol):

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncpg
 
-from content_zavod.entrypoints._team_workspace import TeamScoped
 from content_zavod.owner_settings import BotStateStore, WorkspaceSettingsStore
 from content_zavod.settings import OnboardingState
 from tests.tenancy import WS_A, WS_B
@@ -53,15 +52,14 @@ async def test_a_workspaces_settings_are_invisible_to_another(
 
 
 async def test_onboarding_state_is_per_workspace(owner_settings: WorkspaceSettingsStore) -> None:
-    a = OnboardingState(TeamScoped(owner_settings, WS_A))
-    b = OnboardingState(TeamScoped(owner_settings, WS_B))
+    state = OnboardingState(owner_settings)
 
-    await a.begin()
-    assert await a.finish() is True
+    await state.begin(WS_A)
+    assert await state.finish(WS_A) is True
 
-    assert await a.needed() is False
-    assert await b.needed() is True
-    assert await b.finish() is True
+    assert await state.needed(WS_A) is False
+    assert await state.needed(WS_B) is True
+    assert await state.finish(WS_B) is True
 
 
 async def test_bot_state_is_one_store_for_the_whole_bot(pool: asyncpg.Pool) -> None:

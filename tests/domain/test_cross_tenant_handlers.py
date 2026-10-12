@@ -30,7 +30,7 @@ from content_zavod.pipelines import (
     make_regenerate_article_handler,
     make_regenerate_topic_handler,
 )
-from content_zavod.settings import WorkspaceSettingsReader
+from content_zavod.settings import SettingsService
 from content_zavod.workspaces import WorkspaceId
 from content_zavod.yandex import Completion, Message
 from tests.tenancy import WS_A, WS_B
@@ -80,7 +80,7 @@ async def test_regenerate_topic_of_a_finds_no_topic_of_b(
     b = await _content(pool, plan, article, WS_B)
     text_generator = RecordingTextGenerator()
     handler = make_regenerate_topic_handler(
-        plan, text_generator, WorkspaceSettingsReader(WorkspaceSettingsStore(pool))
+        plan, text_generator, SettingsService(WorkspaceSettingsStore(pool))
     )
     payload = {"plan_item_id": b.item_id, "comment": None}
 
@@ -103,7 +103,7 @@ async def test_regenerate_article_of_a_finds_no_article_of_b(
         plan,
         text_generator,
         TopicResearcher(None, page_fetcher, TopicResearchStore(pool)),
-        WorkspaceSettingsReader(WorkspaceSettingsStore(pool)),
+        SettingsService(WorkspaceSettingsStore(pool)),
     )
     payload = {"article_id": b.article_id, "comment": None}
 

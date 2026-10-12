@@ -5,6 +5,7 @@ from __future__ import annotations
 from content_zavod.domain import PLATFORMS, PlanId, PlanItemId
 from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.telegram.callback_dispatcher import _generate_articles_for_approved_plan
+from tests.tenancy import WS_A
 
 
 class FakePlan:
@@ -12,10 +13,10 @@ class FakePlan:
         self._items = items
         self.cover_requests: list[PlanItemId] = []
 
-    async def approved_items(self, plan_id: PlanId) -> list[PlanItemDetail]:
+    async def approved_items(self, workspace_id, plan_id: PlanId) -> list[PlanItemDetail]:
         return self._items
 
-    async def request_cover(self, plan_item_id: PlanItemId) -> None:
+    async def request_cover(self, workspace_id, plan_item_id: PlanItemId) -> None:
         self.cover_requests.append(plan_item_id)
 
 
@@ -25,6 +26,7 @@ class FakeArticle:
 
     async def request_generation(
         self,
+        workspace_id,
         plan_id: PlanId,
         plan_item_id: PlanItemId,
         title: str,
@@ -43,7 +45,7 @@ async def test_requests_generation_for_every_approved_item_and_platform() -> Non
     ]
     plan, article = FakePlan(items), FakeArticle()
 
-    await _generate_articles_for_approved_plan(plan, article, PlanId("plan-1"))
+    await _generate_articles_for_approved_plan(plan, article, WS_A, PlanId("plan-1"))
 
     assert article.requested == [
         (PlanId("plan-1"), PlanItemId("item-1"), "Topic A", "s1", ["k1"], platform)
@@ -61,7 +63,7 @@ async def test_requests_one_cover_per_approved_item_regardless_of_platform_count
     ]
     plan, article = FakePlan(items), FakeArticle()
 
-    await _generate_articles_for_approved_plan(plan, article, PlanId("plan-1"))
+    await _generate_articles_for_approved_plan(plan, article, WS_A, PlanId("plan-1"))
 
     assert plan.cover_requests == [PlanItemId("item-1"), PlanItemId("item-2")]
 
@@ -69,7 +71,7 @@ async def test_requests_one_cover_per_approved_item_regardless_of_platform_count
 async def test_no_approved_items_means_no_generation_requested() -> None:
     plan, article = FakePlan([]), FakeArticle()
 
-    await _generate_articles_for_approved_plan(plan, article, PlanId("plan-1"))
+    await _generate_articles_for_approved_plan(plan, article, WS_A, PlanId("plan-1"))
 
     assert article.requested == []
     assert plan.cover_requests == []
