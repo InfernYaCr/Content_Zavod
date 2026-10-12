@@ -24,17 +24,6 @@ import asyncpg
 
 from ..workspaces import WorkspaceId
 
-# shortcut: the unit is derived from the step name until the pipelines' StepRecord carries
-# its own `unit`/`quantity` (PR 2 of #118, which also starts recording Wordstat requests).
-_UNIT_BY_STEP_NAME = {"cover": "image", "research_search": "search_request"}
-
-
-def _unit_and_quantity(step: dict[str, Any]) -> tuple[str, int | None]:
-    if "unit" in step:
-        return step["unit"], step.get("quantity")
-    unit = _UNIT_BY_STEP_NAME.get(step["step_name"], "tokens")
-    return unit, step["tokens"] if unit == "tokens" else 1
-
 
 @dataclass(frozen=True)
 class GenerationStepView:
@@ -69,6 +58,20 @@ class JobCostSummary:
     total: float
     complete: bool
     step_count: int
+
+
+@dataclass(frozen=True)
+class UnitUsage:
+    """A Пространство's spend in one `unit` over a period (ADR-0015, «Учёт расхода»).
+
+    `quantity` leaves out steps whose provider reported no usage, and `cost` those with no
+    configured price - `complete` is False when any step in the period had an unknown cost.
+    """
+
+    unit: str
+    quantity: int
+    cost: float
+    complete: bool
 
 
 class GenerationSteps:
@@ -110,7 +113,8 @@ class GenerationSteps:
                     step["latency_ms"],
                     step["cost"],
                     workspace_id,
-                    *_unit_and_quantity(step),
+                    step["unit"],
+                    step["quantity"],
                 )
                 for step in steps
             ],
@@ -135,6 +139,31 @@ class GenerationSteps:
             complete=row["missing"] == 0,
             step_count=row["step_count"],
         )
+
+    async def usage_for(self, workspace_id: WorkspaceId, since: datetime) -> list[UnitUsage]:
+        rows = await self._pool.fetch(
+            """
+            SELECT unit,
+                COALESCE(SUM(quantity), 0) AS quantity,
+                COALESCE(SUM(cost), 0) AS cost,
+                COUNT(*) FILTER (WHERE cost IS NULL) AS missing
+            FROM generation_steps
+            WHERE workspace_id = $1 AND created_at >= $2
+            GROUP BY unit
+            ORDER BY unit
+            """,
+            workspace_id,
+            since,
+        )
+        return [
+            UnitUsage(
+                unit=row["unit"],
+                quantity=row["quantity"],
+                cost=float(row["cost"]),
+                complete=row["missing"] == 0,
+            )
+            for row in rows
+        ]
 
     async def list_for_article(
         self, workspace_id: WorkspaceId, article_id: str

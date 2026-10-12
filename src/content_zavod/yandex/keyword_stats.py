@@ -41,6 +41,13 @@ class KeywordStat:
 
 
 @dataclass(frozen=True)
+class KeywordStatsUsage:
+    stats: dict[str, KeywordStat]
+    # Real Wordstat requests sent, answered or not - the Учёт расхода counts these.
+    requests: int
+
+
+@dataclass(frozen=True)
 class KeywordDynamicsPoint:
     date: str
     count: int
@@ -96,12 +103,18 @@ class KeywordStats:
         )
 
     async def keyword_stats(self, keywords: list[str]) -> dict[str, KeywordStat]:
+        return (await self.keyword_stats_with_usage(keywords)).stats
+
+    async def keyword_stats_with_usage(self, keywords: list[str]) -> KeywordStatsUsage:
+        """`keyword_stats`, plus how many real requests it took - a cache hit is none."""
         result: dict[str, KeywordStat] = {}
+        requests = 0
         for keyword in keywords:
             cached = self._cached(keyword)
             if cached is not None:
                 result[keyword] = cached
                 continue
+            requests += 1
             try:
                 stat = await self._fetch(keyword)
             except Exception:
@@ -109,7 +122,7 @@ class KeywordStats:
                 continue
             self._cache[keyword] = (self._clock(), stat)
             result[keyword] = stat
-        return result
+        return KeywordStatsUsage(stats=result, requests=requests)
 
     async def keyword_dynamics(
         self,

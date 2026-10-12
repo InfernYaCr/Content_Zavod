@@ -9,8 +9,9 @@ from content_zavod.pipelines.article_pipeline import (
     make_regenerate_article_handler,
 )
 from content_zavod.pipelines.topic_research import TopicResearcher
-from content_zavod.settings import SettingsService
+from content_zavod.settings import WorkspaceSettingsReader
 from content_zavod.yandex import Completion, Message
+from tests.tenancy import WS_A
 
 from .research_fakes import FakePageFetcher, FakeSearch, InMemoryResearchCache, page
 
@@ -37,7 +38,7 @@ class FakeArticleReader:
         self._view = view
         self.requested: list[ArticleId] = []
 
-    async def get(self, article_id: ArticleId) -> ArticleView:
+    async def get(self, workspace_id: int, article_id: ArticleId) -> ArticleView:
         self.requested.append(article_id)
         return self._view
 
@@ -51,7 +52,7 @@ class FakePlanItemReader:
         self._title = title
         self.requested: list[PlanItemId] = []
 
-    async def get_item(self, plan_item_id: PlanItemId) -> PlanItemDetail:
+    async def get_item(self, workspace_id: int, plan_item_id: PlanItemId) -> PlanItemDetail:
         self.requested.append(plan_item_id)
         return PlanItemDetail(
             id=plan_item_id, title=self._title, summary=self._summary, keywords=self._keywords
@@ -59,10 +60,10 @@ class FakePlanItemReader:
 
 
 class FakeOwnerSettingsStore:
-    """`SettingsService.read()` fetches niche/directions/persona together, so this
+    """`WorkspaceSettingsReader.read()` fetches niche/directions/persona together, so this
     store must answer all three keys, not just the one this test module cares
     about - only `voice` (Персона) is ever overridden here, everything else falls
-    back to `SettingsService`'s own defaults."""
+    back to `WorkspaceSettingsReader`'s own defaults."""
 
     def __init__(
         self, persona: str | None = None, project: str | None = None, audience: str | None = None
@@ -71,7 +72,7 @@ class FakeOwnerSettingsStore:
         self._project = project
         self.audience = audience
 
-    async def get(self, key: str) -> str | None:
+    async def get(self, workspace_id: int, key: str) -> str | None:
         return {"voice": self._persona, "project": self._project, "audience": self.audience}.get(
             key
         )
@@ -155,10 +156,10 @@ async def test_generate_article_writes_from_evidence_and_lists_only_cited_bundle
     )
     text_generator = ScriptedTextGenerator(_evidence_completions(rewrite))
     handler = make_generate_article_handler(
-        text_generator, _evidence_researcher(), SettingsService(FakeOwnerSettingsStore())
+        text_generator, _evidence_researcher(), WorkspaceSettingsReader(FakeOwnerSettingsStore())
     )
 
-    output = await handler({**_PAYLOAD, "title": "Как выбрать CRM", "platform": "zen"})
+    output = await handler(WS_A, {**_PAYLOAD, "title": "Как выбрать CRM", "platform": "zen"})
 
     assert output["content"] == (
         "Почти половина малых компаний уже работает с CRM [1]. Внедрение занимает недели "
@@ -193,10 +194,10 @@ async def test_marker_spelling_variants_are_numbered_and_heading_markers_dropped
     )
     text_generator = ScriptedTextGenerator(_evidence_completions(rewrite))
     handler = make_generate_article_handler(
-        text_generator, _evidence_researcher(), SettingsService(FakeOwnerSettingsStore())
+        text_generator, _evidence_researcher(), WorkspaceSettingsReader(FakeOwnerSettingsStore())
     )
 
-    output = await handler(_PAYLOAD)
+    output = await handler(WS_A, _PAYLOAD)
 
     assert output["content"] == (
         "## Рынок CRM\n\n"
@@ -211,10 +212,10 @@ async def test_unknown_evidence_markers_are_dropped_and_unmarked_text_lists_all_
         _evidence_completions("Текст без маркеров, но с выдуманным [E9].")
     )
     handler = make_generate_article_handler(
-        text_generator, _evidence_researcher(), SettingsService(FakeOwnerSettingsStore())
+        text_generator, _evidence_researcher(), WorkspaceSettingsReader(FakeOwnerSettingsStore())
     )
 
-    output = await handler(_PAYLOAD)
+    output = await handler(WS_A, _PAYLOAD)
 
     assert output["content"] == (
         "Текст без маркеров, но с выдуманным.\n\nИсточники:\n"
@@ -226,10 +227,10 @@ async def test_unknown_evidence_markers_are_dropped_and_unmarked_text_lists_all_
 async def test_without_evidence_the_text_stays_clean_and_the_status_is_reported() -> None:
     text_generator = ScriptedTextGenerator(_plain_completions("Body https://x.example/a only."))
     handler = make_generate_article_handler(
-        text_generator, _no_evidence_researcher(), SettingsService(FakeOwnerSettingsStore())
+        text_generator, _no_evidence_researcher(), WorkspaceSettingsReader(FakeOwnerSettingsStore())
     )
 
-    output = await handler(_PAYLOAD)
+    output = await handler(WS_A, _PAYLOAD)
 
     # No note inside the text - it would be exported/published; the card shows the status.
     assert output["content"] == "Body only."
@@ -244,10 +245,10 @@ async def test_failed_search_runs_in_no_evidence_mode_with_its_own_status() -> N
     researcher = TopicResearcher(FakeSearch(error=RuntimeError("403")), FakePageFetcher())
     text_generator = ScriptedTextGenerator(_plain_completions("Body."))
     handler = make_generate_article_handler(
-        text_generator, researcher, SettingsService(FakeOwnerSettingsStore())
+        text_generator, researcher, WorkspaceSettingsReader(FakeOwnerSettingsStore())
     )
 
-    output = await handler(_PAYLOAD)
+    output = await handler(WS_A, _PAYLOAD)
 
     assert output["content"] == "Body."
     assert output["research_status"] == "search_unavailable"
@@ -261,11 +262,11 @@ async def test_second_platform_reuses_the_topic_research_and_outline() -> None:
         [*_evidence_completions("Дзен [E1]."), _completion("vc draft"), _completion("VC [E1].")]
     )
     handler = make_generate_article_handler(
-        text_generator, researcher, SettingsService(FakeOwnerSettingsStore())
+        text_generator, researcher, WorkspaceSettingsReader(FakeOwnerSettingsStore())
     )
 
-    await handler({**_PAYLOAD, "article_id": "zen", "platform": "zen"})
-    vc = await handler({**_PAYLOAD, "article_id": "vc", "platform": "vc"})
+    await handler(WS_A, {**_PAYLOAD, "article_id": "zen", "platform": "zen"})
+    vc = await handler(WS_A, {**_PAYLOAD, "article_id": "vc", "platform": "vc"})
 
     assert [s["step_name"] for s in vc["steps"]] == ["draft", "rewrite"]
     assert vc["content"] == f"VC [1].\n\nИсточники:\n1. Опрос о CRM — {_PAGE_A}"
@@ -277,10 +278,10 @@ async def test_second_platform_reuses_the_topic_research_and_outline() -> None:
 async def test_shared_outline_is_platform_neutral() -> None:
     text_generator = ScriptedTextGenerator(_plain_completions())
     handler = make_generate_article_handler(
-        text_generator, _no_evidence_researcher(), SettingsService(FakeOwnerSettingsStore())
+        text_generator, _no_evidence_researcher(), WorkspaceSettingsReader(FakeOwnerSettingsStore())
     )
 
-    await handler(_PAYLOAD)
+    await handler(WS_A, _PAYLOAD)
 
     outline_system = text_generator.calls[0][0].text
     assert "PLATFORM_PROFILE" not in outline_system
@@ -301,12 +302,12 @@ async def test_audience_reaches_draft_and_rewrite_as_input_data_but_not_the_cach
         [*_plain_completions(), _completion("draft 2"), _completion("rewrite 2")]
     )
     handler = make_generate_article_handler(
-        text_generator, _no_evidence_researcher(cache), SettingsService(store)
+        text_generator, _no_evidence_researcher(cache), WorkspaceSettingsReader(store)
     )
 
-    first = await handler(_PAYLOAD)
+    first = await handler(WS_A, _PAYLOAD)
     store.audience = "Студенты-маркетологи"
-    second = await handler({**_PAYLOAD, "article_id": "b", "platform": "zen"})
+    second = await handler(WS_A, {**_PAYLOAD, "article_id": "b", "platform": "zen"})
 
     outline_call, draft_call, rewrite_call, draft_2, rewrite_2 = text_generator.calls
     assert "audience" not in outline_call[0].text + outline_call[1].text
@@ -325,15 +326,16 @@ async def test_audience_reaches_draft_and_rewrite_as_input_data_but_not_the_cach
 async def test_generate_article_uses_a_stricter_evidence_rule_for_money_or_legal_topics() -> None:
     text_generator = ScriptedTextGenerator(_plain_completions())
     handler = make_generate_article_handler(
-        text_generator, _no_evidence_researcher(), SettingsService(FakeOwnerSettingsStore())
+        text_generator, _no_evidence_researcher(), WorkspaceSettingsReader(FakeOwnerSettingsStore())
     )
 
     await handler(
+        WS_A,
         {
             **_PAYLOAD,
             "title": "Как получить ипотека без первоначального взноса",
             "keywords": ["кредит"],
-        }
+        },
     )
 
     assert "денег или права" in text_generator.calls[1][0].text
@@ -343,10 +345,10 @@ async def test_generate_article_uses_a_stricter_evidence_rule_for_money_or_legal
 async def test_generate_article_asks_the_model_for_markdown_formatting_in_every_step() -> None:
     text_generator = ScriptedTextGenerator(_plain_completions())
     handler = make_generate_article_handler(
-        text_generator, _no_evidence_researcher(), SettingsService(FakeOwnerSettingsStore())
+        text_generator, _no_evidence_researcher(), WorkspaceSettingsReader(FakeOwnerSettingsStore())
     )
 
-    await handler(_PAYLOAD)
+    await handler(WS_A, _PAYLOAD)
 
     for system, _ in text_generator.calls:
         assert "markdown" in system.text.lower()
@@ -368,10 +370,10 @@ async def test_regenerate_article_refines_the_current_version_without_its_append
         FakePlanItemReader(),
         text_generator,
         _no_evidence_researcher(),
-        SettingsService(FakeOwnerSettingsStore()),
+        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
     )
 
-    output = await handler({"article_id": "article-1", "comment": "shorter please"})
+    output = await handler(WS_A, {"article_id": "article-1", "comment": "shorter please"})
 
     assert article_reader.requested == ["article-1"]
     assert output["content"] == "new body"
@@ -387,9 +389,9 @@ async def test_regenerate_article_reuses_the_topic_research_cached_at_generation
     text_generator = ScriptedTextGenerator(
         [*_evidence_completions("Дзен [E1]."), _completion("draft 2"), _completion("Новый [E2].")]
     )
-    settings = SettingsService(FakeOwnerSettingsStore())
+    settings = WorkspaceSettingsReader(FakeOwnerSettingsStore())
     generate = make_generate_article_handler(text_generator, researcher, settings)
-    await generate({**_PAYLOAD, "title": "Как выбрать CRM", "platform": "zen"})
+    await generate(WS_A, {**_PAYLOAD, "title": "Как выбрать CRM", "platform": "zen"})
     view = ArticleView(
         id="a", plan_item_id="item-1", title="Как выбрать CRM", platform="zen", content=b"old"
     )
@@ -401,7 +403,7 @@ async def test_regenerate_article_reuses_the_topic_research_cached_at_generation
         settings,
     )
 
-    output = await regenerate({"article_id": "a", "comment": None})
+    output = await regenerate(WS_A, {"article_id": "a", "comment": None})
 
     assert [s["step_name"] for s in output["steps"]] == ["draft", "rewrite"]
     assert output["content"] == f"Новый [1].\n\nИсточники:\n1. Советы по CRM — {_PAGE_B}"
@@ -424,10 +426,10 @@ async def test_regenerate_article_carries_the_comment_and_topic_brief_through_dr
         item_reader,
         text_generator,
         _no_evidence_researcher(),
-        SettingsService(FakeOwnerSettingsStore()),
+        WorkspaceSettingsReader(FakeOwnerSettingsStore()),
     )
 
-    await handler({"article_id": "article-1", "comment": "убери воду про CRM"})
+    await handler(WS_A, {"article_id": "article-1", "comment": "убери воду про CRM"})
 
     assert item_reader.requested == ["item-1"]
     outline_input = text_generator.calls[0][1].text
@@ -444,10 +446,10 @@ async def test_regenerate_article_carries_the_comment_and_topic_brief_through_dr
 async def test_generate_article_without_a_comment_does_not_mention_editor_edits() -> None:
     text_generator = ScriptedTextGenerator(_plain_completions())
     handler = make_generate_article_handler(
-        text_generator, _no_evidence_researcher(), SettingsService(FakeOwnerSettingsStore())
+        text_generator, _no_evidence_researcher(), WorkspaceSettingsReader(FakeOwnerSettingsStore())
     )
 
-    await handler({"article_id": "a", "title": "T", "platform": "vc"})
+    await handler(WS_A, {"article_id": "a", "title": "T", "platform": "vc"})
 
     for system, _ in text_generator.calls:
         assert "обязательные правки редактора" not in system.text
@@ -457,10 +459,12 @@ async def test_generate_article_without_a_comment_does_not_mention_editor_edits(
 async def test_generate_article_uses_default_voice_when_no_override_is_stored() -> None:
     text_generator = ScriptedTextGenerator(_plain_completions())
     handler = make_generate_article_handler(
-        text_generator, _no_evidence_researcher(), SettingsService(FakeOwnerSettingsStore(None))
+        text_generator,
+        _no_evidence_researcher(),
+        WorkspaceSettingsReader(FakeOwnerSettingsStore(None)),
     )
 
-    await handler(_PAYLOAD)
+    await handler(WS_A, _PAYLOAD)
 
     assert "маркетолог-практик" in text_generator.calls[1][0].text.lower()
     assert "маркетолог-практик" in text_generator.calls[2][0].text.lower()
@@ -472,10 +476,10 @@ async def test_generate_article_expands_stored_custom_persona_into_the_system_pr
     handler = make_generate_article_handler(
         text_generator,
         _no_evidence_researcher(),
-        SettingsService(FakeOwnerSettingsStore("технооптимист-фаундер")),
+        WorkspaceSettingsReader(FakeOwnerSettingsStore("технооптимист-фаундер")),
     )
 
-    await handler(_PAYLOAD)
+    await handler(WS_A, _PAYLOAD)
 
     # ADR-0010: a Custom Персона is trusted and expands into the system message
     # the same way a Preset does, not into INPUT_DATA.
@@ -489,10 +493,12 @@ async def test_generate_article_expands_stored_custom_persona_into_the_system_pr
 async def test_generate_article_applies_distinct_platform_profile() -> None:
     text_generator = ScriptedTextGenerator(_plain_completions())
     handler = make_generate_article_handler(
-        text_generator, _no_evidence_researcher(), SettingsService(FakeOwnerSettingsStore(None))
+        text_generator,
+        _no_evidence_researcher(),
+        WorkspaceSettingsReader(FakeOwnerSettingsStore(None)),
     )
 
-    await handler({"article_id": "a", "title": "T", "platform": "vc"})
+    await handler(WS_A, {"article_id": "a", "title": "T", "platform": "vc"})
 
     for step in text_generator.calls[1:3]:
         assert "VC.ru" in step[0].text
@@ -511,10 +517,10 @@ async def test_regeneration_comment_is_delimited_input_data() -> None:
         FakePlanItemReader(),
         text_generator,
         _no_evidence_researcher(),
-        SettingsService(FakeOwnerSettingsStore(None)),
+        WorkspaceSettingsReader(FakeOwnerSettingsStore(None)),
     )
 
-    await handler({"article_id": "article-1", "comment": attack})
+    await handler(WS_A, {"article_id": "article-1", "comment": attack})
 
     assert "INPUT_DATA" in text_generator.calls[1][1].text
     assert attack in text_generator.calls[1][1].text
@@ -526,14 +532,14 @@ async def test_generate_article_reads_persona_fresh_on_each_run_without_being_re
     text_generator = ScriptedTextGenerator(_plain_completions() * 2)
     store = FakeOwnerSettingsStore(None)
     handler = make_generate_article_handler(
-        text_generator, _no_evidence_researcher(), SettingsService(store)
+        text_generator, _no_evidence_researcher(), WorkspaceSettingsReader(store)
     )
 
-    await handler({**_PAYLOAD, "plan_item_id": None})
+    await handler(WS_A, {**_PAYLOAD, "plan_item_id": None})
     assert "маркетолог-практик" in text_generator.calls[1][0].text.lower()
 
     store._persona = "технооптимист-фаундер"
-    await handler({**_PAYLOAD, "article_id": "b", "plan_item_id": None})
+    await handler(WS_A, {**_PAYLOAD, "article_id": "b", "plan_item_id": None})
     assert "технооптимист-фаундер" in text_generator.calls[4][0].text
 
 
@@ -548,10 +554,10 @@ async def test_generate_article_reports_provenance_for_every_step_including_sear
         ]
     )
     handler = make_generate_article_handler(
-        text_generator, researcher, SettingsService(FakeOwnerSettingsStore())
+        text_generator, researcher, WorkspaceSettingsReader(FakeOwnerSettingsStore())
     )
 
-    output = await handler(_PAYLOAD)
+    output = await handler(WS_A, _PAYLOAD)
 
     steps = output["steps"]
     assert [step["step_name"] for step in steps] == [
@@ -582,10 +588,10 @@ async def test_version_cost_is_unknown_when_search_pricing_is_not_configured() -
         ]
     )
     handler = make_generate_article_handler(
-        text_generator, _no_evidence_researcher(), SettingsService(FakeOwnerSettingsStore())
+        text_generator, _no_evidence_researcher(), WorkspaceSettingsReader(FakeOwnerSettingsStore())
     )
 
-    output = await handler(_PAYLOAD)
+    output = await handler(WS_A, _PAYLOAD)
 
     assert output["tokens"] == 21
     assert output["cost"] is None
@@ -597,10 +603,10 @@ async def test_generate_article_step_cost_stays_unknown_not_zero_when_usage_is_m
         [_completion("outline", usage_missing=True, cost=None), _completion("d"), _completion("r")]
     )
     handler = make_generate_article_handler(
-        text_generator, _no_evidence_researcher(), SettingsService(FakeOwnerSettingsStore())
+        text_generator, _no_evidence_researcher(), WorkspaceSettingsReader(FakeOwnerSettingsStore())
     )
 
-    output = await handler(_PAYLOAD)
+    output = await handler(WS_A, _PAYLOAD)
 
     outline_step = output["steps"][1]
     assert outline_step["step_name"] == "outline"
@@ -622,11 +628,11 @@ async def test_generate_article_failure_partway_through_preserves_completed_step
         ]
     )
     handler = make_generate_article_handler(
-        text_generator, _no_evidence_researcher(), SettingsService(FakeOwnerSettingsStore())
+        text_generator, _no_evidence_researcher(), WorkspaceSettingsReader(FakeOwnerSettingsStore())
     )
 
     with pytest.raises(JobPartialFailure) as excinfo:
-        await handler(_PAYLOAD)
+        await handler(WS_A, _PAYLOAD)
 
     steps = excinfo.value.partial_output["steps"]
     assert [step["step_name"] for step in steps] == ["research_search", "outline", "draft"]
@@ -642,8 +648,10 @@ async def _generate_with_project(rewrite: str, *, evidence: bool = False) -> tup
     text_generator = ScriptedTextGenerator(completions)
     store = FakeOwnerSettingsStore(project=f"{_PROJECT_URL} Разборы кейсов по маркетингу.")
     researcher = _evidence_researcher() if evidence else _no_evidence_researcher()
-    handler = make_generate_article_handler(text_generator, researcher, SettingsService(store))
-    output = await handler({"article_id": "a", "title": "T", "platform": "zen"})
+    handler = make_generate_article_handler(
+        text_generator, researcher, WorkspaceSettingsReader(store)
+    )
+    output = await handler(WS_A, {"article_id": "a", "title": "T", "platform": "zen"})
     return output["content"], text_generator.calls
 
 

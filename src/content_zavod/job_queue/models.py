@@ -12,8 +12,10 @@ JobId = int
 
 JobStatus = Literal["queued", "running", "done", "failed"]
 
-# A handler receives the job's payload and returns its output, or raises to signal failure.
-JobHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+# A handler receives the Job's own Workspace and its payload and returns its output, or raises
+# to signal failure. Everything a handler reads is that Workspace's - never one named in the
+# payload (ADR-0015).
+JobHandler = Callable[[WorkspaceId, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 @dataclass(frozen=True)

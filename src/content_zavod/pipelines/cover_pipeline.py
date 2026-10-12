@@ -11,6 +11,7 @@ import base64
 from typing import Any
 
 from ..job_queue import JobHandler
+from ..workspaces import WorkspaceId
 from ..yandex import ImageGenerator
 from .provenance import StepRecord, StepRecorder, prompt_hash
 
@@ -19,7 +20,8 @@ _COVER_PROMPT_VERSION = "cover-v1"
 
 
 def make_generate_cover_handler(image_generator: ImageGenerator) -> JobHandler:
-    async def handle(payload: dict[str, Any]) -> dict[str, Any]:
+    async def handle(workspace_id: WorkspaceId, payload: dict[str, Any]) -> dict[str, Any]:
+        # Reads nothing stored: the Тема's title and summary travel in the payload.
         title = payload["title"]
         summary = payload.get("summary") or ""
         plan_item_id = payload["plan_item_id"]
@@ -41,6 +43,8 @@ def make_generate_cover_handler(image_generator: ImageGenerator) -> JobHandler:
                 usage_missing=False,
                 latency_ms=generated.latency_ms,
                 cost=generated.cost,
+                unit="image",
+                quantity=1,
             )
         )
         return {

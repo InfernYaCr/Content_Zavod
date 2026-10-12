@@ -1,6 +1,8 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
-from content_zavod.domain import Article, GenerationSteps, Plan, TopicDraft
+from content_zavod.domain import Article, GenerationSteps, Plan, TopicDraft, UnitUsage
 from content_zavod.job_queue import JobQueue
 from tests.tenancy import WS_A, WS_B
 
@@ -15,6 +17,8 @@ _STEP = {
     "usage_missing": False,
     "latency_ms": 120,
     "cost": 0.05,
+    "unit": "tokens",
+    "quantity": 42,
 }
 
 
@@ -152,8 +156,9 @@ async def test_record_many_books_each_step_in_its_unit(
         article_id=None,
         steps=[
             _STEP,
-            {**_STEP, "step_name": "research_search", "tokens": None},
-            {**_STEP, "step_name": "cover", "tokens": None},
+            {**_STEP, "tokens": None, "unit": "search_request", "quantity": 1},
+            {**_STEP, "tokens": None, "unit": "image", "quantity": 1},
+            {**_STEP, "tokens": None, "cost": None, "unit": "wordstat_request", "quantity": 3},
         ],
     )
 
@@ -162,5 +167,34 @@ async def test_record_many_books_each_step_in_its_unit(
         ("tokens", 42),
         ("search_request", 1),
         ("image", 1),
+        ("wordstat_request", 3),
     ]
     assert await generation_steps.list_for_job(WS_B, job_id) == []
+
+
+async def test_usage_for_sums_one_workspaces_spend_per_unit_since_a_moment(
+    queue: JobQueue, generation_steps: GenerationSteps
+) -> None:
+    job_a = await _enqueue_job(queue, "job-1")
+    job_b = await queue.enqueue(WS_B, "generate_article", {}, idempotency_key="job-1")
+    for workspace_id, job_id in ((WS_A, job_a), (WS_B, job_b)):
+        await generation_steps.record_many(
+            workspace_id,
+            job_id=job_id,
+            job_type="generate_article",
+            article_id=None,
+            steps=[
+                _STEP,
+                {**_STEP, "cost": 0.1, "quantity": 8},
+                {**_STEP, "tokens": None, "cost": None, "unit": "wordstat_request", "quantity": 2},
+            ],
+        )
+    since = datetime.now(UTC) - timedelta(hours=1)
+
+    usage = await generation_steps.usage_for(WS_A, since)
+
+    assert usage == [
+        UnitUsage(unit="tokens", quantity=50, cost=pytest.approx(0.15), complete=True),
+        UnitUsage(unit="wordstat_request", quantity=2, cost=0.0, complete=False),
+    ]
+    assert await generation_steps.usage_for(WS_A, datetime.now(UTC) + timedelta(hours=1)) == []
