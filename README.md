@@ -17,7 +17,7 @@ MVP в разработке. Реализовано:
 - **Планировщик** (`src/content_zavod/scheduling/`) — еженедельный триггер `generate_plan`.
 - **Точки входа** (`bot_main.py`, `worker_main.py`) — два процесса по ADR-0004, см. «Локальный запуск» ниже.
 
-Ещё не реализовано (см. открытые issues в трекере): деплой на VPS.
+Запуск в Docker (на VPS или своём компьютере) — см. «Развернуть на VPS за 10 минут» ниже.
 
 ## Локальный запуск
 
@@ -30,25 +30,208 @@ MVP в разработке. Реализовано:
    uv run python bot_main.py
    uv run python worker_main.py
    ```
-4. Зарегистрировать свой `telegram_id` в allowlist (пока без отдельной команды/CLI — напрямую через Membership):
+4. Зарегистрировать свой `telegram_id` Владельцем в allowlist (замените число на свой id):
    ```bash
-   uv run python -c "
-   import asyncio, asyncpg
-   from content_zavod.access import Membership
-   from content_zavod.config import load_settings
-
-   async def main():
-       settings = load_settings()
-       pool = await asyncpg.create_pool(dsn=settings.postgres_dsn)
-       membership = Membership(pool)
-       await membership.ensure_schema()
-       await membership.add_member(123456789, 'owner')  # замените на свой telegram_id
-       await pool.close()
-
-   asyncio.run(main())
-   "
+   uv run python scripts/add_owner.py 123456789
    ```
 5. Проверить: бот отвечает незарегистрированному `telegram_id` отказом; после регистрации — `/topic <текст>` кладёт Тему в План и присылает её с кнопками; воркер разбирает `generate_plan`/`regenerate_topic`/`generate_article`/`generate_cover` из очереди и результат приходит в `TELEGRAM_NOTIFY_CHAT_ID`.
+
+## Развернуть на VPS за 10 минут
+
+Всё работает в Docker: три контейнера — база Postgres, бот и воркер. Они сами перезапускаются
+после сбоя и после перезагрузки сервера, база хранится в отдельном томе Docker и переживает
+обновления.
+
+**Что понадобится**
+
+- VPS с Ubuntu 22.04 или 24.04 (хватит 2 vCPU / 4 ГБ), доступ по SSH под `root`.
+- Токен Telegram-бота от `@BotFather` и id чата для результатов (`TELEGRAM_NOTIFY_CHAT_ID`).
+  Проще всего — ваш же Telegram id (см. ниже): результаты будут приходить вам в личный чат с
+  ботом. Для общего чата команды — см. подсказку в `.env.example`.
+- Yandex Cloud: id каталога и API-ключ сервисного аккаунта (или OAuth-токен).
+- Свой Telegram id (число) — узнать можно, например, у бота `@userinfobot`.
+
+> **Секреты — только в файле `.env` на сервере.** Не присылайте токены и ключи в чаты, не
+> вставляйте их в issues и не коммитьте в git. Если секрет утёк — перевыпустите его
+> (`@BotFather` → `/revoke`, новый ключ в Yandex Cloud) и поменяйте в `.env`.
+
+**1. Подключиться к серверу** (с вашего компьютера; IP — из письма хостинга):
+
+```bash
+ssh root@IP_СЕРВЕРА
+```
+
+**2. Установить Docker** (официальный apt-репозиторий, по
+[docs.docker.com](https://docs.docker.com/engine/install/ubuntu/)) — скопировать целиком:
+
+```bash
+sudo apt update
+sudo apt install -y ca-certificates curl git
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo docker run hello-world
+```
+
+Последняя команда должна напечатать «Hello from Docker!».
+
+**3. Скачать проект:**
+
+```bash
+git clone https://github.com/InfernYaCr/Content_Zavod.git /opt/content-zavod
+cd /opt/content-zavod
+```
+
+Дальше все команды — из папки `/opt/content-zavod`.
+
+**4. Заполнить настройки:**
+
+```bash
+cp .env.example .env
+chmod 600 .env
+openssl rand -hex 24   # готовый пароль для базы — скопируйте его
+nano .env
+```
+
+В `.env` заполнить:
+
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_NOTIFY_CHAT_ID`;
+- `YANDEX_FOLDER_ID` и **один** из `YANDEX_API_KEY` / `YANDEX_OAUTH_TOKEN`;
+- `POSTGRES_PASSWORD` — вставить пароль из `openssl rand -hex 24`. `POSTGRES_USER` и
+  `POSTGRES_DB` можно оставить как есть. `POSTGRES_DSN` оставить пустым — в Docker адрес базы
+  собирается сам.
+
+Сохранить: `Ctrl+O`, `Enter`, выйти: `Ctrl+X`.
+
+**5. Запустить:**
+
+```bash
+docker compose up -d --build
+```
+
+Первая сборка занимает пару минут. При старте бот и воркер сами создают и обновляют таблицы в
+базе (миграции).
+
+**6. Проверить:**
+
+```bash
+docker compose ps
+```
+
+Должно быть три строки — `postgres` (с пометкой `healthy`), `bot`, `worker` — все в состоянии
+`Up`. Если `bot` или `worker` в `Restarting`, смотрите логи:
+
+```bash
+docker compose logs -f bot worker
+```
+
+В логах воркера должно быть `worker started`. Выйти из просмотра логов — `Ctrl+C` (бот при этом
+продолжит работать). Частые ошибки: `Unauthorized` — неверный `TELEGRAM_BOT_TOKEN`;
+`missing required environment variable` — не заполнена указанная переменная в `.env`. Поправить
+`.env` и снова выполнить `docker compose up -d`.
+
+**7. Назначить себя Владельцем** (замените число на свой Telegram id):
+
+```bash
+docker compose run --rm bot python scripts/add_owner.py 123456789
+```
+
+Должно напечатать `Владелец 123456789 добавлен`. Теперь напишите боту `/start`. Остальных
+участников Владелец добавляет уже в самом боте.
+
+**Обновить до новой версии:**
+
+```bash
+cd /opt/content-zavod
+./scripts/backup_db.sh
+git pull
+docker compose up -d --build
+```
+
+**Бэкапы базы.** Вся ценность — в накопленных Планах и Статьях, поэтому бэкап делается каждую
+ночь автоматически. Разово, вручную:
+
+```bash
+./scripts/backup_db.sh        # хранит 14 последних копий
+./scripts/backup_db.sh 30     # или сколько нужно
+```
+
+Копии лежат в `/opt/content-zavod/backups/` (`content_zavod_<дата>.sql.gz`), старые удаляются
+сами. Чтобы бэкап делался каждую ночь в 03:00, откройте `crontab -e` и добавьте строку:
+
+```cron
+0 3 * * * /opt/content-zavod/scripts/backup_db.sh 14 >> /var/log/content-zavod-backup.log 2>&1
+```
+
+Время от времени скачивайте свежий бэкап к себе (например, `scp root@IP_СЕРВЕРА:/opt/content-zavod/backups/<файл> .`)
+— копия на том же сервере не спасёт, если пропадёт сам сервер.
+
+**Восстановить базу из бэкапа** (текущее содержимое базы будет заменено копией):
+
+```bash
+docker compose stop bot worker
+docker compose exec -T postgres sh -c 'dropdb -U "$POSTGRES_USER" "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+gunzip -c backups/content_zavod_ДАТА.sql.gz | docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+docker compose start bot worker
+```
+
+**Полезное:**
+
+- После правки `.env` — `docker compose up -d` (контейнеры пересоздадутся с новыми
+  настройками; `docker compose restart` новый `.env` не подхватывает).
+- `docker compose stop` / `docker compose start` — остановить / запустить всё.
+- `docker compose down` — удалить контейнеры; база остаётся в томе. **Никогда не добавляйте
+  `-v`**: `docker compose down -v` безвозвратно удаляет базу.
+- Логи хранятся с ротацией (до 5 файлов по 10 МБ на контейнер) и не забьют диск.
+
+### Запуск на своём компьютере (Windows, Docker Desktop)
+
+То же самое можно запустить на своём ПК, например чтобы попробовать до покупки VPS. **Бот
+работает, только пока компьютер включён и Docker Desktop запущен.**
+
+1. Установить [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/),
+   запустить его и дождаться статуса «Engine running». В настройках Docker Desktop
+   (Settings → General) включить «Start Docker Desktop when you sign in» — тогда после
+   перезагрузки ПК бот поднимется сам.
+2. Скачать проект: `git clone https://github.com/InfernYaCr/Content_Zavod.git` или на GitHub
+   «Code → Download ZIP» и распаковать.
+3. Открыть PowerShell в папке проекта (в Проводнике: правый клик по папке → «Открыть в
+   терминале») и создать настройки:
+   ```powershell
+   copy .env.example .env
+   notepad .env
+   ```
+   Заполнить так же, как в шаге 4 выше; для `POSTGRES_PASSWORD` придумайте длинный пароль из
+   латинских букв и цифр.
+4. Запустить и проверить:
+   ```powershell
+   docker compose up -d --build
+   docker compose ps
+   docker compose logs -f bot worker
+   ```
+   Что должно получиться — как в шаге 6 выше. Выйти из логов — `Ctrl+C`.
+5. Назначить себя Владельцем:
+   ```powershell
+   docker compose run --rm bot python scripts/add_owner.py 123456789
+   ```
+6. Остановить: `docker compose stop`, запустить снова: `docker compose start`. Обновление:
+   `git pull`, затем `docker compose up -d --build`.
+
+Бэкап на Windows — тем же скриптом из Git Bash (ставится вместе с Git for Windows; в Проводнике:
+правый клик по папке проекта → «Open Git Bash here»): `bash scripts/backup_db.sh`. Восстановление
+из бэкапа — те же команды, что выше, тоже в Git Bash (в PowerShell нет `gunzip`).
 
 ## Разработка
 

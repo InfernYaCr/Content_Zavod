@@ -886,7 +886,6 @@ async def main(settings: Settings | None = None) -> None:
             settings.telegram_notify_chat_id,
             publisher=publisher,
             team_note=team_note,
-            photos=photos,
             directions=directions,
         )
         polling_task = asyncio.create_task(dispatcher.start_polling(bot, handle_signals=False))
