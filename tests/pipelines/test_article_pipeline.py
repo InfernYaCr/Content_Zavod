@@ -764,6 +764,26 @@ async def test_markdown_link_to_a_foreign_url_with_the_project_as_text_is_droppe
 
 
 @pytest.mark.parametrize(
+    "foreign", ["HTTPS://evil.com/x", "Http://evil.com", "[a](HTTPS://evil.com)"]
+)
+@pytest.mark.asyncio
+async def test_upper_case_scheme_does_not_slip_past_the_foreign_url_filter(foreign) -> None:
+    content, _ = await _generate_with_project(f"Текст {foreign} тут.\n\nСм. {_PROJECT_URL}")
+
+    assert "evil.com" not in content.lower()
+    assert content.count(_PROJECT_URL) == 1
+
+
+@pytest.mark.asyncio
+async def test_upper_case_project_link_next_to_the_exact_one_leaves_a_single_link() -> None:
+    content, _ = await _generate_with_project(
+        f"Текст HTTPS://T.ME/MARKETING_DAILY тут.\n\nСм. {_PROJECT_URL}"
+    )
+
+    assert content == f"Текст тут.\n\nСм. {_PROJECT_URL}"
+
+
+@pytest.mark.parametrize(
     "spelling",
     [
         "t.me/marketing_daily",

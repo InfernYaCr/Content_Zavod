@@ -282,8 +282,9 @@ def _source_line(bundle: ResearchBundle, url: str) -> str:
     return f"{title} — {url}" if title else url
 
 
-_MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]*)\]\((https?://[^)\s]+)\)")
-_BARE_URL_RE = re.compile(r"[ \t]*https?://[^\s<>()\[\]]+")
+# Schemes are case-insensitive: `HTTPS://evil.com` is just as foreign (#133).
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]*)\]\((https?://[^)\s]+)\)", re.IGNORECASE)
+_BARE_URL_RE = re.compile(r"[ \t]*https?://[^\s<>()\[\]]+", re.IGNORECASE)
 _TRAILING_PUNCT = ".,;:!?»\"'"
 
 
