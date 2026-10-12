@@ -20,13 +20,14 @@ from content_zavod.domain import (
 )
 from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.job_queue import JobQueue
+from tests.tenancy import WS_A
 
 
 async def _create_plan(
     plan: Plan, *, titles: tuple[str, ...] = ("Topic A", "Topic B")
 ) -> tuple[PlanId, PlanView]:
-    plan_id = await plan.add_topics("Week 1", [TopicDraft(title=t) for t in titles])
-    view = await plan.get(plan_id)
+    plan_id = await plan.add_topics(WS_A, "Week 1", [TopicDraft(title=t) for t in titles])
+    view = await plan.get(WS_A, plan_id)
     return plan_id, view
 
 
@@ -41,17 +42,17 @@ async def test_create_and_get_round_trip(plan: Plan) -> None:
 
 async def test_get_raises_for_unknown_plan(plan: Plan) -> None:
     with pytest.raises(PlanNotFound):
-        await plan.get("missing")
+        await plan.get(WS_A, "missing")
 
 
 async def test_get_item_returns_full_detail(plan: Plan) -> None:
     plan_id = await plan.add_topics(
-        "Week 1", [TopicDraft(title="Topic A", summary="summary A", keywords=["kw1", "kw2"])]
+        WS_A, "Week 1", [TopicDraft(title="Topic A", summary="summary A", keywords=["kw1", "kw2"])]
     )
-    view = await plan.get(plan_id)
+    view = await plan.get(WS_A, plan_id)
     item_id = view.items[0].id
 
-    detail = await plan.get_item(item_id)
+    detail = await plan.get_item(WS_A, item_id)
 
     assert detail == PlanItemDetail(
         id=item_id, title="Topic A", summary="summary A", keywords=["kw1", "kw2"]
@@ -60,16 +61,16 @@ async def test_get_item_returns_full_detail(plan: Plan) -> None:
 
 async def test_get_item_raises_for_unknown_item(plan: Plan) -> None:
     with pytest.raises(PlanItemNotFound):
-        await plan.get_item("missing")
+        await plan.get_item(WS_A, "missing")
 
 
 async def test_delete_item_marks_it_rejected(plan: Plan) -> None:
     _, view = await _create_plan(plan)
     item_id = view.items[0].id
 
-    await plan.delete_item(item_id)
+    await plan.delete_item(WS_A, item_id)
 
-    updated = await plan.get(view.id)
+    updated = await plan.get(WS_A, view.id)
     statuses = {item.id: item.status for item in updated.items}
     assert statuses[item_id] == "rejected"
     assert statuses[view.items[1].id] == "pending_review"
@@ -79,34 +80,34 @@ async def test_delete_item_is_idempotent(plan: Plan) -> None:
     _, view = await _create_plan(plan)
     item_id = view.items[0].id
 
-    await plan.delete_item(item_id)
-    await plan.delete_item(item_id)  # no-op, must not raise
+    await plan.delete_item(WS_A, item_id)
+    await plan.delete_item(WS_A, item_id)  # no-op, must not raise
 
-    updated = await plan.get(view.id)
+    updated = await plan.get(WS_A, view.id)
     assert updated.items[0].status == "rejected"
 
 
 async def test_delete_item_raises_for_unknown_item(plan: Plan) -> None:
     with pytest.raises(PlanItemNotFound):
-        await plan.delete_item("missing")
+        await plan.delete_item(WS_A, "missing")
 
 
 async def test_delete_item_raises_once_approved(plan: Plan) -> None:
     _, view = await _create_plan(plan)
 
-    await plan.approve_all(view.id)
+    await plan.approve_all(WS_A, view.id)
 
     with pytest.raises(PlanItemNotEditable):
-        await plan.delete_item(view.items[0].id)
+        await plan.delete_item(WS_A, view.items[0].id)
 
 
 async def test_approve_all_approves_pending_items_and_leaves_rejected_alone(plan: Plan) -> None:
     _, view = await _create_plan(plan)
-    await plan.delete_item(view.items[0].id)
+    await plan.delete_item(WS_A, view.items[0].id)
 
-    await plan.approve_all(view.id)
+    await plan.approve_all(WS_A, view.id)
 
-    updated = await plan.get(view.id)
+    updated = await plan.get(WS_A, view.id)
     statuses = {item.id: item.status for item in updated.items}
     assert statuses[view.items[0].id] == "rejected"
     assert statuses[view.items[1].id] == "approved"
@@ -115,36 +116,36 @@ async def test_approve_all_approves_pending_items_and_leaves_rejected_alone(plan
 async def test_approve_all_is_idempotent(plan: Plan) -> None:
     _, view = await _create_plan(plan)
 
-    await plan.approve_all(view.id)
-    await plan.approve_all(view.id)  # no-op, must not raise
+    await plan.approve_all(WS_A, view.id)
+    await plan.approve_all(WS_A, view.id)  # no-op, must not raise
 
-    updated = await plan.get(view.id)
+    updated = await plan.get(WS_A, view.id)
     assert all(item.status == "approved" for item in updated.items)
 
 
 async def test_approve_all_raises_for_unknown_plan(plan: Plan) -> None:
     with pytest.raises(PlanNotFound):
-        await plan.approve_all("missing")
+        await plan.approve_all(WS_A, "missing")
 
 
 async def test_get_summary_returns_id_week_label_and_status(plan: Plan) -> None:
     plan_id, _view = await _create_plan(plan)
 
-    summary = await plan.get_summary(plan_id)
+    summary = await plan.get_summary(WS_A, plan_id)
 
     assert summary == PlanSummary(id=plan_id, week_label="Week 1", status="pending_review")
 
 
 async def test_get_summary_raises_for_unknown_plan(plan: Plan) -> None:
     with pytest.raises(PlanNotFound):
-        await plan.get_summary("missing")
+        await plan.get_summary(WS_A, "missing")
 
 
 async def test_list_page_orders_newest_first(plan: Plan) -> None:
-    older_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
-    newer_id = await plan.add_topics("Week 2", [TopicDraft(title="Topic B")])
+    older_id = await plan.add_topics(WS_A, "Week 1", [TopicDraft(title="Topic A")])
+    newer_id = await plan.add_topics(WS_A, "Week 2", [TopicDraft(title="Topic B")])
 
-    page, total = await plan.list_page(page=0, page_size=10)
+    page, total = await plan.list_page(WS_A, page=0, page_size=10)
 
     assert total == 2
     assert [item.id for item in page] == [newer_id, older_id]
@@ -152,9 +153,9 @@ async def test_list_page_orders_newest_first(plan: Plan) -> None:
 
 async def test_list_page_includes_every_status(plan: Plan) -> None:
     _, view = await _create_plan(plan)
-    await plan.approve_all(view.id)
+    await plan.approve_all(WS_A, view.id)
 
-    page, total = await plan.list_page(page=0, page_size=10)
+    page, total = await plan.list_page(WS_A, page=0, page_size=10)
 
     assert total == 1
     assert page[0].status == "approved"
@@ -162,10 +163,10 @@ async def test_list_page_includes_every_status(plan: Plan) -> None:
 
 async def test_list_page_paginates(plan: Plan) -> None:
     for i in range(3):
-        await plan.add_topics(f"Week {i}", [TopicDraft(title="Topic")])
+        await plan.add_topics(WS_A, f"Week {i}", [TopicDraft(title="Topic")])
 
-    first_page, total = await plan.list_page(page=0, page_size=2)
-    second_page, _ = await plan.list_page(page=1, page_size=2)
+    first_page, total = await plan.list_page(WS_A, page=0, page_size=2)
+    second_page, _ = await plan.list_page(WS_A, page=1, page_size=2)
 
     assert total == 3
     assert len(first_page) == 2
@@ -174,19 +175,20 @@ async def test_list_page_paginates(plan: Plan) -> None:
 
 async def test_approved_items_returns_only_approved_items_with_full_detail(plan: Plan) -> None:
     plan_id = await plan.add_topics(
+        WS_A,
         "Week 1",
         [
             TopicDraft(title="Topic A", summary="s", keywords=["k1", "k2"]),
             TopicDraft(title="Topic B"),
         ],
     )
-    view = await plan.get(plan_id)
+    view = await plan.get(WS_A, plan_id)
     kept_id, rejected_id = view.items[0].id, view.items[1].id
-    await plan.delete_item(rejected_id)
+    await plan.delete_item(WS_A, rejected_id)
 
-    await plan.approve_all(plan_id)
+    await plan.approve_all(WS_A, plan_id)
 
-    items = await plan.approved_items(plan_id)
+    items = await plan.approved_items(WS_A, plan_id)
 
     assert len(items) == 1
     assert items[0] == PlanItemDetail(
@@ -197,7 +199,7 @@ async def test_approved_items_returns_only_approved_items_with_full_detail(plan:
 async def test_approved_items_is_empty_for_a_plan_with_no_approved_items(plan: Plan) -> None:
     plan_id, _ = await _create_plan(plan)
 
-    assert await plan.approved_items(plan_id) == []
+    assert await plan.approved_items(WS_A, plan_id) == []
 
 
 async def test_regenerate_item_enqueues_a_job_instead_of_calling_an_llm_directly(
@@ -206,7 +208,7 @@ async def test_regenerate_item_enqueues_a_job_instead_of_calling_an_llm_directly
     _, view = await _create_plan(plan)
     item_id = view.items[0].id
 
-    await plan.regenerate_item(item_id, comment="make it punchier")
+    await plan.regenerate_item(WS_A, item_id, comment="make it punchier")
 
     claimed = await queue.claim_next()
     assert claimed is not None
@@ -220,8 +222,8 @@ async def test_regenerate_item_retried_before_any_state_change_does_not_duplicat
     _, view = await _create_plan(plan)
     item_id = view.items[0].id
 
-    await plan.regenerate_item(item_id, comment="please")
-    await plan.regenerate_item(item_id, comment="please")  # e.g. a retried Telegram callback
+    await plan.regenerate_item(WS_A, item_id, comment="please")
+    await plan.regenerate_item(WS_A, item_id, comment="please")  # e.g. a retried Telegram callback
 
     first_claim = await queue.claim_next()
     assert first_claim is not None
@@ -231,19 +233,21 @@ async def test_regenerate_item_retried_before_any_state_change_does_not_duplicat
 
 async def test_regenerate_item_raises_once_approved(plan: Plan) -> None:
     _, view = await _create_plan(plan)
-    await plan.approve_all(view.id)
+    await plan.approve_all(WS_A, view.id)
 
     with pytest.raises(PlanItemNotEditable):
-        await plan.regenerate_item(view.items[0].id, comment=None)
+        await plan.regenerate_item(WS_A, view.items[0].id, comment=None)
 
 
 async def test_apply_regeneration_updates_the_pending_item(plan: Plan) -> None:
     _, view = await _create_plan(plan)
     item_id = view.items[0].id
 
-    await plan.apply_regeneration(item_id, TopicDraft(title="Better Title", summary="new summary"))
+    await plan.apply_regeneration(
+        WS_A, item_id, TopicDraft(title="Better Title", summary="new summary")
+    )
 
-    updated = await plan.get(view.id)
+    updated = await plan.get(WS_A, view.id)
     assert updated.items[0].title == "Better Title"
     assert updated.items[0].status == "pending_review"
 
@@ -251,12 +255,12 @@ async def test_apply_regeneration_updates_the_pending_item(plan: Plan) -> None:
 async def test_apply_regeneration_rejects_a_stale_result_after_approval(plan: Plan) -> None:
     _, view = await _create_plan(plan)
     item_id = view.items[0].id
-    await plan.approve_all(view.id)
+    await plan.approve_all(WS_A, view.id)
 
     with pytest.raises(PlanItemNotEditable):
-        await plan.apply_regeneration(item_id, TopicDraft(title="Too Late"))
+        await plan.apply_regeneration(WS_A, item_id, TopicDraft(title="Too Late"))
 
-    updated = await plan.get(view.id)
+    updated = await plan.get(WS_A, view.id)
     assert updated.items[0].title == "Topic A"
     assert updated.items[0].status == "approved"
 
@@ -265,7 +269,7 @@ async def test_recent_topic_titles_returns_titles_created_since(plan: Plan) -> N
     before = datetime.now(UTC) - timedelta(minutes=1)
     await _create_plan(plan, titles=("Fresh Topic",))
 
-    titles = await plan.recent_topic_titles(since=before)
+    titles = await plan.recent_topic_titles(WS_A, since=before)
 
     assert "Fresh Topic" in titles
 
@@ -274,7 +278,7 @@ async def test_recent_topic_titles_excludes_titles_older_than_since(plan: Plan) 
     await _create_plan(plan, titles=("Old Topic",))
     after = datetime.now(UTC) + timedelta(minutes=1)
 
-    titles = await plan.recent_topic_titles(since=after)
+    titles = await plan.recent_topic_titles(WS_A, since=after)
 
     assert "Old Topic" not in titles
 
@@ -282,25 +286,25 @@ async def test_recent_topic_titles_excludes_titles_older_than_since(plan: Plan) 
 async def test_add_topics_appends_to_the_existing_draft_for_a_repeated_week_label(
     plan: Plan,
 ) -> None:
-    first_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
+    first_id = await plan.add_topics(WS_A, "Week 1", [TopicDraft(title="Topic A")])
 
-    second_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic B")])
+    second_id = await plan.add_topics(WS_A, "Week 1", [TopicDraft(title="Topic B")])
 
     assert second_id == first_id
-    view = await plan.get(first_id)
+    view = await plan.get(WS_A, first_id)
     assert [item.title for item in view.items] == ["Topic A", "Topic B"]
 
 
 async def test_add_topics_skips_a_title_already_present_in_the_plan(plan: Plan) -> None:
     # e.g. a redelivered generate_plan notification re-appending the same topics
-    first_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
+    first_id = await plan.add_topics(WS_A, "Week 1", [TopicDraft(title="Topic A")])
 
     second_id = await plan.add_topics(
-        "Week 1", [TopicDraft(title="Topic A"), TopicDraft(title="Topic B")]
+        WS_A, "Week 1", [TopicDraft(title="Topic A"), TopicDraft(title="Topic B")]
     )
 
     assert second_id == first_id
-    view = await plan.get(first_id)
+    view = await plan.get(WS_A, first_id)
     assert [item.title for item in view.items] == ["Topic A", "Topic B"]
 
 
@@ -308,19 +312,19 @@ async def test_add_topics_starts_a_fresh_draft_once_the_prior_plan_is_approved(
     plan: Plan,
 ) -> None:
     first_id, view = await _create_plan(plan, titles=("Topic A",))
-    await plan.approve_all(view.id)
+    await plan.approve_all(WS_A, view.id)
 
-    second_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic B")])
+    second_id = await plan.add_topics(WS_A, "Week 1", [TopicDraft(title="Topic B")])
 
     assert second_id != first_id
-    second_view = await plan.get(second_id)
+    second_view = await plan.get(WS_A, second_id)
     assert [item.title for item in second_view.items] == ["Topic B"]
 
 
 async def test_request_new_enqueues_a_generate_plan_job_for_the_given_week(
     plan: Plan, queue: JobQueue
 ) -> None:
-    await plan.request_new("2026-W32")
+    await plan.request_new(WS_A, "2026-W32")
 
     claimed = await queue.claim_next()
     assert claimed is not None
@@ -331,8 +335,8 @@ async def test_request_new_enqueues_a_generate_plan_job_for_the_given_week(
 async def test_request_new_retried_for_the_same_week_does_not_duplicate_the_job(
     plan: Plan, queue: JobQueue
 ) -> None:
-    await plan.request_new("2026-W32")
-    await plan.request_new("2026-W32")  # e.g. missed-run catch-up racing the manual command
+    await plan.request_new(WS_A, "2026-W32")
+    await plan.request_new(WS_A, "2026-W32")  # e.g. missed-run catch-up racing the manual command
 
     first_claim = await queue.claim_next()
     assert first_claim is not None
@@ -344,18 +348,18 @@ async def test_request_replacement_enqueues_a_distinct_job_and_archives_source(
     plan: Plan, queue: JobQueue
 ) -> None:
     plan_id, _ = await _create_plan(plan)
-    await plan.request_new("Week 1")
+    await plan.request_new(WS_A, "Week 1")
     original = await queue.claim_next()
     assert original is not None
 
-    replacement_id = await plan.request_replacement(plan_id)
+    replacement_id = await plan.request_replacement(WS_A, plan_id)
 
     replacement = await queue.claim_next()
     assert replacement is not None
     assert replacement.id == replacement_id
     assert replacement.id != original.id
     assert replacement.payload == {"week_label": "Week 1", "generation_id": f"replace:{plan_id}"}
-    assert await plan.find_active("Week 1") is None
+    assert await plan.find_active(WS_A, "Week 1") is None
 
 
 async def test_request_replacement_callback_retry_reuses_the_same_job(
@@ -363,8 +367,8 @@ async def test_request_replacement_callback_retry_reuses_the_same_job(
 ) -> None:
     plan_id, _ = await _create_plan(plan)
 
-    first_id = await plan.request_replacement(plan_id)
-    second_id = await plan.request_replacement(plan_id)
+    first_id = await plan.request_replacement(WS_A, plan_id)
+    second_id = await plan.request_replacement(WS_A, plan_id)
 
     assert second_id == first_id
     first = await queue.claim_next()
@@ -376,8 +380,8 @@ async def test_concurrent_add_topics_share_one_pending_plan(plan: Plan, pool: as
     import asyncio
 
     first_id, second_id = await asyncio.gather(
-        plan.add_topics("Week 1", [TopicDraft(title="Topic A")]),
-        plan.add_topics("Week 1", [TopicDraft(title="Topic B")]),
+        plan.add_topics(WS_A, "Week 1", [TopicDraft(title="Topic A")]),
+        plan.add_topics(WS_A, "Week 1", [TopicDraft(title="Topic B")]),
     )
 
     assert first_id == second_id
@@ -388,18 +392,20 @@ async def test_concurrent_add_topics_share_one_pending_plan(plan: Plan, pool: as
         )
         == 1
     )
-    view = await plan.get(first_id)
+    view = await plan.get(WS_A, first_id)
     assert {item.title for item in view.items} == {"Topic A", "Topic B"}
 
 
 async def test_request_cover_enqueues_a_job_with_the_items_title_and_summary(
     plan: Plan, queue: JobQueue
 ) -> None:
-    plan_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A", summary="a summary")])
-    view = await plan.get(plan_id)
+    plan_id = await plan.add_topics(
+        WS_A, "Week 1", [TopicDraft(title="Topic A", summary="a summary")]
+    )
+    view = await plan.get(WS_A, plan_id)
     item_id = view.items[0].id
 
-    await plan.request_cover(item_id)
+    await plan.request_cover(WS_A, item_id)
 
     claimed = await queue.claim_next()
     assert claimed is not None
@@ -410,12 +416,12 @@ async def test_request_cover_enqueues_a_job_with_the_items_title_and_summary(
 async def test_request_cover_retried_before_any_state_change_does_not_duplicate_the_job(
     plan: Plan, queue: JobQueue
 ) -> None:
-    plan_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
-    view = await plan.get(plan_id)
+    plan_id = await plan.add_topics(WS_A, "Week 1", [TopicDraft(title="Topic A")])
+    view = await plan.get(WS_A, plan_id)
     item_id = view.items[0].id
 
-    await plan.request_cover(item_id)
-    await plan.request_cover(item_id)
+    await plan.request_cover(WS_A, item_id)
+    await plan.request_cover(WS_A, item_id)
 
     first_claim = await queue.claim_next()
     assert first_claim is not None
@@ -425,7 +431,7 @@ async def test_request_cover_retried_before_any_state_change_does_not_duplicate_
 
 async def test_request_cover_raises_for_unknown_item(plan: Plan) -> None:
     with pytest.raises(PlanItemNotFound):
-        await plan.request_cover("missing")
+        await plan.request_cover(WS_A, "missing")
 
 
 async def test_request_cover_after_apply_cover_enqueues_a_fresh_job(
@@ -433,15 +439,15 @@ async def test_request_cover_after_apply_cover_enqueues_a_fresh_job(
 ) -> None:
     """A manual re-request (e.g. the "🖼 Обложка" button, #15) after a cover already finished must
     enqueue a new Job rather than colliding with the completed one's idempotency key."""
-    plan_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
-    view = await plan.get(plan_id)
+    plan_id = await plan.add_topics(WS_A, "Week 1", [TopicDraft(title="Topic A")])
+    view = await plan.get(WS_A, plan_id)
     item_id = view.items[0].id
-    await plan.request_cover(item_id)
+    await plan.request_cover(WS_A, item_id)
     first_claim = await queue.claim_next()
     assert first_claim is not None
-    await plan.apply_cover(item_id, b"fake-image-bytes", "image/jpeg")
+    await plan.apply_cover(WS_A, item_id, b"fake-image-bytes", "image/jpeg")
 
-    await plan.request_cover(item_id)
+    await plan.request_cover(WS_A, item_id)
 
     second_claim = await queue.claim_next()
     assert second_claim is not None
@@ -451,23 +457,23 @@ async def test_request_cover_after_apply_cover_enqueues_a_fresh_job(
 async def test_find_active_returns_pending_or_approved_plan_for_the_week(plan: Plan) -> None:
     plan_id, _ = await _create_plan(plan)
 
-    found = await plan.find_active("Week 1")
+    found = await plan.find_active(WS_A, "Week 1")
 
     assert found is not None
     assert found.id == plan_id
 
 
 async def test_find_active_returns_none_when_no_plan_exists_for_the_week(plan: Plan) -> None:
-    found = await plan.find_active("Week 1")
+    found = await plan.find_active(WS_A, "Week 1")
 
     assert found is None
 
 
 async def test_find_active_ignores_an_archived_plan(plan: Plan) -> None:
     plan_id, _ = await _create_plan(plan)
-    await plan.archive(plan_id)
+    await plan.archive(WS_A, plan_id)
 
-    found = await plan.find_active("Week 1")
+    found = await plan.find_active(WS_A, "Week 1")
 
     assert found is None
 
@@ -475,21 +481,21 @@ async def test_find_active_ignores_an_archived_plan(plan: Plan) -> None:
 async def test_archive_marks_plan_and_pending_items_archived(plan: Plan) -> None:
     plan_id, _view = await _create_plan(plan)
 
-    await plan.archive(plan_id)
+    await plan.archive(WS_A, plan_id)
 
-    updated = await plan.get(plan_id)
+    updated = await plan.get(WS_A, plan_id)
     assert all(item.status == "archived" for item in updated.items)
-    found = await plan.find_active("Week 1")
+    found = await plan.find_active(WS_A, "Week 1")
     assert found is None
 
 
 async def test_archive_leaves_rejected_items_rejected(plan: Plan) -> None:
     _, view = await _create_plan(plan)
-    await plan.delete_item(view.items[0].id)
+    await plan.delete_item(WS_A, view.items[0].id)
 
-    await plan.archive(view.id)
+    await plan.archive(WS_A, view.id)
 
-    updated = await plan.get(view.id)
+    updated = await plan.get(WS_A, view.id)
     statuses = {item.id: item.status for item in updated.items}
     assert statuses[view.items[0].id] == "rejected"
     assert statuses[view.items[1].id] == "archived"
@@ -498,24 +504,24 @@ async def test_archive_leaves_rejected_items_rejected(plan: Plan) -> None:
 async def test_archive_is_idempotent(plan: Plan) -> None:
     plan_id, _ = await _create_plan(plan)
 
-    await plan.archive(plan_id)
-    await plan.archive(plan_id)  # no-op, must not raise
+    await plan.archive(WS_A, plan_id)
+    await plan.archive(WS_A, plan_id)  # no-op, must not raise
 
-    updated = await plan.get(plan_id)
+    updated = await plan.get(WS_A, plan_id)
     assert all(item.status == "archived" for item in updated.items)
 
 
 async def test_archive_raises_for_unknown_plan(plan: Plan) -> None:
     with pytest.raises(PlanNotFound):
-        await plan.archive("missing")
+        await plan.archive(WS_A, "missing")
 
 
 async def test_apply_cover_persists_image_and_mime_type(plan: Plan, pool: asyncpg.Pool) -> None:
-    plan_id = await plan.add_topics("Week 1", [TopicDraft(title="Topic A")])
-    view = await plan.get(plan_id)
+    plan_id = await plan.add_topics(WS_A, "Week 1", [TopicDraft(title="Topic A")])
+    view = await plan.get(WS_A, plan_id)
     item_id = view.items[0].id
 
-    await plan.apply_cover(item_id, b"fake-image-bytes", "image/jpeg")
+    await plan.apply_cover(WS_A, item_id, b"fake-image-bytes", "image/jpeg")
 
     row = await pool.fetchrow(
         "SELECT cover_image, cover_mime_type, cover_generated_at FROM plan_items WHERE id = $1",
@@ -528,20 +534,20 @@ async def test_apply_cover_persists_image_and_mime_type(plan: Plan, pool: asyncp
 
 async def test_get_cover_returns_the_stored_cover(plan: Plan) -> None:
     _, view = await _create_plan(plan, titles=("Topic A", "Topic B"))
-    await plan.apply_cover(view.items[0].id, b"fake-image-bytes", "image/jpeg")
+    await plan.apply_cover(WS_A, view.items[0].id, b"fake-image-bytes", "image/jpeg")
 
-    assert await plan.get_cover(view.items[0].id) == PlanItemCoverView(
+    assert await plan.get_cover(WS_A, view.items[0].id) == PlanItemCoverView(
         plan_item_id=view.items[0].id,
         title="Topic A",
         image=b"fake-image-bytes",
         mime_type="image/jpeg",
     )
-    assert await plan.get_cover(view.items[1].id) is None
+    assert await plan.get_cover(WS_A, view.items[1].id) is None
 
 
 async def test_get_cover_raises_for_unknown_item(plan: Plan) -> None:
     with pytest.raises(PlanItemNotFound):
-        await plan.get_cover("missing")
+        await plan.get_cover(WS_A, "missing")
 
 
 async def test_mark_cover_generation_failed_resolves_the_owning_item(
@@ -549,15 +555,15 @@ async def test_mark_cover_generation_failed_resolves_the_owning_item(
 ) -> None:
     _, view = await _create_plan(plan)
     item_id = view.items[0].id
-    await plan.request_cover(item_id)
+    await plan.request_cover(WS_A, item_id)
     claimed = await queue.claim_next()
     assert claimed is not None
 
-    assert await plan.mark_cover_generation_failed(claimed.id) == item_id
+    assert await plan.mark_cover_generation_failed(WS_A, claimed.id) == item_id
 
 
 async def test_mark_cover_generation_failed_returns_none_for_an_unowned_job(plan: Plan) -> None:
-    assert await plan.mark_cover_generation_failed(999999) is None
+    assert await plan.mark_cover_generation_failed(WS_A, 999999) is None
 
 
 async def test_apply_cover_clears_the_active_cover_job_so_a_stale_failure_is_ignored(
@@ -568,32 +574,32 @@ async def test_apply_cover_clears_the_active_cover_job_so_a_stale_failure_is_ign
     that happens to reuse the id space, or mask a real subsequent failure."""
     _, view = await _create_plan(plan)
     item_id = view.items[0].id
-    await plan.request_cover(item_id)
+    await plan.request_cover(WS_A, item_id)
     claimed = await queue.claim_next()
     assert claimed is not None
 
-    await plan.apply_cover(item_id, b"bytes", "image/jpeg")
+    await plan.apply_cover(WS_A, item_id, b"bytes", "image/jpeg")
 
-    assert await plan.mark_cover_generation_failed(claimed.id) is None
+    assert await plan.mark_cover_generation_failed(WS_A, claimed.id) is None
 
 
 async def test_get_message_ref_returns_none_before_any_delivery(plan: Plan) -> None:
     plan_id, _ = await _create_plan(plan)
 
-    assert await plan.get_message_ref(plan_id) is None
+    assert await plan.get_message_ref(WS_A, plan_id) is None
 
 
 async def test_get_message_ref_raises_for_unknown_plan(plan: Plan) -> None:
     with pytest.raises(PlanNotFound):
-        await plan.get_message_ref("missing")
+        await plan.get_message_ref(WS_A, "missing")
 
 
 async def test_record_message_ref_round_trips_through_get_message_ref(plan: Plan) -> None:
     plan_id, _ = await _create_plan(plan)
 
-    await plan.record_message_ref(plan_id, chat_id=42, message_id=100)
+    await plan.record_message_ref(WS_A, plan_id, chat_id=42, message_id=100)
 
-    assert await plan.get_message_ref(plan_id) == PlanMessageRef(chat_id=42, message_id=100)
+    assert await plan.get_message_ref(WS_A, plan_id) == PlanMessageRef(chat_id=42, message_id=100)
 
 
 async def test_record_message_ref_is_first_writer_wins(plan: Plan) -> None:
@@ -601,23 +607,23 @@ async def test_record_message_ref_is_first_writer_wins(plan: Plan) -> None:
     clobber the identity the other delivery already established."""
     plan_id, _ = await _create_plan(plan)
 
-    await plan.record_message_ref(plan_id, chat_id=42, message_id=100)
-    await plan.record_message_ref(plan_id, chat_id=42, message_id=999)
+    await plan.record_message_ref(WS_A, plan_id, chat_id=42, message_id=100)
+    await plan.record_message_ref(WS_A, plan_id, chat_id=42, message_id=999)
 
-    assert await plan.get_message_ref(plan_id) == PlanMessageRef(chat_id=42, message_id=100)
+    assert await plan.get_message_ref(WS_A, plan_id) == PlanMessageRef(chat_id=42, message_id=100)
 
 
 async def test_replace_message_ref_overwrites_the_dead_ref(plan: Plan) -> None:
     """#106: the Plan message was deleted in the chat - its replacement becomes canonical."""
     plan_id, _ = await _create_plan(plan)
-    await plan.record_message_ref(plan_id, chat_id=42, message_id=100)
+    await plan.record_message_ref(WS_A, plan_id, chat_id=42, message_id=100)
 
     replaced = await plan.replace_message_ref(
-        plan_id, PlanMessageRef(chat_id=42, message_id=100), chat_id=43, message_id=200
+        WS_A, plan_id, PlanMessageRef(chat_id=42, message_id=100), chat_id=43, message_id=200
     )
 
     assert replaced is True
-    assert await plan.get_message_ref(plan_id) == PlanMessageRef(chat_id=43, message_id=200)
+    assert await plan.get_message_ref(WS_A, plan_id) == PlanMessageRef(chat_id=43, message_id=200)
 
 
 async def test_replace_message_ref_loses_to_a_delivery_that_already_replaced_it(
@@ -626,14 +632,14 @@ async def test_replace_message_ref_loses_to_a_delivery_that_already_replaced_it(
     """#106: two deliveries both found the same dead message; only the first replacement
     sticks, the second learns it lost and leaves the winner's ref alone."""
     plan_id, _ = await _create_plan(plan)
-    await plan.record_message_ref(plan_id, chat_id=42, message_id=100)
+    await plan.record_message_ref(WS_A, plan_id, chat_id=42, message_id=100)
     dead = PlanMessageRef(chat_id=42, message_id=100)
-    await plan.replace_message_ref(plan_id, dead, chat_id=42, message_id=200)
+    await plan.replace_message_ref(WS_A, plan_id, dead, chat_id=42, message_id=200)
 
-    replaced = await plan.replace_message_ref(plan_id, dead, chat_id=42, message_id=300)
+    replaced = await plan.replace_message_ref(WS_A, plan_id, dead, chat_id=42, message_id=300)
 
     assert replaced is False
-    assert await plan.get_message_ref(plan_id) == PlanMessageRef(chat_id=42, message_id=200)
+    assert await plan.get_message_ref(WS_A, plan_id) == PlanMessageRef(chat_id=42, message_id=200)
 
 
 async def _approved_with_fan_out(
@@ -641,13 +647,13 @@ async def _approved_with_fan_out(
 ) -> tuple[PlanId, list[PlanItemDetail]]:
     """What `approve_all` + its fan-out leave behind: covers and Статьи requested per Тема."""
     plan_id, _ = await _create_plan(plan, titles=titles)
-    await plan.approve_all(plan_id)
-    items = await plan.approved_items(plan_id)
+    await plan.approve_all(WS_A, plan_id)
+    items = await plan.approved_items(WS_A, plan_id)
     for item in items:
-        await plan.request_cover(item.id)
+        await plan.request_cover(WS_A, item.id)
         for platform in PLATFORMS:
             await article.request_generation(
-                plan_id, item.id, item.title, item.summary, item.keywords, platform
+                WS_A, plan_id, item.id, item.title, item.summary, item.keywords, platform
             )
     return plan_id, items
 
@@ -660,7 +666,7 @@ async def _fail_job(pool: asyncpg.Pool, job_id: int) -> None:
 async def test_get_hub_right_after_fan_out_is_all_pending(plan: Plan, article: Article) -> None:
     plan_id, _ = await _approved_with_fan_out(plan, article)
 
-    hub = await plan.get_hub(plan_id)
+    hub = await plan.get_hub(WS_A, plan_id)
 
     assert hub.status == "approved"
     assert [(t.number, t.title) for t in hub.topics] == [(1, "Topic A"), (2, "Topic B")]
@@ -677,7 +683,7 @@ async def test_with_covers_off_the_fan_out_requests_no_cover_and_the_hub_has_no_
     plan = Plan(pool, queue, covers_enabled=False)
     plan_id, _ = await _approved_with_fan_out(plan, article)
 
-    hub = await plan.get_hub(plan_id)
+    hub = await plan.get_hub(WS_A, plan_id)
 
     covers = await pool.fetchval("SELECT count(*) FROM jobs WHERE job_type = 'generate_cover'")
     assert covers == 0
@@ -689,10 +695,10 @@ async def test_get_hub_leaves_out_rejected_topics_and_renumbers(
     plan: Plan, article: Article
 ) -> None:
     plan_id, view = await _create_plan(plan, titles=("Topic A", "Topic B", "Topic C"))
-    await plan.delete_item(view.items[0].id)
-    await plan.approve_all(plan_id)
+    await plan.delete_item(WS_A, view.items[0].id)
+    await plan.approve_all(WS_A, plan_id)
 
-    hub = await plan.get_hub(plan_id)
+    hub = await plan.get_hub(WS_A, plan_id)
 
     assert [(t.number, t.title) for t in hub.topics] == [(1, "Topic B"), (2, "Topic C")]
 
@@ -702,11 +708,12 @@ async def test_get_hub_derives_ready_from_applied_results(
 ) -> None:
     plan_id, items = await _approved_with_fan_out(plan, article, titles=("Topic A",))
     item = items[0]
-    hub = await plan.get_hub(plan_id)
+    hub = await plan.get_hub(WS_A, plan_id)
     zen = hub.topics[0].articles[0]
 
-    await plan.apply_cover(item.id, b"img", "image/png")
+    await plan.apply_cover(WS_A, item.id, b"img", "image/png")
     await article.record_version(
+        WS_A,
         zen.article_id,
         GeneratedVersion(
             content="body",
@@ -719,7 +726,7 @@ async def test_get_hub_derives_ready_from_applied_results(
         ),
     )
 
-    topic = (await plan.get_hub(plan_id)).topics[0]
+    topic = (await plan.get_hub(WS_A, plan_id)).topics[0]
     assert topic.cover == "ready" and topic.has_cover
     assert topic.articles[0].state == "ready" and topic.articles[0].has_content
     assert topic.articles[0].research_status == "no_evidence"
@@ -738,14 +745,14 @@ async def test_get_hub_shows_a_failed_job_as_failed_and_a_retried_one_as_pending
         "SELECT active_cover_job_id FROM plan_items WHERE id = $1", items[0].id
     )
     await _fail_job(pool, cover_job_id)
-    assert await plan.mark_cover_generation_failed(cover_job_id) is not None
+    assert await plan.mark_cover_generation_failed(WS_A, cover_job_id) is not None
 
-    topic = (await plan.get_hub(plan_id)).topics[0]
+    topic = (await plan.get_hub(WS_A, plan_id)).topics[0]
     assert topic.cover == "failed" and topic.has_failures
 
-    await queue.retry(cover_job_id)
+    await queue.retry(WS_A, cover_job_id)
 
-    assert (await plan.get_hub(plan_id)).topics[0].cover == "pending"
+    assert (await plan.get_hub(WS_A, plan_id)).topics[0].cover == "pending"
 
 
 async def test_mark_cover_generation_failed_keeps_the_job_so_a_retried_failure_resolves(
@@ -754,25 +761,25 @@ async def test_mark_cover_generation_failed_keeps_the_job_so_a_retried_failure_r
     """A «Повторить»ed cover Job that fails again must still resolve to its Тема (#91)."""
     _, view = await _create_plan(plan)
     item_id = view.items[0].id
-    await plan.request_cover(item_id)
+    await plan.request_cover(WS_A, item_id)
     claimed = await queue.claim_next()
     assert claimed is not None
 
-    assert await plan.mark_cover_generation_failed(claimed.id) == item_id
-    assert await plan.mark_cover_generation_failed(claimed.id) == item_id
+    assert await plan.mark_cover_generation_failed(WS_A, claimed.id) == item_id
+    assert await plan.mark_cover_generation_failed(WS_A, claimed.id) == item_id
 
 
 async def test_failed_article_is_failed_in_the_hub(
     plan: Plan, article: Article, pool: asyncpg.Pool
 ) -> None:
     plan_id, _ = await _approved_with_fan_out(plan, article, titles=("Topic A",))
-    hub = await plan.get_hub(plan_id)
+    hub = await plan.get_hub(WS_A, plan_id)
     zen_job = hub.topics[0].articles[0].job_id
     assert zen_job is not None
     await _fail_job(pool, zen_job)
-    await article.mark_generation_failed(zen_job)
+    await article.mark_generation_failed(WS_A, zen_job)
 
-    zen = (await plan.get_hub(plan_id)).topics[0].articles[0]
+    zen = (await plan.get_hub(WS_A, plan_id)).topics[0].articles[0]
     assert zen.state == "failed"
     assert zen.job_id == zen_job
 
@@ -780,40 +787,40 @@ async def test_failed_article_is_failed_in_the_hub(
 async def test_set_hub_view_round_trips(plan: Plan, article: Article) -> None:
     plan_id, items = await _approved_with_fan_out(plan, article, titles=("Topic A",))
 
-    await plan.set_hub_view(plan_id, items[0].id)
-    hub = await plan.get_hub(plan_id)
+    await plan.set_hub_view(WS_A, plan_id, items[0].id)
+    hub = await plan.get_hub(WS_A, plan_id)
     assert hub.open_item_id == items[0].id
     assert hub.open_topic is not None and hub.open_topic.title == "Topic A"
 
-    await plan.set_hub_view(plan_id, None)
-    assert (await plan.get_hub(plan_id)).open_topic is None
+    await plan.set_hub_view(WS_A, plan_id, None)
+    assert (await plan.get_hub(WS_A, plan_id)).open_topic is None
 
 
 async def test_get_hub_raises_for_unknown_plan(plan: Plan) -> None:
     with pytest.raises(PlanNotFound):
-        await plan.get_hub("missing")
+        await plan.get_hub(WS_A, "missing")
 
 
 async def test_request_cover_manual_is_recorded_on_the_job(plan: Plan, queue: JobQueue) -> None:
     _, view = await _create_plan(plan)
-    await plan.request_cover(view.items[0].id, manual=True)
+    await plan.request_cover(WS_A, view.items[0].id, manual=True)
     manual = await queue.claim_next()
     assert manual is not None
-    await plan.apply_cover(view.items[0].id, b"img", "image/png")
-    await plan.request_cover(view.items[0].id)
+    await plan.apply_cover(WS_A, view.items[0].id, b"img", "image/png")
+    await plan.request_cover(WS_A, view.items[0].id)
     automatic = await queue.claim_next()
     assert automatic is not None
 
-    assert await plan.is_manual_cover_job(manual.id) is True
-    assert await plan.is_manual_cover_job(automatic.id) is False
+    assert await plan.is_manual_cover_job(WS_A, manual.id) is True
+    assert await plan.is_manual_cover_job(WS_A, automatic.id) is False
 
 
 async def test_get_plan_id_for_item_resolves_the_owning_plan(plan: Plan) -> None:
     plan_id, view = await _create_plan(plan)
 
-    assert await plan.get_plan_id_for_item(view.items[0].id) == plan_id
+    assert await plan.get_plan_id_for_item(WS_A, view.items[0].id) == plan_id
 
 
 async def test_get_plan_id_for_item_raises_for_unknown_item(plan: Plan) -> None:
     with pytest.raises(PlanItemNotFound):
-        await plan.get_plan_id_for_item("missing")
+        await plan.get_plan_id_for_item(WS_A, "missing")

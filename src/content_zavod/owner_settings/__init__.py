@@ -1,3 +1,3 @@
-from .settings_store import OwnerSettingsStore
+from .settings_store import BotStateStore, WorkspaceSettingsStore
 
-__all__ = ["OwnerSettingsStore"]
+__all__ = ["BotStateStore", "WorkspaceSettingsStore"]

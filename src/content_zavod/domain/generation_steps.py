@@ -7,6 +7,10 @@ Written by the worker itself right after each attempt settles (see
 `on_attempt` hook), not by the async notification path - a Job that gets
 retried still has its earlier, failed attempts' steps recorded, so
 `job_cost` sums the true cost of the Job, not just its last attempt.
+
+This is also the Учёт расхода of a Пространство (ADR-0015): every row carries the Job's
+`workspace_id` (composite FK to `jobs`), a `unit` and a `quantity`, and the table is
+append-only in the database itself - a trigger rejects UPDATE and DELETE.
 """
 
 from __future__ import annotations
@@ -17,6 +21,19 @@ from datetime import datetime
 from typing import Any
 
 import asyncpg
+
+from ..workspaces import WorkspaceId
+
+# shortcut: the unit is derived from the step name until the pipelines' StepRecord carries
+# its own `unit`/`quantity` (PR 2 of #118, which also starts recording Wordstat requests).
+_UNIT_BY_STEP_NAME = {"cover": "image", "research_search": "search_request"}
+
+
+def _unit_and_quantity(step: dict[str, Any]) -> tuple[str, int | None]:
+    if "unit" in step:
+        return step["unit"], step.get("quantity")
+    unit = _UNIT_BY_STEP_NAME.get(step["step_name"], "tokens")
+    return unit, step["tokens"] if unit == "tokens" else 1
 
 
 @dataclass(frozen=True)
@@ -36,6 +53,8 @@ class GenerationStepView:
     latency_ms: int
     cost: float | None
     created_at: datetime
+    unit: str
+    quantity: int | None
 
 
 @dataclass(frozen=True)
@@ -58,6 +77,7 @@ class GenerationSteps:
 
     async def record_many(
         self,
+        workspace_id: WorkspaceId,
         *,
         job_id: int,
         job_type: str,
@@ -71,8 +91,8 @@ class GenerationSteps:
             INSERT INTO generation_steps
                 (job_id, job_type, article_id, step_name, provider, model, params,
                  prompt_template_version, prompt_hash, tokens, usage_missing,
-                 latency_ms, cost)
-            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13)
+                 latency_ms, cost, workspace_id, unit, quantity)
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             """,
             [
                 (
@@ -89,12 +109,14 @@ class GenerationSteps:
                     step["usage_missing"],
                     step["latency_ms"],
                     step["cost"],
+                    workspace_id,
+                    *_unit_and_quantity(step),
                 )
                 for step in steps
             ],
         )
 
-    async def job_cost(self, job_id: int) -> JobCostSummary:
+    async def job_cost(self, workspace_id: WorkspaceId, job_id: int) -> JobCostSummary:
         row = await self._pool.fetchrow(
             """
             SELECT
@@ -102,9 +124,10 @@ class GenerationSteps:
                 COUNT(*) FILTER (WHERE cost IS NULL) AS missing,
                 COUNT(*) AS step_count
             FROM generation_steps
-            WHERE job_id = $1
+            WHERE job_id = $1 AND workspace_id = $2
             """,
             job_id,
+            workspace_id,
         )
         assert row is not None
         return JobCostSummary(
@@ -113,31 +136,37 @@ class GenerationSteps:
             step_count=row["step_count"],
         )
 
-    async def list_for_article(self, article_id: str) -> list[GenerationStepView]:
+    async def list_for_article(
+        self, workspace_id: WorkspaceId, article_id: str
+    ) -> list[GenerationStepView]:
         rows = await self._pool.fetch(
             """
             SELECT id, job_id, job_type, article_id, step_name, provider, model, params,
                    prompt_template_version, prompt_hash, tokens, usage_missing,
-                   latency_ms, cost, created_at
+                   latency_ms, cost, created_at, unit, quantity
             FROM generation_steps
-            WHERE article_id = $1
+            WHERE article_id = $1 AND workspace_id = $2
             ORDER BY created_at
             """,
             article_id,
+            workspace_id,
         )
         return [_to_view(row) for row in rows]
 
-    async def list_for_job(self, job_id: int) -> list[GenerationStepView]:
+    async def list_for_job(
+        self, workspace_id: WorkspaceId, job_id: int
+    ) -> list[GenerationStepView]:
         rows = await self._pool.fetch(
             """
             SELECT id, job_id, job_type, article_id, step_name, provider, model, params,
                    prompt_template_version, prompt_hash, tokens, usage_missing,
-                   latency_ms, cost, created_at
+                   latency_ms, cost, created_at, unit, quantity
             FROM generation_steps
-            WHERE job_id = $1
+            WHERE job_id = $1 AND workspace_id = $2
             ORDER BY created_at
             """,
             job_id,
+            workspace_id,
         )
         return [_to_view(row) for row in rows]
 
@@ -159,4 +188,6 @@ def _to_view(row: asyncpg.Record) -> GenerationStepView:
         latency_ms=row["latency_ms"],
         cost=float(row["cost"]) if row["cost"] is not None else None,
         created_at=row["created_at"],
+        unit=row["unit"],
+        quantity=row["quantity"],
     )

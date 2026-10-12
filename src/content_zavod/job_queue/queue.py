@@ -1,11 +1,18 @@
 """JobQueue: a Postgres-backed job queue.
 
-Idempotent enqueue (unique `idempotency_key`), atomic claim via
+Idempotent enqueue (`idempotency_key` unique per Workspace), atomic claim via
 `SELECT ... FOR UPDATE SKIP LOCKED` so multiple workers can pull from the
 same table safely, exponential-backoff retries up to a limit, and recovery
 of `running` jobs abandoned by a crashed worker. Job result and status are
 written in the same statement, so a job is never `done`/`failed` without
 its result.
+
+Every Job belongs to one Workspace (ADR-0015). The caller-facing methods - `enqueue`,
+`get_status`, `get_job`, `retry` - take its `workspace_id` first and only ever touch that
+Workspace's Jobs. The worker-side ones (`claim_next`, `heartbeat`, `complete`, `fail`,
+`recover_stuck`, `claim_notification`, `mark_notified`, `reschedule_notification`) work
+across Workspaces by design: they act on a Job already claimed by id + lease, and hand its
+`workspace_id` on in `ClaimedJob`/`JobResult`.
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ from typing import Any
 
 import asyncpg
 
+from ..workspaces import WorkspaceId
 from .errors import JobNotFound, JobQueueError
 from .models import JobId, JobResult, JobSnapshot, JobStatus
 
@@ -29,6 +37,7 @@ def _exponential_delay(base_delay: float, attempts: int) -> float:
 @dataclass(frozen=True)
 class ClaimedJob:
     id: JobId
+    workspace_id: WorkspaceId
     job_type: str
     payload: dict[str, Any]
     attempts: int
@@ -59,14 +68,22 @@ class JobQueue:
         self._notification_base_delay = notification_base_delay
         self._stuck_timeout = stuck_timeout
 
-    async def enqueue(self, job_type: str, payload: dict[str, Any], idempotency_key: str) -> JobId:
+    async def enqueue(
+        self,
+        workspace_id: WorkspaceId,
+        job_type: str,
+        payload: dict[str, Any],
+        idempotency_key: str,
+    ) -> JobId:
         row = await self._pool.fetchrow(
             """
-            INSERT INTO jobs (job_type, payload, idempotency_key)
-            VALUES ($1, $2::jsonb, $3)
-            ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+            INSERT INTO jobs (workspace_id, job_type, payload, idempotency_key)
+            VALUES ($1, $2, $3::jsonb, $4)
+            ON CONFLICT (workspace_id, idempotency_key)
+            DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
             RETURNING id
             """,
+            workspace_id,
             job_type,
             json.dumps(payload),
             idempotency_key,
@@ -77,16 +94,21 @@ class JobQueue:
             )
         return JobId(row["id"])
 
-    async def get_status(self, job_id: JobId) -> JobStatus:
-        row = await self._pool.fetchrow("SELECT status FROM jobs WHERE id = $1", job_id)
+    async def get_status(self, workspace_id: WorkspaceId, job_id: JobId) -> JobStatus:
+        row = await self._pool.fetchrow(
+            "SELECT status FROM jobs WHERE id = $1 AND workspace_id = $2", job_id, workspace_id
+        )
         if row is None:
             raise JobNotFound(job_id)
         return row["status"]
 
-    async def get_job(self, job_id: JobId) -> JobSnapshot | None:
-        """The Job as stored now, or `None` if there is no such Job."""
+    async def get_job(self, workspace_id: WorkspaceId, job_id: JobId) -> JobSnapshot | None:
+        """The Job as stored now, or `None` if this Workspace has no such Job."""
         row = await self._pool.fetchrow(
-            "SELECT id, job_type, status, payload, output FROM jobs WHERE id = $1", job_id
+            "SELECT id, job_type, status, payload, output FROM jobs "
+            "WHERE id = $1 AND workspace_id = $2",
+            job_id,
+            workspace_id,
         )
         if row is None:
             return None
@@ -112,7 +134,7 @@ class JobQueue:
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
             )
-            RETURNING id, job_type, payload, attempts, lease_token
+            RETURNING id, workspace_id, job_type, payload, attempts, lease_token
             """,
             lease_token,
         )
@@ -120,6 +142,7 @@ class JobQueue:
             return None
         return ClaimedJob(
             id=JobId(row["id"]),
+            workspace_id=WorkspaceId(row["workspace_id"]),
             job_type=row["job_type"],
             payload=json.loads(row["payload"]),
             attempts=row["attempts"],
@@ -189,7 +212,7 @@ class JobQueue:
             )
         return result == "UPDATE 1"
 
-    async def retry(self, job_id: JobId) -> bool:
+    async def retry(self, workspace_id: WorkspaceId, job_id: JobId) -> bool:
         """Reset a failed job back to queued, for a user-triggered "Повторить" retry.
 
         Also clears `notified_at` so the eventual re-completion (done or
@@ -201,14 +224,17 @@ class JobQueue:
             UPDATE jobs
             SET status = 'queued', attempts = 0, error = NULL, run_at = now(),
                 locked_at = NULL, lease_token = NULL, notified_at = NULL, updated_at = now()
-            WHERE id = $1 AND status = 'failed'
+            WHERE id = $1 AND workspace_id = $2 AND status = 'failed'
             """,
             job_id,
+            workspace_id,
         )
         if result == "UPDATE 1":
             return True
         exists = await self._pool.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM jobs WHERE id = $1)", job_id
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE id = $1 AND workspace_id = $2)",
+            job_id,
+            workspace_id,
         )
         if not exists:
             raise JobNotFound(job_id)
@@ -248,7 +274,7 @@ class JobQueue:
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
             )
-            RETURNING id, job_type, status, output, error, notification_attempts
+            RETURNING id, workspace_id, job_type, status, output, error, notification_attempts
             """
         )
         if row is None:
@@ -257,6 +283,7 @@ class JobQueue:
             job_id=JobId(row["id"]),
             job_type=row["job_type"],
             status=row["status"],
+            workspace_id=WorkspaceId(row["workspace_id"]),
             output=json.loads(row["output"]) if row["output"] is not None else None,
             error=row["error"],
         )

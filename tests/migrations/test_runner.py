@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+from pathlib import Path
 
 import asyncpg
 
 from content_zavod.migrations import SQL_DIR, load_migrations, run_migrations
+
+
+def _migrations_through(directory: Path, last: str) -> Path:
+    """A copy of the migrations up to and including `last` (a version prefix) - for tests
+    that inspect data a later migration (0012's clean slate) deletes."""
+    for path in sorted(SQL_DIR.glob("*.sql")):
+        if path.stem[:4] <= last:
+            shutil.copy(path, directory / path.name)
+    return directory
 
 
 async def test_run_pending_applies_every_migration_once_and_is_idempotent(
@@ -23,6 +34,7 @@ async def test_run_pending_applies_every_migration_once_and_is_idempotent(
         "0009_article_telegraph_path",
         "0010_plan_hub",
         "0011_topic_research",
+        "0012_personal_workspaces",
     ]
 
     applied_second_run = await run_migrations(isolated_pool)
@@ -41,6 +53,7 @@ async def test_run_pending_applies_every_migration_once_and_is_idempotent(
         "0009_article_telegraph_path",
         "0010_plan_hub",
         "0011_topic_research",
+        "0012_personal_workspaces",
     ]
 
 
@@ -57,7 +70,7 @@ async def test_fresh_install_ends_up_with_the_one_pending_review_per_week_index(
 
 
 async def test_upgrade_dedupes_pre_existing_duplicate_pending_review_plans(
-    isolated_pool: asyncpg.Pool,
+    isolated_pool: asyncpg.Pool, tmp_path: Path
 ) -> None:
     """The scenario the ticket is about: an installation that has been running
     the old `ensure_schema()`-on-startup baseline (idempotent `CREATE TABLE IF
@@ -85,7 +98,7 @@ async def test_upgrade_dedupes_pre_existing_duplicate_pending_review_plans(
         older_id,
     )
 
-    applied = await run_migrations(isolated_pool)
+    applied = await run_migrations(isolated_pool, _migrations_through(tmp_path, "0011"))
 
     assert "0002_dedupe_pending_review_plans" in applied
     statuses = {
@@ -132,13 +145,14 @@ async def test_concurrent_run_pending_does_not_race_on_the_tracking_insert(
         "0009_article_telegraph_path",
         "0010_plan_hub",
         "0011_topic_research",
+        "0012_personal_workspaces",
     }
     recorded = await isolated_pool.fetch("SELECT version FROM schema_migrations")
-    assert len(recorded) == 11
+    assert len(recorded) == 12
 
 
 async def test_rollback_of_0002_drops_only_the_index_without_losing_data(
-    isolated_pool: asyncpg.Pool,
+    isolated_pool: asyncpg.Pool, tmp_path: Path
 ) -> None:
     """Exercises the rollback ADR-0013 documents for `0002`: dropping the
     index and its tracking row must not touch the archived duplicate Plan or
@@ -157,7 +171,7 @@ async def test_rollback_of_0002_drops_only_the_index_without_losing_data(
         older_id,
         newer_id,
     )
-    await run_migrations(isolated_pool)
+    await run_migrations(isolated_pool, _migrations_through(tmp_path, "0011"))
 
     await isolated_pool.execute("DROP INDEX plans_one_pending_review_per_week_key")
     await isolated_pool.execute(

@@ -49,7 +49,7 @@ from ..domain import (
 )
 from ..job_queue import JobQueue, JobResult, run_notifications
 from ..migrations import run_migrations
-from ..owner_settings import OwnerSettingsStore
+from ..owner_settings import BotStateStore, WorkspaceSettingsStore
 from ..scheduling import (
     DEFAULT_DAY_OF_WEEK,
     DEFAULT_HOUR,
@@ -111,6 +111,7 @@ from ..telegram.texts import (
 )
 from ..telegraph import HttpxTelegraphClient, TelegraphPublisher, project_footer
 from ._process import register_shutdown
+from ._team_workspace import TeamScoped, team_workspace_id
 
 logger = logging.getLogger(__name__)
 
@@ -743,16 +744,21 @@ async def main(settings: Settings | None = None) -> None:
         queue = JobQueue(pool)
         membership = Membership(pool)
         join_requests = JoinRequests(pool)
-        schedule_settings = ScheduleSettings(pool)
-        owner_settings = OwnerSettingsStore(pool)
+        # shortcut: the whole Telegram layer acts in the team Workspace (ADR-0015,
+        # «Промежуточное состояние») until PR 4 of #118 resolves one per update.
+        workspace_id = await team_workspace_id(pool, settings)
+        team_queue = TeamScoped(queue, workspace_id)
+        schedule_settings = TeamScoped(ScheduleSettings(pool), workspace_id)
+        owner_settings = TeamScoped(WorkspaceSettingsStore(pool), workspace_id)
         owner_settings_service = SettingsService(owner_settings)
-        plan = Plan(pool, queue, covers_enabled=settings.covers_enabled)
-        article = Article(pool, queue)
+        bot_state = BotStateStore(pool)
+        plan = TeamScoped(Plan(pool, queue, covers_enabled=settings.covers_enabled), workspace_id)
+        article = TeamScoped(Article(pool, queue), workspace_id)
 
         bot = Bot(token=settings.telegram_bot_token)
         bot_client = _AiogramBotClient(bot)
         gateway = TelegramGateway(bot_client, covers=settings.covers_enabled)
-        pending_inputs = PendingInputs(pool)
+        pending_inputs = TeamScoped(PendingInputs(pool), workspace_id)
         comment_prompt = TelegramCommentPrompt(bot_client)
         plan_review = PlanReview(plan, comment_prompt, pending_inputs)
         article_comment_prompt = TelegramCommentPrompt(bot_client, action="regenerate_article")
@@ -764,12 +770,12 @@ async def main(settings: Settings | None = None) -> None:
         )
         bot_username = (await bot.me()).username
         # The Инструкция's pictures and the banners (#114), uploaded once and reused by file_id.
-        photos = AssetPhotos(bot_client, owner_settings)
+        photos = AssetPhotos(bot_client, bot_state)
         guide = Guide(photos, bot_client)
         team_note = TeamNote(
             photos,
             bot_client,
-            owner_settings,
+            bot_state,
             team_chat_id=settings.telegram_notify_chat_id,
             bot_username=bot_username,
         )
@@ -802,7 +808,7 @@ async def main(settings: Settings | None = None) -> None:
         scheduler.start()
 
         # Направления suggested from the Ниша (#113): the model call is a Job in the worker.
-        directions = DirectionSuggestions(queue, owner_settings_service, bot_client)
+        directions = DirectionSuggestions(team_queue, owner_settings_service, bot_client)
         settings_screen = SettingsScreen(
             owner_settings_service,
             schedule_settings,
@@ -814,7 +820,7 @@ async def main(settings: Settings | None = None) -> None:
         )
         main_menu = MainMenu(
             plan,
-            queue,
+            team_queue,
             schedule_settings,
             bot_client,
             gateway,
@@ -845,12 +851,15 @@ async def main(settings: Settings | None = None) -> None:
         await resync_member_commands(bot_client, await membership.list_all())
 
         telegraph_client = HttpxTelegraphClient()
-        publisher = TelegraphPublisher(
-            telegraph_client,
-            article,
-            owner_settings,
-            access_token=settings.telegraph_access_token,
-            footer_link=project_footer(owner_settings_service),
+        publisher = TeamScoped(
+            TelegraphPublisher(
+                telegraph_client,
+                Article(pool, queue),
+                bot_state,
+                access_token=settings.telegraph_access_token,
+                footer_link=project_footer(WorkspaceSettingsStore(pool)),
+            ),
+            workspace_id,
         )
         dispatcher = Dispatcher()
         dispatcher.include_router(
@@ -866,7 +875,7 @@ async def main(settings: Settings | None = None) -> None:
                 settings_screen,
                 main_menu,
                 prompts,
-                queue,
+                team_queue,
                 settings,
                 onboarding,
                 guide,

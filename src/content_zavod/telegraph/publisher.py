@@ -4,7 +4,11 @@ The first ready Версия creates the page; every later Версия (Пер�
 page, so the «📖 Читать» link a Контент-менеджер already has keeps working. The page path is
 stored per Статья (`ArticlePages`). The access token comes from `TELEGRAPH_ACCESS_TOKEN`
 when set, otherwise an account is created on first use and its token kept in
-`owner_settings` - one account for the whole installation.
+`bot_state` - one account for the whole installation, shared by every Пространство.
+
+Everything else is per Пространство (ADR-0015): `publish` takes the Статья's `workspace_id`,
+reads and writes its page path through it, and asks `footer_link` for that Workspace's own
+Проект - Статья B must never go out with Workspace A's link.
 
 `publish` never raises: Telegraph is an optional convenience, so any failure is logged and
 the caller delivers the Article card without the «Читать» button.
@@ -19,7 +23,9 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from ..domain import ArticleId, ArticleView
-from ..settings import SettingsReader
+from ..settings import PROJECT_KEY
+from ..settings.project import parse_stored_project
+from ..workspaces import WorkspaceId
 from .client import TelegraphClient, TelegraphError
 from .nodes import FooterLink, Node, fit_content, footer_nodes, markdown_to_nodes
 
@@ -30,13 +36,21 @@ DEFAULT_AUTHOR_NAME = "Content Zavod"
 _SHORT_NAME = "content-zavod"
 _TITLE_LIMIT = 256
 
-FooterLinkSource = Callable[[], Awaitable[FooterLink | None]]
+FooterLinkSource = Callable[[WorkspaceId], Awaitable[FooterLink | None]]
 
 
 class ArticlePages(Protocol):
-    async def get_telegraph_path(self, article_id: ArticleId) -> str | None: ...
+    async def get_telegraph_path(
+        self, workspace_id: WorkspaceId, article_id: ArticleId
+    ) -> str | None: ...
 
-    async def set_telegraph_path(self, article_id: ArticleId, path: str) -> None: ...
+    async def set_telegraph_path(
+        self, workspace_id: WorkspaceId, article_id: ArticleId, path: str
+    ) -> None: ...
+
+
+class WorkspaceSettings(Protocol):
+    async def get(self, workspace_id: WorkspaceId, key: str) -> str | None: ...
 
 
 class SettingsStore(Protocol):
@@ -56,8 +70,8 @@ class TelegraphPublisher:
         author_name: str = DEFAULT_AUTHOR_NAME,
         footer_link: FooterLinkSource | None = None,
     ) -> None:
-        """`footer_link`, if given, is asked on every publish for a closing link (e.g. the
-        customer's project); returning `None` leaves the page without one. The footer is also
+        """`footer_link`, if given, is asked on every publish for the Статья's Workspace's
+        closing link (its Проект); returning `None` leaves the page without one. The footer is also
         skipped when the text already links that URL - with a Проект set the pipeline ends
         every Статья with a CTA to it (#98), so only Статьи written before the Проект was
         set (or changed) get the footer."""
@@ -69,19 +83,19 @@ class TelegraphPublisher:
         self._footer_link = footer_link
         self._token_lock = asyncio.Lock()
 
-    async def publish(self, article: ArticleView) -> str | None:
+    async def publish(self, workspace_id: WorkspaceId, article: ArticleView) -> str | None:
         """Creates or updates the Статья's page and returns its URL, or `None` on failure."""
         try:
-            return await self._publish(article)
+            return await self._publish(workspace_id, article)
         except Exception:
             logger.exception("Telegraph publish failed for article_id=%s", article.id)
             return None
 
-    async def _publish(self, article: ArticleView) -> str:
+    async def _publish(self, workspace_id: WorkspaceId, article: ArticleView) -> str:
         token = await self._token()
         title = _page_title(article.title)
-        content = await self._content(article, title)
-        path = await self._pages.get_telegraph_path(article.id)
+        content = await self._content(workspace_id, article, title)
+        path = await self._pages.get_telegraph_path(workspace_id, article.id)
         if path is not None:
             try:
                 page = await self._client.edit_page(
@@ -100,13 +114,15 @@ class TelegraphPublisher:
         page = await self._client.create_page(
             token, title=title, content=content, author_name=self._author_name
         )
-        await self._pages.set_telegraph_path(article.id, page.path)
+        await self._pages.set_telegraph_path(workspace_id, article.id, page.path)
         return page.url
 
-    async def _content(self, article: ArticleView, title: str) -> list[Node]:
+    async def _content(
+        self, workspace_id: WorkspaceId, article: ArticleView, title: str
+    ) -> list[Node]:
         markdown = article.content.decode("utf-8")
         nodes = markdown_to_nodes(markdown, title=title)
-        footer = await self._footer_link() if self._footer_link is not None else None
+        footer = await self._footer_link(workspace_id) if self._footer_link is not None else None
         if footer is not None and _mentions_url(markdown, footer.url):
             # The pipeline already closes the text with a CTA to this exact link (#98);
             # a second copy in the footer would just repeat it on the page.
@@ -130,12 +146,12 @@ class TelegraphPublisher:
             return stored
 
 
-def project_footer(settings: SettingsReader) -> FooterLinkSource:
-    """The Owner's Проект (#98) as the page's closing link, re-read on every publish so a
+def project_footer(settings: WorkspaceSettings) -> FooterLinkSource:
+    """The Workspace's Проект (#98) as the page's closing link, re-read on every publish so a
     `/set_project` change reaches the next published Версия; `None` while no Проект is set."""
 
-    async def footer() -> FooterLink | None:
-        project = (await settings.read()).project
+    async def footer(workspace_id: WorkspaceId) -> FooterLink | None:
+        project = parse_stored_project(await settings.get(workspace_id, PROJECT_KEY))
         if project is None:
             return None
         return FooterLink(text=project.description, url=project.url)

@@ -10,8 +10,9 @@
 - no `onboarding` row - offered only while no Настройка is stored at all, so an install that
   configured its Ниша (or anything else) before the wizard existed is never pushed into it.
 
-The flag lives in the same `owner_settings` key-value table as the Настройки (no migration).
-Like them it is one per bot, so two Владельца share it: whoever launches first finishes it.
+The flag lives in the same `workspace_settings` key-value table as the Настройки, so like
+them it is one per Пространство. The store handed in is already bound to one Workspace
+(today the team one, see `entrypoints._team_workspace`): this class never sees another's flag.
 """
 
 from __future__ import annotations

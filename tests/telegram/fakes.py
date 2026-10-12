@@ -5,6 +5,7 @@ from typing import Any
 from content_zavod.job_queue import JobResult, JobSnapshot
 from content_zavod.telegram.gateway import SentPhoto
 from content_zavod.telegram.pending_inputs import PendingInput
+from tests.tenancy import WS_A
 
 
 class FakePendingInputs:
@@ -69,7 +70,9 @@ class FakeJobs:
         job = self.jobs[job_id]
         status = "done" if output is not None else "failed"
         self.jobs[job_id] = JobSnapshot(job_id, job.job_type, status, job.payload, output)
-        return JobResult(job_id=job_id, job_type=job.job_type, status=status, output=output)
+        return JobResult(
+            workspace_id=WS_A, job_id=job_id, job_type=job.job_type, status=status, output=output
+        )
 
 
 class RecordingBot:

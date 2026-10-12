@@ -5,6 +5,7 @@ import asyncio
 import asyncpg
 
 from content_zavod.job_queue import JobQueue, JobResult, run_notifications
+from tests.tenancy import WS_A
 
 
 async def test_claim_notification_returns_none_when_nothing_is_pending(queue: JobQueue) -> None:
@@ -12,7 +13,7 @@ async def test_claim_notification_returns_none_when_nothing_is_pending(queue: Jo
 
 
 async def test_claim_notification_returns_the_result_of_a_done_job(queue: JobQueue) -> None:
-    job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
+    job_id = await queue.enqueue(WS_A, "generate_plan", {}, idempotency_key="plan-1")
     job = await queue.claim_next()
     assert job is not None
     await queue.complete(job_id, {"plan": "ok"}, job.lease_token)
@@ -21,14 +22,19 @@ async def test_claim_notification_returns_the_result_of_a_done_job(queue: JobQue
 
     assert claimed is not None
     assert claimed.result == JobResult(
-        job_id=job_id, job_type="generate_plan", status="done", output={"plan": "ok"}, error=None
+        workspace_id=WS_A,
+        job_id=job_id,
+        job_type="generate_plan",
+        status="done",
+        output={"plan": "ok"},
+        error=None,
     )
 
 
 async def test_two_concurrent_notification_claims_never_return_the_same_job(
     queue: JobQueue,
 ) -> None:
-    job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
+    job_id = await queue.enqueue(WS_A, "generate_plan", {}, idempotency_key="plan-1")
     job = await queue.claim_next()
     assert job is not None
     await queue.complete(job_id, {"plan": "ok"}, job.lease_token)
@@ -42,7 +48,7 @@ async def test_two_concurrent_notification_claims_never_return_the_same_job(
 async def test_run_notifications_calls_handle_exactly_once_for_a_successful_delivery(
     queue: JobQueue,
 ) -> None:
-    job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
+    job_id = await queue.enqueue(WS_A, "generate_plan", {}, idempotency_key="plan-1")
     job = await queue.claim_next()
     assert job is not None
     await queue.complete(job_id, {"plan": "ok"}, job.lease_token)
@@ -69,8 +75,8 @@ async def test_run_notifications_retries_a_failing_handler_until_it_succeeds(
     pool: asyncpg.Pool,
 ) -> None:
     queue = JobQueue(pool, notification_max_attempts=5, notification_base_delay=0.01)
-    await pool.execute("TRUNCATE TABLE jobs, generation_steps RESTART IDENTITY")
-    job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
+    await pool.execute("TRUNCATE TABLE jobs, generation_steps RESTART IDENTITY CASCADE")
+    job_id = await queue.enqueue(WS_A, "generate_plan", {}, idempotency_key="plan-1")
     job = await queue.claim_next()
     assert job is not None
     await queue.complete(job_id, {"plan": "ok"}, job.lease_token)
@@ -98,8 +104,8 @@ async def test_run_notifications_gives_up_after_max_attempts_and_marks_delivered
     pool: asyncpg.Pool,
 ) -> None:
     queue = JobQueue(pool, notification_max_attempts=2, notification_base_delay=0.01)
-    await pool.execute("TRUNCATE TABLE jobs, generation_steps RESTART IDENTITY")
-    job_id = await queue.enqueue("generate_plan", {}, idempotency_key="plan-1")
+    await pool.execute("TRUNCATE TABLE jobs, generation_steps RESTART IDENTITY CASCADE")
+    job_id = await queue.enqueue(WS_A, "generate_plan", {}, idempotency_key="plan-1")
     job = await queue.claim_next()
     assert job is not None
     await queue.complete(job_id, {"plan": "ok"}, job.lease_token)
