@@ -1,10 +1,14 @@
 """KeywordStats: a narrow client to Wordstat via Yandex Search API.
 
-Invariant (per issue #3): `keyword_stats()` never raises when Wordstat is
-unavailable. A failure for one keyword just means that keyword is missing
-from the returned dict, so a Plan can still be generated without its
-numbers. Caches frequencies internally so repeated lookups don't re-hit
-the API.
+Two calls, both raising `YandexError` on failure - the caller (the Карта Ниши and the weekly
+Plan, #128) decides that a missing number means "no signal", never a failed Plan:
+- `top_requests` (`GetTop`): the phrase's monthly frequency, the most frequent queries that
+  contain it and Yandex's associations (similar queries). Counts arrive as strings.
+- `keyword_dynamics` (`GetDynamics`): the count per week or month.
+
+Wordstat's quota is 100 requests an hour and 10 a second per folder. A 429 is waited out and
+retried a couple of times with its own delay (`rate_limit_delay`, longer than the connection
+retry's), then raised as `RateLimited` for the caller to stop asking.
 
 `searchapi.api.cloud.yandex.net` was observed (see
 `docs/integrations/yandex-search-api.md`) to occasionally fail with
@@ -15,13 +19,11 @@ respond, hence the connection retry and generous default timeout.
 from __future__ import annotations
 
 import asyncio
-import logging
-import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from ._resilience import with_connection_retry
+from ._resilience import with_backoff_retry, with_connection_retry
 from .credentials import CredentialProvider, IamTokenProvider, StaticApiKeyProvider
 from .errors import YandexError
 from .http import HttpResponse, HttpTransport, HttpxTransport
@@ -30,8 +32,8 @@ TOP_REQUESTS_URL = "https://searchapi.api.cloud.yandex.net/v2/wordstat/topReques
 DYNAMICS_URL = "https://searchapi.api.cloud.yandex.net/v2/wordstat/dynamics"
 
 DEFAULT_TIMEOUT = 90.0
-
-logger = logging.getLogger(__name__)
+RATE_LIMIT_DELAY = 2.0
+"""First wait after a Wordstat 429, doubled per retry: the response names no wait of its own."""
 
 
 @dataclass(frozen=True)
@@ -41,10 +43,13 @@ class KeywordStat:
 
 
 @dataclass(frozen=True)
-class KeywordStatsUsage:
-    stats: dict[str, KeywordStat]
-    # Real Wordstat requests sent, answered or not - the Учёт расхода counts these.
-    requests: int
+class TopRequests:
+    """`GetTop` for one phrase: `frequency` is the phrase's own monthly count (`totalCount`),
+    `results` the most frequent queries containing it, `associations` similar queries."""
+
+    frequency: int
+    results: list[KeywordStat]
+    associations: list[KeywordStat]
 
 
 @dataclass(frozen=True)
@@ -61,23 +66,22 @@ class KeywordStats:
         credentials: CredentialProvider,
         *,
         folder_id: str,
-        cache_ttl: float = 3600.0,
         max_retries: int = 2,
+        rate_limit_retries: int = 2,
+        rate_limit_delay: float = RATE_LIMIT_DELAY,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-        clock: Callable[[], float] = time.monotonic,
         top_requests_url: str = TOP_REQUESTS_URL,
         dynamics_url: str = DYNAMICS_URL,
     ) -> None:
         self._transport = transport
         self._credentials = credentials
         self._folder_id = folder_id
-        self._cache_ttl = cache_ttl
         self._max_retries = max_retries
+        self._rate_limit_retries = rate_limit_retries
+        self._rate_limit_delay = rate_limit_delay
         self._sleep = sleep
-        self._clock = clock
         self._top_requests_url = top_requests_url
         self._dynamics_url = dynamics_url
-        self._cache: dict[str, tuple[float, KeywordStat]] = {}
 
     @classmethod
     def with_service_account_key(
@@ -102,27 +106,23 @@ class KeywordStats:
             **kwargs,
         )
 
-    async def keyword_stats(self, keywords: list[str]) -> dict[str, KeywordStat]:
-        return (await self.keyword_stats_with_usage(keywords)).stats
-
-    async def keyword_stats_with_usage(self, keywords: list[str]) -> KeywordStatsUsage:
-        """`keyword_stats`, plus how many real requests it took - a cache hit is none."""
-        result: dict[str, KeywordStat] = {}
-        requests = 0
-        for keyword in keywords:
-            cached = self._cached(keyword)
-            if cached is not None:
-                result[keyword] = cached
-                continue
-            requests += 1
-            try:
-                stat = await self._fetch(keyword)
-            except Exception:
-                logger.warning("Wordstat lookup failed for keyword %r", keyword, exc_info=True)
-                continue
-            self._cache[keyword] = (self._clock(), stat)
-            result[keyword] = stat
-        return KeywordStatsUsage(stats=result, requests=requests)
+    async def top_requests(self, phrase: str, *, num_phrases: int = 20) -> TopRequests:
+        response = await self._post(
+            self._top_requests_url, {"phrase": phrase, "numPhrases": num_phrases}
+        )
+        try:
+            body = response.body
+            results = _stats(body.get("results") or [])
+            total = body.get("totalCount")
+            return TopRequests(
+                frequency=int(total)
+                if total is not None
+                else sum(r.frequency for r in results[:1]),
+                results=results,
+                associations=_stats(body.get("associations") or []),
+            )
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            raise YandexError(f"Malformed Wordstat response: {response.body}") from exc
 
     async def keyword_dynamics(
         self,
@@ -132,28 +132,10 @@ class KeywordStats:
         from_date: str,
         to_date: str,
     ) -> list[KeywordDynamicsPoint]:
-        headers = await self._credentials.auth_header()
-
-        async def call() -> HttpResponse:
-            return await self._transport.post(
-                self._dynamics_url,
-                headers=headers,
-                json={
-                    "phrase": keyword,
-                    "period": period,
-                    "fromDate": from_date,
-                    "toDate": to_date,
-                    "folderId": self._folder_id,
-                },
-            )
-
-        response = await with_connection_retry(
-            call, max_retries=self._max_retries, sleep=self._sleep
+        response = await self._post(
+            self._dynamics_url,
+            {"phrase": keyword, "period": period, "fromDate": from_date, "toDate": to_date},
         )
-        if response.status != 200:
-            raise YandexError(
-                f"Wordstat dynamics request failed (status={response.status}): {response.body}"
-            )
         try:
             return [
                 KeywordDynamicsPoint(
@@ -166,32 +148,29 @@ class KeywordStats:
         except (KeyError, TypeError, ValueError) as exc:
             raise YandexError(f"Malformed Wordstat dynamics response: {response.body}") from exc
 
-    def _cached(self, keyword: str) -> KeywordStat | None:
-        entry = self._cache.get(keyword)
-        if entry is None:
-            return None
-        cached_at, stat = entry
-        if self._clock() - cached_at > self._cache_ttl:
-            return None
-        return stat
-
-    async def _fetch(self, keyword: str) -> KeywordStat:
+    async def _post(self, url: str, body: dict[str, Any]) -> HttpResponse:
+        """The 200 response, or the mapped error - `RateLimited` once a 429 outlasts the retries."""
         headers = await self._credentials.auth_header()
 
         async def call() -> HttpResponse:
             return await self._transport.post(
-                self._top_requests_url,
-                headers=headers,
-                json={"phrase": keyword, "numPhrases": 20, "folderId": self._folder_id},
+                url, headers=headers, json={**body, "folderId": self._folder_id}
             )
 
-        response = await with_connection_retry(
-            call, max_retries=self._max_retries, sleep=self._sleep
+        async def attempt() -> HttpResponse:
+            return await with_connection_retry(
+                call, max_retries=self._max_retries, sleep=self._sleep
+            )
+
+        return await with_backoff_retry(
+            attempt,
+            max_retries=self._rate_limit_retries,
+            sleep=self._sleep,
+            base_delay=self._rate_limit_delay,
         )
-        if response.status != 200:
-            raise YandexError(f"Wordstat request failed (status={response.status})")
-        try:
-            frequency = int(response.body["results"][0]["count"])
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise YandexError(f"Malformed Wordstat response: {response.body}") from exc
-        return KeywordStat(keyword=keyword, frequency=frequency)
+
+
+def _stats(items: list[dict[str, Any]]) -> list[KeywordStat]:
+    return [
+        KeywordStat(keyword=str(item["phrase"]), frequency=int(item["count"])) for item in items
+    ]

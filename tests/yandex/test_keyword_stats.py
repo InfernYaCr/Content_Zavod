@@ -1,7 +1,7 @@
 import pytest
 
 from content_zavod.yandex.credentials import StaticApiKeyProvider
-from content_zavod.yandex.errors import YandexError
+from content_zavod.yandex.errors import RateLimited, YandexError
 from content_zavod.yandex.http import HttpResponse
 from content_zavod.yandex.keyword_stats import (
     DYNAMICS_URL,
@@ -9,63 +9,86 @@ from content_zavod.yandex.keyword_stats import (
     KeywordDynamicsPoint,
     KeywordStat,
     KeywordStats,
+    TopRequests,
 )
 
-from .fakes import FakeClock, FakeHttpTransport, RecordingSleep
+from .fakes import FakeHttpTransport, RecordingSleep
 
 
 def _make_client(transport: FakeHttpTransport, **kwargs: object) -> KeywordStats:
     return KeywordStats(transport, StaticApiKeyProvider("key"), folder_id="folder-1", **kwargs)
 
 
-def _top_requests_response(count: int) -> HttpResponse:
-    return HttpResponse(
-        status=200, body={"results": [{"count": count}], "associations": [], "totalCount": count}
+# Counts arrive as strings (live check, #128).
+_TOP_BODY = {
+    "totalCount": "37305",
+    "results": [
+        {"phrase": "домашняя выпечка", "count": "37305"},
+        {"phrase": "выпечка рецепты", "count": "900"},
+    ],
+    "associations": [{"phrase": "что испечь", "count": "91912"}],
+}
+
+
+@pytest.mark.asyncio
+async def test_top_requests_reads_frequency_results_and_associations() -> None:
+    transport = FakeHttpTransport()
+    transport.queue_post(TOP_REQUESTS_URL, HttpResponse(status=200, body=_TOP_BODY))
+
+    result = await _make_client(transport).top_requests("домашняя выпечка", num_phrases=50)
+
+    assert result == TopRequests(
+        frequency=37305,
+        results=[KeywordStat("домашняя выпечка", 37305), KeywordStat("выпечка рецепты", 900)],
+        associations=[KeywordStat("что испечь", 91912)],
+    )
+    url, headers, body = transport.post_calls[0]
+    assert (url, headers) == (TOP_REQUESTS_URL, {"Authorization": "Api-Key key"})
+    assert body == {"phrase": "домашняя выпечка", "numPhrases": 50, "folderId": "folder-1"}
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_top_response_raises() -> None:
+    transport = FakeHttpTransport()
+    transport.queue_post(
+        TOP_REQUESTS_URL, HttpResponse(status=200, body={"results": [{"count": "x"}]})
     )
 
+    with pytest.raises(YandexError):
+        await _make_client(transport).top_requests("kw")
+
 
 @pytest.mark.asyncio
-async def test_returns_stats_for_available_keywords() -> None:
+async def test_a_429_is_waited_out_with_its_own_delay_then_retried() -> None:
     transport = FakeHttpTransport()
-    transport.queue_post(TOP_REQUESTS_URL, _top_requests_response(1200))
-    client = _make_client(transport)
-
-    result = await client.keyword_stats(["crm для малого бизнеса"])
-
-    assert result == {
-        "crm для малого бизнеса": KeywordStat(keyword="crm для малого бизнеса", frequency=1200)
-    }
-    url, _headers, body = transport.post_calls[0]
-    assert url == TOP_REQUESTS_URL
-    assert body == {"phrase": "crm для малого бизнеса", "numPhrases": 20, "folderId": "folder-1"}
-
-
-@pytest.mark.asyncio
-async def test_omits_unavailable_keyword_instead_of_raising() -> None:
-    transport = FakeHttpTransport()
-    transport.queue_post(TOP_REQUESTS_URL, _top_requests_response(500))
-    transport.queue_post(TOP_REQUESTS_URL, HttpResponse(status=503, body={}))
-    client = _make_client(transport)
-
-    result = await client.keyword_stats(["ok keyword", "broken keyword"])
-
-    assert result == {"ok keyword": KeywordStat(keyword="ok keyword", frequency=500)}
-    assert "broken keyword" not in result
-
-
-@pytest.mark.asyncio
-async def test_transport_exception_is_swallowed_after_retries_exhausted() -> None:
-    class ExplodingTransport(FakeHttpTransport):
-        async def post(self, url, *, headers, json):  # type: ignore[override]
-            raise ConnectionError("network unreachable")
-
+    transport.queue_post(TOP_REQUESTS_URL, HttpResponse(status=429, body={"code": 8}))
+    transport.queue_post(TOP_REQUESTS_URL, HttpResponse(status=200, body=_TOP_BODY))
     sleep = RecordingSleep()
-    client = _make_client(ExplodingTransport(), max_retries=2, sleep=sleep)
 
-    result = await client.keyword_stats(["anything"])
+    result = await _make_client(transport, sleep=sleep, rate_limit_delay=3.0).top_requests("kw")
 
-    assert result == {}
-    assert len(sleep.delays) == 2
+    assert result.frequency == 37305
+    assert sleep.delays == [3.0]
+
+
+@pytest.mark.asyncio
+async def test_a_429_outlasting_the_retries_raises_rate_limited() -> None:
+    transport = FakeHttpTransport()
+    for _ in range(3):
+        transport.queue_post(DYNAMICS_URL, HttpResponse(status=429, body={}))
+    sleep = RecordingSleep()
+    client = _make_client(transport, sleep=sleep, rate_limit_retries=2, rate_limit_delay=2.0)
+
+    with pytest.raises(RateLimited):
+        await client.keyword_dynamics(
+            "kw",
+            period="PERIOD_WEEKLY",
+            from_date="2025-08-18T00:00:00Z",
+            to_date="2026-10-18T00:00:00Z",
+        )
+
+    assert sleep.delays == [2.0, 4.0]
+    assert len(transport.post_calls) == 3
 
 
 @pytest.mark.asyncio
@@ -82,60 +105,13 @@ async def test_retries_on_connection_error_then_succeeds() -> None:
             return await super().post(url, headers=headers, json=json)
 
     transport = FlakyTransport()
-    transport.queue_post(TOP_REQUESTS_URL, _top_requests_response(700))
+    transport.queue_post(TOP_REQUESTS_URL, HttpResponse(status=200, body=_TOP_BODY))
     sleep = RecordingSleep()
-    client = _make_client(transport, max_retries=2, sleep=sleep)
 
-    result = await client.keyword_stats(["kw"])
+    result = await _make_client(transport, max_retries=2, sleep=sleep).top_requests("kw")
 
-    assert result == {"kw": KeywordStat(keyword="kw", frequency=700)}
+    assert result.frequency == 37305
     assert len(sleep.delays) == 1
-
-
-@pytest.mark.asyncio
-async def test_caches_frequency_within_ttl() -> None:
-    transport = FakeHttpTransport()
-    clock = FakeClock()
-    transport.queue_post(TOP_REQUESTS_URL, _top_requests_response(100))
-    client = _make_client(transport, cache_ttl=60.0, clock=clock)
-
-    first = await client.keyword_stats(["kw"])
-    clock.advance(30)
-    second = await client.keyword_stats(["kw"])
-
-    assert first == second
-    assert len(transport.post_calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_usage_counts_real_requests_only_not_cache_hits() -> None:
-    """ADR-0015: only a request actually sent is booked in the Учёт расхода."""
-    transport = FakeHttpTransport()
-    transport.queue_post(TOP_REQUESTS_URL, _top_requests_response(100))
-    transport.queue_post(TOP_REQUESTS_URL, HttpResponse(status=500, body={}))
-    client = _make_client(transport, max_retries=0)
-
-    first = await client.keyword_stats_with_usage(["kw", "broken"])
-    second = await client.keyword_stats_with_usage(["kw"])
-
-    assert (set(first.stats), first.requests) == ({"kw"}, 2)
-    assert (set(second.stats), second.requests) == ({"kw"}, 0)
-
-
-@pytest.mark.asyncio
-async def test_refetches_after_cache_expires() -> None:
-    transport = FakeHttpTransport()
-    clock = FakeClock()
-    transport.queue_post(TOP_REQUESTS_URL, _top_requests_response(100))
-    transport.queue_post(TOP_REQUESTS_URL, _top_requests_response(150))
-    client = _make_client(transport, cache_ttl=60.0, clock=clock)
-
-    await client.keyword_stats(["kw"])
-    clock.advance(61)
-    second = await client.keyword_stats(["kw"])
-
-    assert second["kw"].frequency == 150
-    assert len(transport.post_calls) == 2
 
 
 @pytest.mark.asyncio
@@ -147,32 +123,31 @@ async def test_keyword_dynamics_returns_points() -> None:
             status=200,
             body={
                 "results": [
-                    {"date": "2026-02-01T00:00:00Z", "count": 1000, "share": 0.1},
-                    {"date": "2026-03-01T00:00:00Z", "count": 1200, "share": 0.12},
+                    {"date": "2025-08-18T00:00:00Z", "count": "7300", "share": 0.1},
+                    {"date": "2025-08-25T00:00:00Z", "count": "7500", "share": 0.12},
                 ]
             },
         ),
     )
-    client = _make_client(transport)
 
-    result = await client.keyword_dynamics(
-        "кофемашина",
-        period="PERIOD_MONTHLY",
-        from_date="2026-02-01T00:00:00Z",
-        to_date="2026-03-31T00:00:00Z",
+    result = await _make_client(transport).keyword_dynamics(
+        "домашняя выпечка",
+        period="PERIOD_WEEKLY",
+        from_date="2025-08-18T00:00:00Z",
+        to_date="2026-10-18T00:00:00Z",
     )
 
     assert result == [
-        KeywordDynamicsPoint(date="2026-02-01T00:00:00Z", count=1000, share=0.1),
-        KeywordDynamicsPoint(date="2026-03-01T00:00:00Z", count=1200, share=0.12),
+        KeywordDynamicsPoint(date="2025-08-18T00:00:00Z", count=7300, share=0.1),
+        KeywordDynamicsPoint(date="2025-08-25T00:00:00Z", count=7500, share=0.12),
     ]
     url, _headers, body = transport.post_calls[0]
     assert url == DYNAMICS_URL
     assert body == {
-        "phrase": "кофемашина",
-        "period": "PERIOD_MONTHLY",
-        "fromDate": "2026-02-01T00:00:00Z",
-        "toDate": "2026-03-31T00:00:00Z",
+        "phrase": "домашняя выпечка",
+        "period": "PERIOD_WEEKLY",
+        "fromDate": "2025-08-18T00:00:00Z",
+        "toDate": "2026-10-18T00:00:00Z",
         "folderId": "folder-1",
     }
 
@@ -181,14 +156,16 @@ async def test_keyword_dynamics_returns_points() -> None:
 async def test_keyword_dynamics_raises_on_error_status() -> None:
     transport = FakeHttpTransport()
     transport.queue_post(
-        DYNAMICS_URL, HttpResponse(status=400, body={"message": "InvalidArgument"})
+        DYNAMICS_URL,
+        HttpResponse(
+            status=400, body={"code": 3, "message": "The from field value should be Monday"}
+        ),
     )
-    client = _make_client(transport)
 
-    with pytest.raises(YandexError):
-        await client.keyword_dynamics(
+    with pytest.raises(YandexError, match="Monday"):
+        await _make_client(transport).keyword_dynamics(
             "кофемашина",
-            period="PERIOD_MONTHLY",
-            from_date="2026-02-15T00:00:00Z",
-            to_date="2026-03-31T00:00:00Z",
+            period="PERIOD_WEEKLY",
+            from_date="2025-08-20T00:00:00Z",
+            to_date="2026-10-18T00:00:00Z",
         )

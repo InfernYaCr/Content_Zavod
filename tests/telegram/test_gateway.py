@@ -183,6 +183,23 @@ def test_render_plan_text_shows_date_range_not_week_label() -> None:
     assert "3–9 августа 2026" in text
 
 
+def test_render_plan_text_shows_why_under_a_tema_that_has_one() -> None:
+    plan = PlanView(
+        id=PlanId("plan-1"),
+        week_label="2026-W42",
+        items=[
+            PlanItemView(
+                id=PlanItemId("a"), title="Тема", status="pending_review", why="📈 Растёт"
+            ),
+            PlanItemView(id=PlanItemId("b"), title="Своя", status="pending_review"),
+        ],
+    )
+
+    lines = render_plan_text(plan).splitlines()
+
+    assert lines[-3:] == ["1. Тема — на согласовании", "    📈 Растёт", "2. Своя — на согласовании"]
+
+
 def test_render_plan_text_shows_item_statuses_in_russian() -> None:
     """#81: no raw `pending_review`/`approved`/... keys in the Plan message."""
     statuses = ("pending_review", "approved", "rejected", "archived")
