@@ -30,7 +30,7 @@ MVP в разработке. Реализовано:
    uv run python bot_main.py
    uv run python worker_main.py
    ```
-4. Зарегистрировать свой `telegram_id` в allowlist (пока без отдельной команды/CLI — напрямую через Membership):
+4. Зарегистрировать себя Владельцем. Миграции применяет сам бот при старте (`run_migrations`, ADR-0013), поэтому сначала один раз запустите `bot_main.py`, затем:
    ```bash
    uv run python -c "
    import asyncio, asyncpg
@@ -40,14 +40,13 @@ MVP в разработке. Реализовано:
    async def main():
        settings = load_settings()
        pool = await asyncpg.create_pool(dsn=settings.postgres_dsn)
-       membership = Membership(pool)
-       await membership.ensure_schema()
-       await membership.add_member(123456789, 'owner')  # замените на свой telegram_id
+       await Membership(pool).add_member(123456789, 'owner')  # замените на свой telegram_id
        await pool.close()
 
    asyncio.run(main())
    "
    ```
+   Свой `telegram_id` можно узнать у `@userinfobot`. Дальше — `/start` в личке бота: запустится Онбординг (#96).
 5. Проверить: бот отвечает незарегистрированному `telegram_id` отказом; после регистрации — `/topic <текст>` кладёт Тему в План и присылает её с кнопками; воркер разбирает `generate_plan`/`regenerate_topic`/`generate_article`/`generate_cover` из очереди и результат приходит в `TELEGRAM_NOTIFY_CHAT_ID`.
 
 ## Разработка
