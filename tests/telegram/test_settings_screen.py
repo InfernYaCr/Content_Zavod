@@ -274,6 +274,8 @@ async def test_change_persona_opens_the_preset_chooser_in_place(env: Env) -> Non
         ["Доказательный аналитик"],
         ["Фаундер-оператор"],
         ["Понятный наставник"],
+        ["📄 Пришлю статью"],
+        ["📨 Посты канала"],
         ["✏️ Свой стиль"],
         ["◀ Назад"],
     ]
@@ -281,6 +283,8 @@ async def test_change_persona_opens_the_preset_chooser_in_place(env: Env) -> Non
         ["sp:persona:1"],
         ["sp:persona:2"],
         ["sp:persona:3"],
+        ["ya:a"],
+        ["ya:p"],
         ["sa:persona"],
         ["st:"],
     ]

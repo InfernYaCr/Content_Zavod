@@ -60,7 +60,8 @@ ANALYZE_STYLE_JOB = "analyze_style"
 MIN_SAMPLE_CHARS = 1500
 LOW_CONFIDENCE_CHARS = 4000
 MAX_SAMPLE_CHARS = 12_000
-MAX_SAMPLES = 20
+MAX_SAMPLES = 60
+"""Texts per Job: forwarded posts arrive one message each."""
 MAX_LINKS = 3
 _CHANNEL_PAGES = 3
 # An ld+json body shorter than this is a teaser, not the article.
@@ -81,6 +82,7 @@ _ARTICLE_TYPES = ("Article", "BlogPosting")
 # Where a sign-in wall redirects to: the page read is the login form, not the article.
 _LOGIN_MARKERS = ("passport.", "sso.", "/login", "/auth", "/signin")
 _QUOTE_CHARS = "\"'«»“”„ "
+_TELEGRAM_HOSTS = frozenset({"t.me", "www.t.me", "telegram.me", "www.telegram.me"})
 _VOID_TAGS = frozenset({"br", "img", "wbr", "hr", "input", "meta", "link", "source"})
 
 _TRAIT_LINES = "\n".join(f"{key} — {label.lower()};" for key, label in STYLE_TRAITS.items())
@@ -230,6 +232,8 @@ async def read_link(fetcher: HtmlFetcher, url: str) -> str | None:
     channel = channel_name(url)
     if channel is not None:
         return await _read_channel(fetcher, channel)
+    if urlsplit(url).hostname in _TELEGRAM_HOSTS:  # an invite or a group: no public posts
+        return None
     found = await fetcher.fetch_html(url)
     if found is None or _is_login(found[0]):
         return None

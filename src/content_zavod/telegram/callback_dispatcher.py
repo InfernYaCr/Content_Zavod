@@ -55,6 +55,7 @@ from .main_menu import MainMenu
 from .onboarding import ONBOARDING_INPUT_KIND, Onboarding
 from .plan_review import PlanReview
 from .settings_screen import BACK_TO_MENU, SettingsScreen
+from .style_samples import STYLE_SAMPLES_KIND, StyleSamples
 from .texts import (
     COVER_REQUESTED,
     COVERS_OFF,
@@ -149,7 +150,9 @@ class CallbackDispatcher:
         *,
         guide: Guide,
         publisher: ArticlePagePublisher | None = None,
+        style_samples: StyleSamples | None = None,
     ) -> None:
+        self._style_samples = style_samples
         self._guide = guide
         self._plan = plan
         self._article = article
@@ -274,6 +277,34 @@ class CallbackDispatcher:
                     await self._bot_client.delete_message(chat_id, message_id)
                 if cancelled and id_ == ONBOARDING_INPUT_KIND:
                     await self._onboarding.cancelled(chat_id)  # say how to come back (#96)
+                if id_ == STYLE_SAMPLES_KIND and self._style_samples is not None:
+                    await self._style_samples.drop(workspace, chat_id, user_id)
+            case SimpleAction(
+                action="style_start" | "style_done" | "style_presets" | "style_ok" | "style_fix"
+            ) if self._style_samples is None:
+                await answer(STALE_BUTTON, show_alert=True)  # a build without the flow
+            case SimpleAction(action="style_start", id_=id_):
+                await answer()
+                await self._style().start(workspace, chat_id, user_id, id_)
+            case SimpleAction(action="style_done"):
+                alert = await self._style().done(workspace, chat_id, user_id, message_id)
+                await answer(alert, show_alert=True if alert else None)
+            case SimpleAction(action="style_presets"):
+                await answer()
+                # Collecting stops; the message itself becomes the Стиль автора chooser.
+                await self._style().drop(workspace, chat_id, user_id)
+                await self._settings_screen.edit(workspace, chat_id, user_id, message_id, "persona")
+            case SimpleAction(action="style_ok", id_=id_):
+                # Looked up in this Пространство first: a stale or foreign Job id saves nothing.
+                if not await self._style().confirm(workspace, chat_id, message_id, id_):
+                    await answer(STALE_BUTTON, show_alert=True)
+                    return
+                await answer()
+            case SimpleAction(action="style_fix", id_=id_):
+                if not await self._style().ask_fix(workspace, chat_id, user_id, id_):
+                    await answer(STALE_BUTTON, show_alert=True)
+                    return
+                await answer()
             case SimpleAction(action="onboarding_step", id_=id_):
                 await answer()
                 await self._onboarding.go(workspace, chat_id, user_id, message_id, id_)
@@ -460,6 +491,10 @@ class CallbackDispatcher:
                 )
             case SimpleAction(action=unreachable):
                 assert_never(unreachable)
+
+    def _style(self) -> StyleSamples:
+        assert self._style_samples is not None  # the guarded `case` above answers otherwise
+        return self._style_samples
 
     async def _redraw_hub(
         self, workspace_id: WorkspaceId, chat_id: int, message_id: int, plan_id: PlanId

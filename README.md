@@ -11,13 +11,20 @@ MVP в разработке. Реализовано:
 - **Job Queue** (`src/content_zavod/job_queue/`) — очередь задач на Postgres: идемпотентный `enqueue`, атомарный захват задачи воркером, ретраи с бэкоффом, уведомления о результате.
 - **Yandex API клиенты** (`src/content_zavod/yandex/`) — `TextGenerator` (YandexGPT), `ImageGenerator` (Alice AI ART через Images API; включается `YANDEX_COVERS=on`), `KeywordStats` (Wordstat через Yandex Search API).
 - **Доменный слой** (`src/content_zavod/domain/`) — `Plan`/`Article` и их жизненный цикл.
-- **Job Handlers** (`src/content_zavod/pipelines/`) — `generate_plan`/`generate_article`/`regenerate_article`/`generate_cover`/`regenerate_topic`.
+- **Job Handlers** (`src/content_zavod/pipelines/`) — `generate_plan`/`generate_article`/`regenerate_article`/`generate_cover`/`regenerate_topic`/`analyze_style`.
+- **Стиль автора по образцам** (#134) — Владелец присылает 1–3 свои статьи (файл `.docx`/`.txt`/`.md`, текст, ссылка на сайт или VC.ru) или посты своего открытого канала; бот описывает, как он пишет, и после «✅ Да, это я» пишет Статьи так.
 - **Telegram-слой** (`src/content_zavod/telegram/`) — `TelegramGateway`, `PlanReview` (согласование плана кнопками), `/topic` (ручное предложение Темы).
 - **Пространства** (`src/content_zavod/workspaces/`) — одно на Telegram id, создаётся на `/start`; у каждой строки данных `workspace_id`.
 - **Планировщик** (`src/content_zavod/scheduling/`) — раз в минуту ставит `generate_plan` каждому Пространству по его Расписанию и часовому поясу.
 - **Точки входа** (`bot_main.py`, `worker_main.py`) — два процесса по ADR-0004, см. «Локальный запуск» ниже.
 
 Запуск в Docker (на VPS или своём компьютере) — см. «Развернуть на VPS за 10 минут» ниже.
+
+> **Конфиденциальность образцов.** Присланные для Стиля автора тексты, файлы и посты не
+> хранятся: бот держит их в памяти до «Готово», передаёт в YandexGPT одним запросом и
+> удаляет из задачи, как только пришёл результат. Сохраняется только описание стиля
+> (и до трёх коротких цитат голоса, до 400 знаков каждая), которое Владелец видит и
+> подтверждает.
 
 > **Пока нет пробного Лимита** (следующий шаг эпика #118), бот открыт любому без ограничений
 > расхода: не давайте ссылку на бота посторонним.

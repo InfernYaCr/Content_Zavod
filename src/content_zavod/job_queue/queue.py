@@ -120,6 +120,19 @@ class JobQueue:
             output=json.loads(row["output"]) if row["output"] is not None else None,
         )
 
+    async def drop_payload_keys(
+        self, workspace_id: WorkspaceId, job_id: JobId, keys: list[str]
+    ) -> None:
+        """Remove `keys` from a finished Job's payload - input that must not outlive the Job
+        (the Образцы of a Профиль стиля, #134). A queued or running Job keeps them."""
+        await self._pool.execute(
+            "UPDATE jobs SET payload = payload - $3::text[], updated_at = now() "
+            "WHERE id = $2 AND workspace_id = $1 AND status IN ('done', 'failed')",
+            workspace_id,
+            job_id,
+            keys,
+        )
+
     async def claim_next(self) -> ClaimedJob | None:
         """The next due Job of a Workspace with no `running` one, Workspaces taken in turn -
         the one served longest ago (or never) first (ADR-0015). So six Статьи of one Workspace

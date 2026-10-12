@@ -10,7 +10,15 @@ from typing import Any, cast
 import pytest
 from aiogram import Bot, Dispatcher
 from aiogram.methods import AnswerCallbackQuery
-from aiogram.types import CallbackQuery, Chat, InaccessibleMessage, Message, Update, User
+from aiogram.types import (
+    CallbackQuery,
+    Chat,
+    Document,
+    InaccessibleMessage,
+    Message,
+    Update,
+    User,
+)
 
 from content_zavod.config import load_settings
 from content_zavod.entrypoints.bot import _build_router, answer_text
@@ -27,6 +35,7 @@ from content_zavod.telegram.main_menu import MainMenu
 from content_zavod.telegram.onboarding import Onboarding
 from content_zavod.telegram.settings_screen import SETTING_INPUT_KIND, SettingsScreen
 from content_zavod.telegram.start_guard import START_INTERVAL_SECONDS, StartGuard
+from content_zavod.telegram.style_samples import StyleSamples
 from content_zavod.telegram.texts import (
     ADMIN_PENDING_TEXT,
     GROUP_START_TEXT,
@@ -36,7 +45,7 @@ from content_zavod.telegram.texts import (
     UNKNOWN_MESSAGE_TEXT,
 )
 from content_zavod.workspaces import Workspace, WorkspaceId
-from tests.telegram.fakes import FakePendingInputs, RecordingBot
+from tests.telegram.fakes import FakeJobs, FakePendingInputs, RecordingBot
 from tests.tenancy import WS_A, WS_B
 
 ADMIN = 7001
@@ -158,7 +167,17 @@ class Bot_:
             ),
             prompts=prompts,
             gateway=gateway,
+            style_samples=StyleSamples(
+                FakeJobs(),
+                settings,
+                self.pending,
+                prompts,
+                self.bot,
+                self.download,
+                OnboardingState(self.store),
+            ),
         )
+        self.files: dict[str, bytes] = {}
         env = {
             "TELEGRAM_BOT_TOKEN": "123456:test",
             "POSTGRES_DSN": "postgresql://localhost/x",
@@ -186,13 +205,24 @@ class Bot_:
                 cast(Any, Unused()),
                 bot_username="zavod_bot",
                 start_guard=StartGuard(clock=lambda: self.clock),
+                style_samples=self.flows["style_samples"],
             )
         )
         self.aiogram_bot = Bot(token="123456:test")
         self._update_id = 0
         self.answers: list[tuple[str | None, bool | None]] = []
 
-    async def message(self, text: str, *, user: int, chat: int | None = None) -> None:
+    async def download(self, file_id: str) -> bytes:
+        return self.files[file_id]
+
+    async def message(
+        self,
+        text: str | None,
+        *,
+        user: int,
+        chat: int | None = None,
+        document: Document | None = None,
+    ) -> None:
         self._update_id += 1
         chat_id = user if chat is None else chat
         message = Message(
@@ -201,6 +231,7 @@ class Bot_:
             chat=Chat(id=chat_id, type="private" if chat_id == user else "supergroup"),
             from_user=User(id=user, is_bot=False, first_name="U"),
             text=text,
+            document=document,
         )
         await self.dispatcher.feed_update(
             self.aiogram_bot, Update(update_id=self._update_id, message=message)
@@ -468,3 +499,20 @@ def test_start_guard_forgets_ids_past_the_interval_once_it_holds_many() -> None:
     assert guard.admit(-1)
 
     assert guard._last_start == {-1: START_INTERVAL_SECONDS}
+
+
+async def test_texts_and_files_reach_the_style_samples_of_the_senders_workspace(
+    bot: Bot_,
+) -> None:
+    """#134: while Образцы are collected, a text or a .txt file is an Образец, not an answer."""
+    await bot.message("/start", user=USER)
+    await bot.press("ya:a", user=USER)
+    bot.files["f1"] = "Мой текст из файла.".encode()
+
+    await bot.message("Первая часть статьи.", user=USER)
+    await bot.message(
+        None, user=USER, document=Document(file_id="f1", file_unique_id="u1", file_name="a.txt")
+    )
+
+    assert "Получено: 39 знаков текста" in bot.bot.edited[-1][2]
+    assert UNKNOWN_MESSAGE_TEXT not in bot.texts(USER)

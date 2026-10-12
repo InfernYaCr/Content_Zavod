@@ -293,6 +293,13 @@ async def test_a_closed_channel_redirect_reads_as_nothing() -> None:
     assert await read_link(fetcher, "https://t.me/closed_one") is None
 
 
+async def test_a_telegram_invite_link_is_not_fetched() -> None:
+    fetcher = FakeHtmlFetcher()
+
+    assert await read_link(fetcher, "https://t.me/+AbCdEf") is None
+    assert fetcher.fetched == []
+
+
 async def test_a_sign_in_redirect_reads_as_nothing() -> None:
     """Дзен answers 302 to sso.passport.yandex.ru: the login page is no Образец."""
     login = "<html><body><main>" + "Войдите с Яндекс ID чтобы продолжить " * 50 + "</main></html>"

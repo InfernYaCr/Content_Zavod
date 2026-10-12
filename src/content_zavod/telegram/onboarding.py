@@ -50,6 +50,7 @@ from .settings_screen import (
     SETTING_FIELDS,
     ScheduleStore,
     SettingField,
+    build_style_start_rows,
     current_line,
 )
 from .texts import (
@@ -443,6 +444,8 @@ class Onboarding:
                 ]
                 for index, (title, _value) in enumerate(setting.presets)
             ]
+            if setting.from_samples:
+                rows += build_style_start_rows()
             rows.append(
                 [
                     _button(
