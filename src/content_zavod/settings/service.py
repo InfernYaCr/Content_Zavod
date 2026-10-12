@@ -13,9 +13,9 @@ this module only decides whether a write happens. `set_persona` writes a
 Preset marker as-is (from a template button); any other input is parsed as
 `Роль: …`-marked Custom Персона lines (#51, ADR-0010) and stored as JSON -
 missing Роль raises `InvalidSettingValue` without writing anything. `set_project` (#98) takes
-`<ссылка> <описание>`, normalizes the link via `normalize_project_url` and
-raises `InvalidSettingValue("project_url")` for a link it can't accept, or
-`InvalidSettingValue("project")` when the link or description is missing; a lone
+`<ссылка> [описание]` (the description is optional, #133), normalizes the link via
+`normalize_project_url` and raises `InvalidSettingValue("project_url")` for a link it can't
+accept, or `InvalidSettingValue("project")` for empty input; a lone
 `CLEAR_PROJECT` (`-`) removes the Проект, so Статьи go back to having no CTA.
 `set_audience` (#100) stores the reader portrait as stripped free text, raising
 `InvalidSettingValue("audience")` for empty input and `"audience_too_long"` past
@@ -175,13 +175,13 @@ class SettingsService:
             await self._store.set(PROJECT_KEY, "")
             return None
         parts = value.split(maxsplit=1)
-        if len(parts) < 2:
+        if not parts:
             raise InvalidSettingValue("project")
         try:
             url = normalize_project_url(parts[0])
         except ValueError as exc:
             raise InvalidSettingValue("project_url") from exc
-        project = Project(url=url, description=parts[1].strip())
+        project = Project(url=url, description=parts[1].strip() if len(parts) > 1 else "")
         await self._store.set(PROJECT_KEY, serialize_project(project))
         return project
 

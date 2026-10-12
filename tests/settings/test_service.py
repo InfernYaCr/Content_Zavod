@@ -9,6 +9,7 @@ from content_zavod.settings import (
     CustomPersona,
     Project,
     SettingsService,
+    normalize_project_url,
     persona_setting_value,
 )
 
@@ -174,10 +175,32 @@ async def test_project_is_unset_by_default() -> None:
     [
         ("@marketing_daily", "https://t.me/marketing_daily"),
         ("t.me/marketing_daily", "https://t.me/marketing_daily"),
-        ("https://t.me/marketing_daily", "https://t.me/marketing_daily"),
-        ("https://example.ru/blog", "https://example.ru/blog"),
         ("T.me/marketing_daily", "https://t.me/marketing_daily"),
+        ("telegram.me/marketing_daily", "https://t.me/marketing_daily"),
+        ("https://t.me/marketing_daily", "https://t.me/marketing_daily"),
+        ("http://www.t.me/marketing_daily/", "https://t.me/marketing_daily"),
+        ("https://telegram.me/marketing_daily", "https://t.me/marketing_daily"),
+        ("t.me/s/marketing_daily", "https://t.me/marketing_daily"),
+        ("https://t.me/s/marketing_daily", "https://t.me/marketing_daily"),
+        ("<https://t.me/marketing_daily>", "https://t.me/marketing_daily"),
+        ("«@marketing_daily»", "https://t.me/marketing_daily"),
+        ("https://example.ru/blog", "https://example.ru/blog"),
         ("Https://example.ru", "https://example.ru"),
+        ("example.ru", "https://example.ru"),
+        ("www.example.ru/path", "https://www.example.ru/path"),
+        ("http://example.ru", "https://example.ru"),
+        ("https://Example.RU/Blog/", "https://example.ru/Blog"),
+        ("https://example.ru/", "https://example.ru"),
+        ("https://example.ru/blog?id=1", "https://example.ru/blog?id=1"),
+        ('"example.ru".', "https://example.ru"),
+        ("example.ru),", "https://example.ru"),
+        ("сайт.рф", "https://сайт.рф"),
+        ("https://Сайт.РФ/блог", "https://сайт.рф/блог"),
+        ("example.ru//", "https://example.ru"),
+        ("https://example.ru/blog//", "https://example.ru/blog"),
+        ("t.me/marketing_daily//", "https://t.me/marketing_daily"),
+        ("ｅxample.ru", "https://example.ru"),
+        ("https://ＥＸＡＭＰＬＥ．ru/blog", "https://example.ru/blog"),
     ],
 )
 async def test_set_project_normalizes_the_link_and_round_trips(link, expected_url) -> None:
@@ -188,19 +211,25 @@ async def test_set_project_normalizes_the_link_and_round_trips(link, expected_ur
 
     assert saved == Project(url=expected_url, description="Разборы кейсов\nпо маркетингу")
     assert current.project == saved
+    assert normalize_project_url(expected_url) == expected_url  # idempotent
 
 
 @pytest.mark.parametrize(
     "link",
     [
-        "http://example.ru",
-        "example.ru",
-        "www.example.ru",
+        "Канал",
+        "example",
+        "1.5",
         "@abc",
         "@1channel",
         "https://",
         "t.me/",
+        "t.me/s/",
         "https://t.me",
+        "ftp://example.ru",
+        "javascript:alert(1)",
+        "https://user@example.ru",
+        "https://example.ru:8080",
     ],
 )
 async def test_set_project_rejects_an_unusable_link_without_writing(link) -> None:
@@ -213,8 +242,8 @@ async def test_set_project_rejects_an_unusable_link_without_writing(link) -> Non
     assert (await SettingsService(store).read()).project is None
 
 
-@pytest.mark.parametrize("value", ["", "   ", "@marketing_daily", "https://example.ru  "])
-async def test_set_project_requires_both_link_and_description(value) -> None:
+@pytest.mark.parametrize("value", ["", "   "])
+async def test_set_project_rejects_empty_input(value) -> None:
     store = InMemoryStore()
 
     with pytest.raises(InvalidSettingValue) as excinfo:
@@ -222,6 +251,44 @@ async def test_set_project_requires_both_link_and_description(value) -> None:
 
     assert excinfo.value.field == "project"
     assert (await SettingsService(store).read()).project is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("@marketing_daily", Project(url="https://t.me/marketing_daily", description="")),
+        ("example.ru  ", Project(url="https://example.ru", description="")),
+    ],
+)
+async def test_set_project_saves_a_link_without_description_and_reads_it_back(
+    value, expected
+) -> None:
+    """#133: the description is optional - a lone link must survive the store round-trip."""
+    settings = SettingsService(InMemoryStore())
+
+    assert await settings.set_project(value) == expected
+    assert (await settings.read()).project == expected
+
+
+async def test_project_stored_before_133_still_reads_with_its_description() -> None:
+    store = InMemoryStore({"project": "https://t.me/channel Наш канал"})
+
+    project = (await SettingsService(store).read()).project
+
+    assert project == Project(url="https://t.me/channel", description="Наш канал")
+
+
+@pytest.mark.parametrize(
+    ("project", "kind", "label"),
+    [
+        (Project(url="https://t.me/channel"), "telegram", "Telegram-канал автора"),
+        (Project(url="https://example.ru"), "site", "сайт автора"),
+        (Project(url="https://t.me/channel", description="Наш канал"), "telegram", "Наш канал"),
+    ],
+)
+def test_project_label_is_derived_when_there_is_no_description(project, kind, label) -> None:
+    assert project.kind == kind
+    assert project.label == label
 
 
 async def test_set_project_dash_removes_the_project() -> None:

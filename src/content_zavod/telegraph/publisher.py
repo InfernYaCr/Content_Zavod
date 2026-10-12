@@ -154,7 +154,7 @@ def project_footer(settings: WorkspaceSettings) -> FooterLinkSource:
         project = parse_stored_project(await settings.get(workspace_id, PROJECT_KEY))
         if project is None:
             return None
-        return FooterLink(text=project.description, url=project.url)
+        return FooterLink(text=project.label, url=project.url)
 
     return footer
 

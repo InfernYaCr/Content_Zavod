@@ -278,6 +278,18 @@ async def test_project_footer_links_the_owners_project_and_follows_changes() -> 
     assert await footer(WS_A) is None
 
 
+async def test_project_footer_without_description_gets_a_derived_label() -> None:
+    settings = FakeWorkspaceSettings()
+    footer = project_footer(settings)
+
+    settings.values[WS_A, PROJECT_KEY] = "https://t.me/channel"
+    assert await footer(WS_A) == FooterLink(
+        text="Telegram-канал автора", url="https://t.me/channel"
+    )
+    settings.values[WS_A, PROJECT_KEY] = "https://example.ru"
+    assert await footer(WS_A) == FooterLink(text="сайт автора", url="https://example.ru")
+
+
 async def test_project_footer_is_the_articles_own_workspaces_project() -> None:
     settings = FakeWorkspaceSettings()
     settings.values[WS_A, PROJECT_KEY] = "https://a.example Проект A"

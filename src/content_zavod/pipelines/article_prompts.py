@@ -32,7 +32,14 @@ IMMUTABLE_RULES = """Ты — редактор Content Zavod.
 Сохраняй смысл подтверждённых фактов при редактуре."""
 
 
-def _persona_block(persona: Persona | None, custom_persona: CustomPersona | None) -> str:
+# With a Проект set, its closing invitation is the Статья's only CTA (#133): the PERSONA and
+# PLATFORM_PROFILE CTA lines point at the rule instead of asking for a second one.
+_PROJECT_CTA = "только приглашение из правила про project в ЗАДАЧЕ"
+
+
+def _persona_block(
+    persona: Persona | None, custom_persona: CustomPersona | None, cta: str | None = None
+) -> str:
     if persona is not None:
         return "\n".join(
             (
@@ -43,7 +50,7 @@ def _persona_block(persona: Persona | None, custom_persona: CustomPersona | None
                 f"Экспертность: {persona.expertise}",
                 f"Стиль: {persona.style}",
                 f"Лексика: {persona.vocabulary}",
-                f"CTA: {persona.cta_style}",
+                f"CTA: {cta or persona.cta_style}",
                 f"Запрещено: {', '.join(persona.forbidden_patterns)}",
             )
         )
@@ -52,7 +59,7 @@ def _persona_block(persona: Persona | None, custom_persona: CustomPersona | None
     return ""
 
 
-def _platform_block(profile: PlatformProfile) -> str:
+def _platform_block(profile: PlatformProfile, cta: str | None = None) -> str:
     return "\n".join(
         (
             f"Площадка: {profile.title}",
@@ -62,7 +69,7 @@ def _platform_block(profile: PlatformProfile) -> str:
             f"Объём готовой статьи: {profile.target_length}",
             f"Evidence: {profile.evidence_policy}",
             f"Терминология: {profile.terminology}",
-            f"CTA: {profile.cta}",
+            f"CTA: {cta or profile.cta}",
             f"Запрещено: {', '.join(profile.forbidden_patterns)}",
         )
     )
@@ -73,10 +80,13 @@ def _system(
     persona: Persona | None,
     custom_persona: CustomPersona | None,
     profile: PlatformProfile,
+    project: Project | None = None,
 ) -> str:
+    cta = _PROJECT_CTA if project is not None else None
     return (
-        f"{IMMUTABLE_RULES}\n\nЗАДАЧА\n{task}\n\nPERSONA\n{_persona_block(persona, custom_persona)}"
-        f"\n\nPLATFORM_PROFILE\n{_platform_block(profile)}"
+        f"{IMMUTABLE_RULES}\n\nЗАДАЧА\n{task}"
+        f"\n\nPERSONA\n{_persona_block(persona, custom_persona, cta)}"
+        f"\n\nPLATFORM_PROFILE\n{_platform_block(profile, cta)}"
     )
 
 
@@ -97,16 +107,20 @@ def _with_comment_rule(task: str, comment: str | None) -> str:
 
 
 def _with_project_rule(task: str, project: Project | None) -> str:
-    """With a Проект set (#98), every step is told to close the Статья with one soft CTA to
-    it; the project itself stays delimited INPUT_DATA. The pipeline still checks the URL
-    after rewrite, so this rule only has to get the tone and placement right."""
+    """With a Проект set (#98), every step is told to close the Статья with one organic
+    invitation to it (#133); the project itself stays delimited INPUT_DATA. The pipeline still
+    checks the URL after rewrite, so this rule only has to get the tone and placement right."""
     if project is None:
         return task
     return (
-        f"{task} Поле project в INPUT_DATA — проект автора. Статья должна заканчиваться "
-        "одним коротким CTA в тоне площадки, без рекламного тона: зачем читателю перейти "
-        "(по project.description) и ссылка project.url ровно один раз, символ в символ. "
-        "В остальном тексте проект и ссылку не упоминай."
+        f"{task} Поле project в INPUT_DATA — Telegram-канал (kind: telegram) или сайт "
+        "(kind: site) автора. Закончи статью одним предложением в последнем абзаце: оно "
+        "естественно вытекает из вывода статьи и приглашает продолжить тему в канале или на "
+        "сайте автора (о чём там — по project.description, если оно есть). Ссылку "
+        "project.url вставь в это предложение голым URL, не Markdown-ссылкой, ровно один раз, "
+        "символ в символ. Без «Подписывайтесь», без заголовка, жирного, эмодзи и рекламного "
+        "тона. Это приглашение заменяет CTA из PERSONA и PLATFORM_PROFILE: другого призыва "
+        "в конце не добавляй. В остальном тексте проект и ссылку не упоминай."
     )
 
 
@@ -134,7 +148,7 @@ def _rules(task: str, comment: str | None, project: Project | None, audience: st
 
 def _project_input(project: Project | None) -> dict[str, object]:
     """Absent from INPUT_DATA altogether without a Проект, so prompts stay unchanged (#98)."""
-    return {} if project is None else {"project": asdict(project)}
+    return {} if project is None else {"project": {**asdict(project), "kind": project.kind}}
 
 
 def _audience_input(audience: str | None) -> dict[str, object]:
@@ -302,7 +316,9 @@ def draft_messages(
     return [
         Message(
             "system",
-            _system(_rules(task, comment, project, audience), persona, custom_persona, profile),
+            _system(
+                _rules(task, comment, project, audience), persona, custom_persona, profile, project
+            ),
         ),
         Message(
             "user",
@@ -340,7 +356,9 @@ def rewrite_messages(
     return [
         Message(
             "system",
-            _system(_rules(task, comment, project, audience), persona, custom_persona, profile),
+            _system(
+                _rules(task, comment, project, audience), persona, custom_persona, profile, project
+            ),
         ),
         Message(
             "user",

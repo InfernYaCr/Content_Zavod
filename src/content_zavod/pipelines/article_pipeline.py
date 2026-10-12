@@ -27,10 +27,10 @@ Only draft and rewrite mention the Персона and Площадка (the outl
 fresh from `SettingsReader` on every call so a `/set_persona` takes effect without a
 restart - platform tone is layered on top of it, not instead of it.
 
-With a Проект set (#98), draft/rewrite are asked for one closing CTA to it, but the link
-itself is the code's job: `_ensure_project_link` keeps exactly one exact copy of the URL in
-the body (appending a CTA line when the model dropped or mangled it), and the foreign-URL
-filter never removes links into the Проект.
+With a Проект set (#98), draft/rewrite are asked for one closing invitation to it, but the
+link itself is the code's job: `_ensure_project_link` keeps exactly one exact copy of the URL
+in the body (appending a neutral line when the model dropped or mangled it), and the
+foreign-URL filter keeps only spellings of that very link (#133).
 
 The Аудитория (#100) is read fresh like the Персона and goes to draft/rewrite only, as
 INPUT_DATA: the outline is cached per Тема and stays reader-neutral (see `article_prompts`).
@@ -76,8 +76,8 @@ _SENSITIVE_KEYWORDS = frozenset(
 _PROMPT_VERSIONS = {
     "research_extract": "research-extract-v1",
     "outline": "outline-v4",
-    "draft": "draft-v6",
-    "rewrite": "rewrite-v6",
+    "draft": "draft-v7",
+    "rewrite": "rewrite-v7",
 }
 
 SOURCES_HEADING = "Источники:"
@@ -282,8 +282,9 @@ def _source_line(bundle: ResearchBundle, url: str) -> str:
     return f"{title} — {url}" if title else url
 
 
-_MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]*)\]\((https?://[^)\s]+)\)")
-_BARE_URL_RE = re.compile(r"[ \t]*https?://[^\s<>()\[\]]+")
+# Schemes are case-insensitive: `HTTPS://evil.com` is just as foreign (#133).
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]*)\]\((https?://[^)\s]+)\)", re.IGNORECASE)
+_BARE_URL_RE = re.compile(r"[ \t]*https?://[^\s<>()\[\]]+", re.IGNORECASE)
 _TRAILING_PUNCT = ".,;:!?»\"'"
 
 
@@ -294,22 +295,30 @@ def _normalized_link(url: str) -> str:
 
 def _drop_foreign_urls(body: str, allowed: set[str], project: Project | None) -> str:
     """No URL outside the evidence bundle survives (docs/plans/...-saas.md, E2) - except
-    links into the Проект, mangled ones included, which `_ensure_project_link` handles."""
+    the Проект link in another spelling (`http://`, `www.`, case, trailing `/`), which is
+    rewritten into the exact `project.url` right here. Equality, not a prefix (#133):
+    `https://t.me/name_spam` and `https://example.ru.evil.com` are foreign."""
     project_link = _normalized_link(project.url) if project is not None else None
 
-    def keep(url: str) -> bool:
+    def kept(url: str) -> str | None:
         if url in allowed:
-            return True
-        return project_link is not None and _normalized_link(url).startswith(project_link)
+            return url
+        if project is not None and _normalized_link(url) == project_link:
+            return project.url
+        return None
 
     def replace_markdown(match: re.Match[str]) -> str:
-        return match.group(0) if keep(match.group(2)) else match.group(1)
+        url = kept(match.group(2))
+        return match.group(1) if url is None else f"[{match.group(1)}]({url})"
 
     def replace_bare(match: re.Match[str]) -> str:
         text = match.group(0)
         stripped = text.rstrip(_TRAILING_PUNCT)
         trailing = text[len(stripped) :]
-        return text if keep(stripped.strip()) else trailing
+        url = kept(stripped.strip())
+        if url is None:
+            return trailing
+        return stripped[: len(stripped) - len(stripped.lstrip())] + url + trailing
 
     body = _MARKDOWN_LINK_RE.sub(replace_markdown, body)
     return _BARE_URL_RE.sub(replace_bare, body)
@@ -383,7 +392,7 @@ def _ensure_project_link(body: str, project: Project | None) -> str:
     occurrence - the closing CTA - keeping a Markdown link's text. Without an exact copy, the
     last recognizable spelling of the same link (`t.me/name`, `@name`, `http://...`) is
     rewritten into the exact URL in place, so the model's own CTA sentence stays the only CTA;
-    a missing or truly mangled URL (a typo) gets a plain CTA line appended."""
+    a missing URL gets a neutral line appended."""
     if project is None:
         return body
     url = re.escape(project.url)
@@ -393,7 +402,8 @@ def _ensure_project_link(body: str, project: Project | None) -> str:
         variant = _last_project_link_variant(body, project.url)
         if variant is not None:
             return body[: variant.start()] + project.url + body[variant.end() :]
-        return f"{body.rstrip()}\n\n{project.description.rstrip(' .!?…')}: {project.url}"
+        where = "в Telegram-канале автора" if project.kind == "telegram" else "на сайте автора"
+        return f"{body.rstrip()}\n\nБольше по теме — {where}: {project.url}"
     for match in reversed(matches[:-1]):
         body = body[: match.start()] + (match.group(1) or "") + body[match.end() :]
     return body
