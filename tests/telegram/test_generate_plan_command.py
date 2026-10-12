@@ -20,7 +20,8 @@ from content_zavod.telegram.generate_plan_command import (
     handle_confirm_regenerate_plan,
     handle_generate_plan_command,
 )
-from content_zavod.workspaces import Workspace
+from content_zavod.workspaces import TrialLimitExhausted, Usage, Workspace
+from tests.telegram.fakes import FakeLimits
 from tests.tenancy import WS_A
 
 FIXED_NOW = datetime(2026, 8, 3, 6, 0, tzinfo=UTC)  # 2026-W32 Monday, 09:00 in Moscow
@@ -64,7 +65,7 @@ class FakePlan:
         self.archived.append(plan_id)
 
     async def request_new(
-        self, workspace_id: int, week_label: str, *, generation_id: str | None = None
+        self, workspace_id: int, week_label: str, *, generation_id: str | None = None, conn=None
     ) -> int:
         if generation_id is None:
             self.requested.append(week_label)
@@ -81,7 +82,7 @@ class FakePlan:
             raise PlanNotFound(plan_id)
         return PlanSummary(id=plan_id, week_label="2026-W32", status="pending_review")
 
-    async def request_replacement(self, workspace_id: int, plan_id: PlanId) -> int:
+    async def request_replacement(self, workspace_id: int, plan_id: PlanId, *, conn=None) -> int:
         self.replacements.append(plan_id)
         return 1
 
@@ -93,10 +94,10 @@ class FakeQueue:
         self.statuses = dict(statuses or {})
         self.retried: list[int] = []
 
-    async def get_status(self, workspace_id: int, job_id: int) -> str:
+    async def get_status(self, workspace_id: int, job_id: int, *, conn=None) -> str:
         return self.statuses.get(job_id, "queued")
 
-    async def retry(self, workspace_id: int, job_id: int) -> bool:
+    async def retry(self, workspace_id: int, job_id: int, *, conn=None) -> bool:
         self.retried.append(job_id)
         self.statuses[job_id] = "queued"
         return True
@@ -124,7 +125,7 @@ class FakeGateway:
 
 
 class FailingReplacementPlan(FakePlan):
-    async def request_replacement(self, workspace_id: int, plan_id: PlanId) -> int:
+    async def request_replacement(self, workspace_id: int, plan_id: PlanId, *, conn=None) -> int:
         raise RuntimeError("queue unavailable")
 
 
@@ -136,6 +137,7 @@ async def _run(
     workspace: Workspace = WORKSPACE,
     now: datetime = FIXED_NOW,
     niche_saved: bool = True,
+    limits: FakeLimits | None = None,
 ) -> None:
     await handle_generate_plan_command(
         plan,
@@ -144,8 +146,58 @@ async def _run(
         1,
         queue=queue or FakeQueue(),
         settings=FakeSettings(niche_saved=niche_saved),
+        limits=limits or FakeLimits(),
         now=lambda: now,
     )
+
+
+EXHAUSTED = TrialLimitExhausted(
+    Usage(plans_used=1, plan_limit=1, articles_used=8, article_limit=8),
+    plans=1,
+    articles=0,
+    contact="@owner",
+)
+
+
+@pytest.mark.asyncio
+async def test_every_start_of_the_weeks_plan_is_one_reserved_plan() -> None:
+    """ADR-0015: the request, its rerun and a retry all happen in one `Limits.reserve`."""
+    plan, gateway, limits = FakePlan(active=None), FakeGateway(), FakeLimits()
+
+    await _run(plan, gateway, FakeQueue({1: "done", 2: "failed"}), limits=limits)
+
+    assert limits.reserved == [("generate_plan", 1)]
+
+
+@pytest.mark.asyncio
+async def test_past_the_limit_no_plan_is_requested_and_the_reply_says_why() -> None:
+    plan, gateway, limits = FakePlan(active=None), FakeGateway(), FakeLimits()
+    limits.refusal = EXHAUSTED
+
+    await _run(plan, gateway, limits=limits)
+
+    assert plan.requested == []
+    assert gateway.sent_notices == [
+        (
+            1,
+            "Пробный лимит исчерпан: Планов 1 из 1, Статей 8 из 8.\nЧтобы продолжить, напишите @owner.",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_past_the_limit_keeps_the_plan_and_says_why() -> None:
+    active = PlanView(id=PlanId("plan-1"), week_label="2026-W32", items=[])
+    plan, gateway, limits = FakePlan(active=active), FakeGateway(), FakeLimits()
+    limits.refusal = EXHAUSTED
+
+    await handle_confirm_regenerate_plan(
+        plan, gateway, limits, WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
+    )
+
+    assert plan.replacements == []
+    [(_, _, text)] = gateway.edited
+    assert text.startswith("Пробный лимит исчерпан")
 
 
 @pytest.mark.asyncio
@@ -160,6 +212,7 @@ async def test_unannounced_run_starts_the_generation_without_a_notice() -> None:
         5,
         queue=FakeQueue(),
         settings=FakeSettings(),
+        limits=FakeLimits(),
         now=lambda: FIXED_NOW,
         announce=False,
     )
@@ -285,7 +338,7 @@ async def test_confirm_archives_old_plan_and_requests_a_new_one() -> None:
     plan, gateway = FakePlan(active=active), FakeGateway()
 
     await handle_confirm_regenerate_plan(
-        plan, gateway, WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
+        plan, gateway, FakeLimits(), WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
     )
 
     assert plan.replacements == [PlanId("plan-1")]
@@ -301,7 +354,7 @@ async def test_confirm_re_renders_the_replaced_plans_message() -> None:
     plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=9)
 
     await handle_confirm_regenerate_plan(
-        plan, gateway, WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
+        plan, gateway, FakeLimits(), WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
     )
 
     assert gateway.edited_plans == [(-100, 9, active)]
@@ -321,7 +374,7 @@ async def test_confirm_skips_the_replaced_plans_message_if_it_was_deleted() -> N
     gateway.edit_plan = gone  # type: ignore[method-assign]
 
     await handle_confirm_regenerate_plan(
-        plan, gateway, WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
+        plan, gateway, FakeLimits(), WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
     )
 
     assert plan.replacements == [PlanId("plan-1")]
@@ -338,7 +391,7 @@ async def test_confirm_does_not_report_success_or_archive_through_the_old_api_wh
 
     with pytest.raises(RuntimeError, match="queue unavailable"):
         await handle_confirm_regenerate_plan(
-            plan, gateway, WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
+            plan, gateway, FakeLimits(), WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
         )
 
     assert plan.archived == []

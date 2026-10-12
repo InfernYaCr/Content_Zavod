@@ -18,10 +18,10 @@ from content_zavod.telegram.asset_photos import AssetPhotos
 from content_zavod.telegram.input_prompt import InputPrompt
 from content_zavod.telegram.main_menu import TOPIC_INPUT_KIND, MainMenu, build_main_menu_keyboard
 from content_zavod.telegram.topic_command import TOPIC_MAX_LENGTH
-from content_zavod.workspaces import Workspace
+from content_zavod.workspaces import GenerationBusy, Usage, Workspace
 from tests.tenancy import WS_A
 
-from .fakes import FakePendingInputs, RecordingBot, button_data, button_texts
+from .fakes import FakeLimits, FakePendingInputs, RecordingBot, button_data, button_texts
 
 USER = 5
 WORKSPACE = Workspace(WS_A, USER, None, "Europe/Moscow", None, None)
@@ -43,7 +43,7 @@ class FakePlan:
         return self.ref
 
     async def request_new(
-        self, workspace_id: int, week_label: str, *, generation_id: str | None = None
+        self, workspace_id: int, week_label: str, *, generation_id: str | None = None, conn=None
     ) -> int:
         self.requested.append(week_label)
         return 1
@@ -89,10 +89,10 @@ class FakePlan:
 
 
 class FakeQueue:
-    async def get_status(self, workspace_id: int, job_id: int) -> str:
+    async def get_status(self, workspace_id: int, job_id: int, *, conn=None) -> str:
         return "queued"
 
-    async def retry(self, workspace_id: int, job_id: int) -> bool:
+    async def retry(self, workspace_id: int, job_id: int, *, conn=None) -> bool:
         return True
 
 
@@ -136,6 +136,7 @@ class Env:
         self.plan = plan or FakePlan()
         self.settings = FakeSettings()
         self.onboarding = FakeOnboarding()
+        self.limits = FakeLimits()
         self.menu = MainMenu(
             self.plan,
             FakeQueue(),
@@ -145,6 +146,7 @@ class Env:
             InputPrompt(self.bot, self.pending),
             settings=self.settings,
             onboarding=self.onboarding,
+            limits=self.limits,
             now=lambda: NOW,
         )
 
@@ -179,21 +181,43 @@ def test_everyone_gets_the_same_menu() -> None:
 async def test_start_menu_greets_then_shows_the_menu() -> None:
     env = Env()
 
-    await env.menu.send(USER, welcome=True)
+    await env.menu.send(WORKSPACE, USER, welcome=True)
 
     ((_, text, markup, _),) = env.bot.sent
     assert text.startswith("👋 Добро пожаловать!")
-    assert text.endswith("🏠 Главное меню\nВыберите, что сделать:")
+    assert text.endswith("🏠 Главное меню\nВыберите, что сделать:\n\nОсталось: 1 План, 8 Статей")
     assert len(markup.inline_keyboard) == 6
 
 
 async def test_show_edits_back_to_the_menu_in_place() -> None:
     env = Env()
 
-    await env.menu.show(USER, 42)
+    await env.menu.show(WORKSPACE, USER, 42)
 
     ((_, message_id, text, _),) = env.bot.edited
-    assert (message_id, text) == (42, "🏠 Главное меню\nВыберите, что сделать:")
+    assert message_id == 42
+    assert text == "🏠 Главное меню\nВыберите, что сделать:\n\nОсталось: 1 План, 8 Статей"
+
+
+async def test_the_menu_says_what_is_left_of_the_limit() -> None:
+    """ADR-0015: «Осталось: N План(ов), M Статей», never below zero."""
+    env = Env()
+    env.limits.usage_value = Usage(plans_used=1, plan_limit=1, articles_used=9, article_limit=8)
+
+    await env.menu.show(WORKSPACE, USER, 42)
+
+    assert env.bot.edited[-1][2].endswith("Осталось: 0 Планов, 0 Статей")
+
+
+async def test_make_plan_refused_by_the_limit_says_why_and_requests_nothing() -> None:
+    env = Env()
+    env.limits.refusal = GenerationBusy()
+
+    await env.menu.generate_plan(WORKSPACE, USER)
+
+    assert env.plan.requested == []
+    ((_, text, _, _),) = env.bot.sent
+    assert text == "⏳ Дождитесь окончания текущей генерации — потом можно продолжить."
 
 
 async def test_plan_of_the_week_is_sent_again_below_and_the_old_copy_goes() -> None:
@@ -363,15 +387,16 @@ async def test_start_with_pictures_greets_with_a_photo_then_sends_the_menu() -> 
         InputPrompt(env.bot, env.pending),
         settings=env.settings,
         onboarding=env.onboarding,
+        limits=env.limits,
         photos=AssetPhotos(env.bot, _GuideStore()),
     )
 
-    await menu.send(USER, welcome=True)
+    await menu.send(WORKSPACE, USER, welcome=True)
 
     ((_, photo, caption, _),) = env.bot.photos
     assert photo.filename == "welcome.png" and caption.startswith("👋 Добро пожаловать!")
     ((_, text, markup, _),) = env.bot.sent
-    assert text == "🏠 Главное меню\nВыберите, что сделать:"
+    assert text.startswith("🏠 Главное меню\nВыберите, что сделать:")
     assert markup is not None
 
 
@@ -379,7 +404,7 @@ async def test_show_on_a_photo_message_sends_the_menu_below_it() -> None:
     env = Env()
     env.bot.fail_edits = True  # a photo (the onboarding intro) can't become a text message
 
-    await env.menu.show(USER, 42)
+    await env.menu.show(WORKSPACE, USER, 42)
 
     ((_, text, _, _),) = env.bot.sent
-    assert text == "🏠 Главное меню\nВыберите, что сделать:"
+    assert text.startswith("🏠 Главное меню\nВыберите, что сделать:")

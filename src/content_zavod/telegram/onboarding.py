@@ -150,7 +150,7 @@ class MenuEntry(Protocol):
     """What the wizard needs from the Главное меню: show it, and start a Plan the way
     «🪄 Составить План» does."""
 
-    async def show(self, chat_id: int, message_id: int) -> None: ...
+    async def show(self, workspace: Workspace, chat_id: int, message_id: int) -> None: ...
 
     async def generate_plan(
         self, workspace: Workspace, chat_id: int, *, announce: bool = True
@@ -266,7 +266,7 @@ class Onboarding:
         «✏️ Изменить …» all just open another screen in place of the pressed one."""
         if step_id == START and not await self._state.needed(workspace.id):
             # A stale intro, after «Позже» or a launch: it must not re-arm the wizard.
-            await self._menu.show(chat_id, message_id)
+            await self._menu.show(workspace, chat_id, message_id)
             return
         await self._leave(workspace, chat_id, user_id, message_id)
         if step_id == START:
@@ -292,7 +292,7 @@ class Onboarding:
     async def later(self, workspace: Workspace, chat_id: int, message_id: int) -> None:
         """«Позже — открыть меню»: the wizard is not offered again; Настройки are in the menu."""
         await self._state.skip(workspace.id)
-        await self._menu.show(chat_id, message_id)
+        await self._menu.show(workspace, chat_id, message_id)
 
     async def launch(self, workspace: Workspace, chat_id: int, message_id: int) -> None:
         """«🚀 Запустить»: finish and start the first Plan. Only the press that actually

@@ -21,12 +21,16 @@ a deadline missed while the process was down.
 `Plan.request_new` unless the week already has a Plan. Repeating is safe: the idempotency
 key `generate_plan:{week}` is unique per Workspace, so even an empty result (#84, no Plan
 created) never starts a second generation in the same week.
+
+The request goes through `Limits.reserve` for one Plan, like a press of «🪄 Составить План»
+(ADR-0015). With the Лимит of Планов used up the tick enqueues nothing and tells the owner -
+once a week: the key `schedule_skipped:{week}` in `workspace_settings` remembers it was said.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -36,10 +40,11 @@ import asyncpg
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from ..domain.plan import plan_job_key
 from ..job_queue import JobId
 from ..settings import NICHE_KEY, ONBOARDING_KEY
 from ..settings.onboarding import ONBOARDING_STARTED
-from ..workspaces import WorkspaceId
+from ..workspaces import LimitRefused, Limits, TrialLimitExhausted, WorkspaceId
 from .settings_store import ScheduleConfig
 
 DEFAULT_DAY_OF_WEEK = "mon"
@@ -63,7 +68,13 @@ class PlanRequester(Protocol):
 
     async def find_active(self, workspace_id: WorkspaceId, week_label: str) -> object | None: ...
 
-    async def request_new(self, workspace_id: WorkspaceId, week_label: str) -> JobId: ...
+    async def request_new(
+        self, workspace_id: WorkspaceId, week_label: str, *, conn: asyncpg.Connection
+    ) -> JobId: ...
+
+
+# Tells the owner the Расписание made no Plan this week: the Лимит of Планов is used up.
+OnLimitExhausted = Callable[[WorkspaceId, TrialLimitExhausted], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -131,19 +142,66 @@ async def schedulable_workspaces(pool: asyncpg.Pool) -> list[SchedulableWorkspac
 
 async def _week_requested(pool: asyncpg.Pool, workspace_id: WorkspaceId, week_label: str) -> bool:
     """The week's `generate_plan` Job already exists (its Plan archived, its result empty, #84,
-    or it failed): `request_new` would only return it again, but its upsert is a real UPDATE -
-    every minute until the week ends. A read keeps the tick write-free."""
+    or it failed): `request_new` would only return it again, after taking the Workspace's lock
+    in `Limits.reserve` - every minute until the week ends. A read keeps the tick lock-free."""
     return await pool.fetchval(
         "SELECT EXISTS (SELECT 1 FROM jobs WHERE workspace_id = $1 AND idempotency_key = $2)",
         workspace_id,
-        # The key `Plan.request_new` gives the week's scheduled Plan.
-        f"generate_plan:{week_label}",
+        plan_job_key(week_label),
     )
+
+
+async def _first_skip(pool: asyncpg.Pool, workspace_id: WorkspaceId, week_label: str) -> bool:
+    """Remember that this week's Plan was skipped; `True` only the first time - so the owner
+    hears it once, even if the message itself then fails."""
+    status = await pool.execute(
+        "INSERT INTO workspace_settings (workspace_id, key, value) VALUES ($1, $2, '1') "
+        "ON CONFLICT (workspace_id, key) DO NOTHING",
+        workspace_id,
+        _skip_key(week_label),
+    )
+    return status == "INSERT 0 1"
+
+
+async def _week_skipped(pool: asyncpg.Pool, workspace_id: WorkspaceId, week_label: str) -> bool:
+    """The week was already skipped for the Лимит: the tick leaves it alone - no lock every
+    minute. A Лимит raised mid-week applies from the next week (or «🪄 Составить План»)."""
+    return await pool.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM workspace_settings WHERE workspace_id = $1 AND key = $2)",
+        workspace_id,
+        _skip_key(week_label),
+    )
+
+
+def _skip_key(week_label: str) -> str:
+    return f"schedule_skipped:{week_label}"
+
+
+async def _request_week_plan(
+    pool: asyncpg.Pool,
+    plan: PlanRequester,
+    limits: Limits,
+    workspace_id: WorkspaceId,
+    week_label: str,
+    on_limit_exhausted: OnLimitExhausted,
+) -> None:
+    if await _week_skipped(pool, workspace_id, week_label):
+        return
+    try:
+        async with limits.reserve(workspace_id, "generate_plan") as reservation:
+            await plan.request_new(workspace_id, week_label, conn=reservation.conn)
+    except TrialLimitExhausted as exc:
+        if await _first_skip(pool, workspace_id, week_label):
+            await on_limit_exhausted(workspace_id, exc)
+    except LimitRefused:
+        pass  # a Job started a moment ago, or the daily ceiling: the next minute tries again
 
 
 async def weekly_plan_tick(
     pool: asyncpg.Pool,
     plan: PlanRequester,
+    limits: Limits,
+    on_limit_exhausted: OnLimitExhausted,
     *,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> None:
@@ -156,20 +214,26 @@ async def weekly_plan_tick(
             if await plan.find_active(
                 workspace.workspace_id, week_label
             ) is None and not await _week_requested(pool, workspace.workspace_id, week_label):
-                await plan.request_new(workspace.workspace_id, week_label)
+                await _request_week_plan(
+                    pool, plan, limits, workspace.workspace_id, week_label, on_limit_exhausted
+                )
         except Exception:
             # One Workspace's failure must not starve the ones after it every minute.
             logger.exception("weekly plan tick failed for workspace %s", workspace.workspace_id)
 
 
 def schedule_weekly_plan_tick(
-    scheduler: AsyncIOScheduler, pool: asyncpg.Pool, plan: PlanRequester
+    scheduler: AsyncIOScheduler,
+    pool: asyncpg.Pool,
+    plan: PlanRequester,
+    limits: Limits,
+    on_limit_exhausted: OnLimitExhausted,
 ) -> None:
     """Every minute, the first run right away - that one catches up a missed deadline."""
     scheduler.add_job(
         weekly_plan_tick,
         IntervalTrigger(seconds=int(TICK_INTERVAL.total_seconds())),
-        args=[pool, plan],
+        args=[pool, plan, limits, on_limit_exhausted],
         next_run_time=datetime.now(UTC),
         coalesce=True,
         max_instances=1,

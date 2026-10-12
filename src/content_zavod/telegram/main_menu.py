@@ -10,7 +10,8 @@ chat (a private chat has no link to an earlier message), or - with no Plan yet -
 next one is due and offers «🪄 Составить План» (the same path as /generate_plan). The week is
 counted in the Пространство's own time zone, like its Расписание. «✍️ Предложить Тему» asks for
 the Тема through `InputPrompt` and hands the answer to the same handler as /topic. «🗂 История»
-turns the menu message into its screen, whose «🏠 В меню» row turns it back.
+turns the menu message into its screen, whose «🏠 В меню» row turns it back. Under the
+buttons' prompt the menu shows what is left of the Лимит: «Осталось: 1 План, 8 Статей».
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from typing import Protocol
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from ..scheduling import DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE
-from ..workspaces import Workspace, WorkspaceId
+from ..workspaces import Limits, Workspace, WorkspaceId
 from .asset_photos import AssetPhotos
 from .callback_codec import Action, SimpleAction, encode_callback_data
 from .gateway import BotClient, TelegramGateway, format_week_range
@@ -59,6 +60,7 @@ from .texts import (
     TOPIC_QUESTION,
     TOPIC_TOO_LONG_TEXT,
     WELCOME_TEXT,
+    remaining_text,
     schedule_text,
 )
 from .topic_command import TOPIC_MAX_LENGTH, PlanProposal, handle_topic_command
@@ -130,6 +132,7 @@ class MainMenu:
         *,
         settings: NicheSource,
         onboarding: OnboardingNeed,
+        limits: Limits,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         photos: AssetPhotos | None = None,
     ) -> None:
@@ -138,6 +141,7 @@ class MainMenu:
         /start welcome picture comes from (#114); without it the welcome is text, as before."""
         self._settings = settings
         self._onboarding = onboarding
+        self._limits = limits
         self._photos = photos
         self._plan = plan
         self._queue = queue
@@ -147,27 +151,34 @@ class MainMenu:
         self._prompts = prompts
         self._now = now
 
-    async def send(self, chat_id: int, *, welcome: bool = False) -> None:
+    async def _text(self, workspace: Workspace) -> str:
+        usage = await self._limits.usage(workspace.id)
+        return f"{MENU_TEXT}\n\n{remaining_text(usage)}"
+
+    async def send(self, workspace: Workspace, chat_id: int, *, welcome: bool = False) -> None:
         """The menu as a new message. `welcome` (/start) puts the greeting above it - as its own
         picture when there are pictures (#114), since the menu itself is edited in place and a
         photo message can't turn into a text one."""
-        text = MENU_TEXT
+        text = await self._text(workspace)
         if welcome and self._photos is not None:
             await self._photos.send(chat_id, "welcome", WELCOME_TEXT)
         elif welcome:
-            text = f"{WELCOME_TEXT}\n\n{MENU_TEXT}"
+            text = f"{WELCOME_TEXT}\n\n{text}"
         await self._bot.send_message(chat_id, text, reply_markup=build_main_menu_keyboard())
 
-    async def show(self, chat_id: int, message_id: int) -> None:
+    async def show(self, workspace: Workspace, chat_id: int, message_id: int) -> None:
         """The menu in place of the pressed message - or, when that one can't become the menu
         (a photo: the onboarding intro), as a new message below it."""
         try:
             await self._bot.edit_message_text(
-                chat_id, message_id, MENU_TEXT, reply_markup=build_main_menu_keyboard()
+                chat_id,
+                message_id,
+                await self._text(workspace),
+                reply_markup=build_main_menu_keyboard(),
             )
         except Exception:
             logger.info("could not turn message %s into the menu", message_id, exc_info=True)
-            await self.send(chat_id)
+            await self.send(workspace, chat_id)
 
     async def show_plan(self, workspace: Workspace, chat_id: int, message_id: int) -> None:
         week_label = workspace_week(workspace, self._now())
@@ -229,6 +240,7 @@ class MainMenu:
             chat_id,
             queue=self._queue,
             settings=self._settings,
+            limits=self._limits,
             now=self._now,
             announce=announce,
         )
