@@ -99,3 +99,12 @@ async def test_a_corrupt_stored_profile_reads_as_none() -> None:
     store.values[(WS_A, "style_profile")] = "{not json"
 
     assert (await SettingsService(store).read(WS_A)).style_profile is None
+
+
+def test_a_long_trait_is_cut_on_a_word_boundary_with_an_ellipsis() -> None:
+    profile = style_profile_from_dict({"traits": {"tone": "спокойный " * 30}})
+
+    assert profile is not None
+    ((_key, value),) = profile.traits
+    assert len(value) <= 100 and value.endswith("…")
+    assert value[:-1].split()[-1] == "спокойный"

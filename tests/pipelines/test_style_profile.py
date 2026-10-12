@@ -425,3 +425,17 @@ async def test_a_model_error_fails_the_job_without_quoting_the_samples() -> None
 
     assert str(failure.value) == "RuntimeError"
     assert failure.value.__cause__ is None and failure.value.__suppress_context__
+
+
+def test_the_prompt_asks_for_short_traits() -> None:
+    system, _user = build_style_messages(["текст"], "articles")
+
+    assert "не длиннее 90 знаков" in system.text
+
+
+def test_ld_json_offsets_survive_case_and_unicode_that_lower_reshapes() -> None:
+    """`"İ".lower()` is two characters: offsets found in a lowered copy cut the original wrong."""
+    body = json.dumps({"@type": "Article", "articleBody": "Тело статьи. " * 50})
+    page = "İ" * 40 + f'<SCRIPT TYPE="application/LD+JSON">{body}</Script>'
+
+    assert parse_ld_article(page) == ("Тело статьи. " * 50).strip()

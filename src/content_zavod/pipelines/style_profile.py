@@ -76,6 +76,8 @@ _CHANNEL_RE = re.compile(
     r"https://(?:www\.)?(?:t|telegram)\.me/(?:s/)?([A-Za-z][A-Za-z0-9_]{4,31})(?:/\d+)?/?"
 )
 _TAG_RE = re.compile(r"<[^>]+>")
+_SCRIPT_OPEN_RE = re.compile(r"<script", re.I)
+_SCRIPT_CLOSE_RE = re.compile(r"</script", re.I)
 _BREAK_RE = re.compile(r"</p\s*>|<br\s*/?>", re.I)
 # JSON-LD nests @graph in @graph rarely more than twice; deeper is not an article page.
 _LD_MAX_DEPTH = 8
@@ -106,7 +108,7 @@ _SYSTEM = (
     "Поле samples в INPUT_DATA — тексты одного автора. Опиши, КАК он пишет, а не О ЧЁМ: не "
     "пересказывай темы, факты, имена, цифры и ссылки из текстов.\n\n"
     "Верни только JSON-объект, без Markdown и пояснений, с полями (значения — строки "
-    "по-русски, каждое — одно-два коротких предложения; если что-то не определить, пустая "
+    "по-русски, каждое — одна короткая фраза не длиннее 90 знаков; если что-то не определить, пустая "
     "строка):\n"
     f"{_TRAIT_LINES}\n"
     "summary — два-три предложения для самого автора на «вы»: «Вы пишете …»;\n"
@@ -202,18 +204,18 @@ def _ld_items(data: object, depth: int = 0) -> list[dict[str, Any]]:
 def _ld_json_blocks(html: str) -> list[str]:
     """The contents of every `<script type="application/ld+json">`, in one linear pass: a
     script with no closing tag ends the scan (a regex with `.*?` went quadratic on a page of
-    unclosed ones, stalling the worker for every Пространство)."""
-    lower = html.lower()
+    unclosed ones, stalling the worker for every Пространство). Offsets are always in
+    `html` itself: `str.lower` may change a string's length («İ»)."""
     blocks: list[str] = []
     position = 0
-    while (start := lower.find("<script", position)) >= 0:
-        tag_end = lower.find(">", start)
-        close = lower.find("</script", tag_end) if tag_end >= 0 else -1
-        if close < 0:
+    while (opening := _SCRIPT_OPEN_RE.search(html, position)) is not None:
+        tag_end = html.find(">", opening.end())
+        closing = _SCRIPT_CLOSE_RE.search(html, tag_end) if tag_end >= 0 else None
+        if closing is None:
             break
-        if "application/ld+json" in lower[start:tag_end]:
-            blocks.append(html[tag_end + 1 : close])
-        position = close + len("</script")
+        if "application/ld+json" in html[opening.start() : tag_end].lower():
+            blocks.append(html[tag_end + 1 : closing.start()])
+        position = closing.end()
     return blocks
 
 

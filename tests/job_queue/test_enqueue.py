@@ -1,7 +1,7 @@
 import pytest
 
 from content_zavod.job_queue import JobNotFound, JobQueue
-from tests.tenancy import WS_A
+from tests.tenancy import WS_A, WS_B
 
 
 async def test_enqueue_returns_a_job_id_and_the_job_is_queued(queue: JobQueue) -> None:
@@ -46,3 +46,28 @@ async def test_get_job_returns_payload_and_output_once_done(queue: JobQueue) -> 
 
 async def test_get_job_is_none_for_unknown_job(queue: JobQueue) -> None:
     assert await queue.get_job(WS_A, 999_999) is None
+
+
+async def _payload(queue: JobQueue, job_id: int) -> dict:
+    job = await queue.get_job(WS_A, job_id)
+    assert job is not None
+    return job.payload
+
+
+async def test_drop_payload_keys_strips_a_finished_jobs_input_in_its_own_workspace_only(
+    queue: JobQueue,
+) -> None:
+    """#134: the Образцы leave a finished `analyze_style` Job; an unfinished one keeps them."""
+    payload = {"samples": ["текст"], "links": ["https://t.me/x"], "message_id": 7}
+    job_id = await queue.enqueue(WS_A, "analyze_style", payload, idempotency_key="style-1")
+
+    await queue.drop_payload_keys(WS_A, job_id, ["samples", "links"])
+    claimed = await queue.claim_next()
+    assert claimed is not None and claimed.payload == payload
+    assert await queue.complete(job_id, {"status": "ok"}, claimed.lease_token)
+
+    await queue.drop_payload_keys(WS_B, job_id, ["samples", "links"])
+    assert await _payload(queue, job_id) == payload
+
+    await queue.drop_payload_keys(WS_A, job_id, ["samples", "links"])
+    assert await _payload(queue, job_id) == {"message_id": 7}
