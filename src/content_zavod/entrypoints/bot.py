@@ -5,8 +5,8 @@ command (#10), /generate_plan, member/access management, and schedule
 management behind the Membership allowlist (#8) - an unregistered
 telegram_id gets a "Запросить доступ" prompt from /start rather than silent
 refusal everywhere else. Runs `run_notifications` (#2) to deliver finished
-Job results back to the team chat, and `schedule_weekly_plan_trigger` (#7)
-via APScheduler in the same process. Never runs a Job Handler itself (see
+Job results back to the team chat, and the Расписание tick (`schedule_weekly_plan_tick`,
+#7, ADR-0015) via APScheduler in the same process. Never runs a Job Handler itself (see
 entrypoints/worker.py) - it only enqueues (through Plan/Article) and renders
 results.
 """
@@ -50,15 +50,7 @@ from ..domain import (
 from ..job_queue import JobQueue, JobResult, run_notifications
 from ..migrations import run_migrations
 from ..owner_settings import BotStateStore, WorkspaceSettingsStore
-from ..scheduling import (
-    DEFAULT_DAY_OF_WEEK,
-    DEFAULT_HOUR,
-    DEFAULT_MINUTE,
-    ScheduleConfig,
-    ScheduleSettings,
-    reconcile_weekly_plan,
-    schedule_weekly_plan_trigger,
-)
+from ..scheduling import ScheduleSettings, schedule_weekly_plan_tick
 from ..settings import OnboardingState, SettingsService
 from ..telegram import (
     ACCESS_DENIED_TEXT,
@@ -110,6 +102,7 @@ from ..telegram.texts import (
     job_failure_text,
 )
 from ..telegraph import HttpxTelegraphClient, TelegraphPublisher, project_footer
+from ..workspaces import Workspaces
 from ._process import register_shutdown
 from ._team_workspace import TeamScoped, team_workspace_id
 
@@ -752,7 +745,9 @@ async def main(settings: Settings | None = None) -> None:
         owner_settings = TeamScoped(WorkspaceSettingsStore(pool), workspace_id)
         owner_settings_service = SettingsService(owner_settings)
         bot_state = BotStateStore(pool)
-        plan = TeamScoped(Plan(pool, queue, covers_enabled=settings.covers_enabled), workspace_id)
+        # The Расписание tick acts in every Workspace, so it gets the unbound Plan.
+        all_plans = Plan(pool, queue, covers_enabled=settings.covers_enabled)
+        plan = TeamScoped(all_plans, workspace_id)
         article = TeamScoped(Article(pool, queue), workspace_id)
 
         bot = Bot(token=settings.telegram_bot_token)
@@ -782,29 +777,9 @@ async def main(settings: Settings | None = None) -> None:
         join_request_flow = JoinRequestFlow(join_requests, membership, gateway, photos=photos)
         prompts = InputPrompt(bot_client, pending_inputs)
 
-        # The scheduler must exist before _build_router so /set_schedule can reschedule its job.
+        # Its first run, right away, also catches up a deadline missed while the bot was down.
         scheduler = AsyncIOScheduler()
-        persisted_schedule = await schedule_settings.get()
-        resolved_schedule = persisted_schedule or ScheduleConfig(
-            day_of_week=DEFAULT_DAY_OF_WEEK, hour=DEFAULT_HOUR, minute=DEFAULT_MINUTE
-        )
-        schedule_weekly_plan_trigger(
-            scheduler,
-            plan,
-            tz=settings.timezone,
-            day_of_week=resolved_schedule.day_of_week,
-            hour=resolved_schedule.hour,
-            minute=resolved_schedule.minute,
-        )
-        # Recover a trigger missed while the process was down (#72) before the live
-        # cron job takes over for future weeks.
-        await reconcile_weekly_plan(
-            plan,
-            tz=settings.timezone,
-            day_of_week=resolved_schedule.day_of_week,
-            hour=resolved_schedule.hour,
-            minute=resolved_schedule.minute,
-        )
+        schedule_weekly_plan_tick(scheduler, pool, all_plans)
         scheduler.start()
 
         # Направления suggested from the Ниша (#113): the model call is a Job in the worker.
@@ -812,10 +787,9 @@ async def main(settings: Settings | None = None) -> None:
         settings_screen = SettingsScreen(
             owner_settings_service,
             schedule_settings,
-            scheduler,
+            TeamScoped(Workspaces(pool), workspace_id),
             bot_client,
             prompts,
-            tz=settings.timezone,
             directions=directions,
         )
         main_menu = MainMenu(
