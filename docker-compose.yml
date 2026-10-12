@@ -1,0 +1,54 @@
+# Production stack for a VPS: Postgres + bot + worker. See README «Развернуть на VPS за 10 минут».
+# Secrets come only from .env next to this file (never committed).
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-app: &app
+  build: .
+  image: content-zavod:latest
+  env_file: .env
+  environment:
+    # Overrides POSTGRES_DSN from .env: inside compose the database is the `postgres` service.
+    POSTGRES_DSN: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+  logging: *logging
+  # No healthcheck: the process is PID 1, so "container running" already means "process alive",
+  # and a crash is handled by `restart`. There is no cheap honest liveness probe beyond that.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No `ports:` on purpose: Postgres is reachable only from bot/worker inside the compose network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging: *logging
+
+  bot:
+    <<: *app
+    command: ["python", "bot_main.py"]
+
+  worker:
+    <<: *app
+    command: ["python", "worker_main.py"]
+    # Let an in-flight generation finish instead of being killed after 10 s and retried 10 min later.
+    stop_grace_period: 2m
+
+volumes:
+  pgdata:
