@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -15,6 +14,7 @@ from content_zavod.telegram.settings_screen import (
     SettingsScreen,
     parse_time,
 )
+from content_zavod.workspaces import Workspace, WorkspaceId
 
 from .fakes import FakePendingInputs, RecordingBot, button_data, button_texts
 
@@ -22,7 +22,6 @@ OWNER = 1
 PRIVATE = OWNER
 GROUP = -100777
 SCREEN = 50
-MOSCOW = ZoneInfo("Europe/Moscow")
 
 
 class FakeStore:
@@ -47,12 +46,15 @@ class FakeSchedule:
         self.config = ScheduleConfig(day_of_week, hour, minute)
 
 
-class FakeScheduler:
+class FakeWorkspace:
     def __init__(self) -> None:
-        self.rescheduled: list[tuple[str, object]] = []
+        self.timezone = "Europe/Moscow"
 
-    def reschedule_job(self, job_id, *, trigger) -> None:
-        self.rescheduled.append((job_id, trigger))
+    async def get(self) -> Workspace:
+        return Workspace(WorkspaceId(1), OWNER, None, self.timezone, None, None)
+
+    async def set_timezone(self, timezone: str) -> None:
+        self.timezone = timezone
 
 
 class FakeSuggester:
@@ -71,16 +73,15 @@ class Env:
     ) -> None:
         self.store = FakeStore(values)
         self.schedule = FakeSchedule()
-        self.scheduler = FakeScheduler()
+        self.workspace = FakeWorkspace()
         self.bot = RecordingBot()
         self.pending = FakePendingInputs()
         self.screen = SettingsScreen(
             SettingsService(self.store),
             self.schedule,
-            self.scheduler,
+            self.workspace,
             self.bot,
             InputPrompt(self.bot, self.pending),
-            tz=MOSCOW,
             directions=directions,
         )
 
@@ -345,15 +346,16 @@ async def test_schedule_screen_has_russian_weekdays_and_time_button(env: Env) ->
     await env.screen.show_schedule(PRIVATE, SCREEN, "m")
 
     ((_, _, text, markup),) = env.bot.edited
-    assert "Сейчас: пятница, 10:30" in text
+    assert "Сейчас: пятница, 10:30\nЧасовой пояс: МСК" in text
     assert button_texts(markup) == [
         ["пн", "вт", "ср", "чт"],
         ["✅ пт", "сб", "вс"],
         ["🕐 Изменить время"],
+        ["🌍 Часовой пояс"],
         ["◀ Назад"],
     ]
     assert button_data(markup)[0][0] == "sd:mon:m"
-    assert button_data(markup)[2:] == [["sk:m"], ["mn:"]]
+    assert button_data(markup)[2:] == [["sk:m"], ["sz:m"], ["mn:"]]
 
 
 async def test_schedule_back_returns_to_settings_when_opened_from_there(env: Env) -> None:
@@ -362,16 +364,50 @@ async def test_schedule_back_returns_to_settings_when_opened_from_there(env: Env
     assert button_data(env.bot.edited[0][3])[-1] == ["st:"]
 
 
-async def test_weekday_button_keeps_the_time_and_reschedules(env: Env) -> None:
+async def test_weekday_button_keeps_the_time(env: Env) -> None:
     env.schedule.config = ScheduleConfig("mon", 9, 15)
 
     await env.screen.set_day(PRIVATE, SCREEN, "wed", "m")
 
     assert env.schedule.config == ScheduleConfig("wed", 9, 15)
-    ((job_id, trigger),) = env.scheduler.rescheduled
-    assert job_id == "weekly_plan_trigger"
-    assert "day_of_week='wed'" in str(trigger) and "hour='9'" in str(trigger)
     assert env.bot.edited[0][2].startswith("✅ День изменён: среда, 09:15")
+
+
+async def test_timezone_chooser_lists_russias_zones_and_marks_the_current_one(env: Env) -> None:
+    env.workspace.timezone = "Asia/Vladivostok"
+
+    await env.screen.show_timezones(PRIVATE, SCREEN, "s")
+
+    ((_, message_id, text, markup),) = env.bot.edited
+    assert message_id == SCREEN
+    assert "Сейчас: МСК+7" in text
+    assert button_texts(markup) == [
+        ["МСК−1", "МСК", "МСК+1"],
+        ["МСК+2", "МСК+3", "МСК+4"],
+        ["МСК+5", "МСК+6", "✅ МСК+7"],
+        ["МСК+8", "МСК+9"],
+        ["◀ Назад"],
+    ]
+    assert button_data(markup)[0][0] == "sy:0:s"
+    assert button_data(markup)[-1] == ["sc:s"]
+
+
+async def test_picked_timezone_is_saved_and_shown_on_the_schedule(env: Env) -> None:
+    await env.screen.set_timezone(PRIVATE, SCREEN, "8", "m")
+
+    assert env.workspace.timezone == "Asia/Vladivostok"
+    _, _, text, markup = env.bot.edited[-1]
+    assert text.startswith("✅ Часовой пояс изменён: МСК+7")
+    assert "Часовой пояс: МСК+7" in text
+    assert button_data(markup)[-1] == ["mn:"]
+
+
+@pytest.mark.parametrize("index", ["11", "-1", "x", ""])
+async def test_a_bad_timezone_index_changes_nothing(env: Env, index: str) -> None:
+    await env.screen.set_timezone(PRIVATE, SCREEN, index, "m")
+
+    assert env.workspace.timezone == "Europe/Moscow"
+    assert env.bot.edited[-1][2].startswith("🕘 Расписание")
 
 
 async def test_time_is_asked_and_saved_keeping_the_day(env: Env) -> None:
@@ -384,7 +420,6 @@ async def test_time_is_asked_and_saved_keeping_the_day(env: Env) -> None:
     await env.reply("18.45")
 
     assert env.schedule.config == ScheduleConfig("thu", 18, 45)
-    assert len(env.scheduler.rescheduled) == 1
     _, message_id, text, markup = env.bot.edited[-1]
     assert message_id == SCREEN
     assert text.startswith("✅ Время изменено: четверг, 18:45")
@@ -415,7 +450,7 @@ async def test_set_schedule_alias_rejects_unknown_day(env: Env) -> None:
     await env.screen.set_schedule_command(PRIVATE, "xx 10:30")
 
     assert env.bot.sent[0][1].startswith("Неизвестный день «xx»")
-    assert env.scheduler.rescheduled == []
+    assert env.schedule.config is None
 
 
 # --- Направления suggested from the Ниша (#113) ---

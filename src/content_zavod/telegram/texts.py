@@ -57,7 +57,7 @@ PLATFORMS = {"zen": "Дзен", "vc": "VC.ru"}
 # «Статья для …»: Дзен declines, VC.ru doesn't.
 _PLATFORMS_GENITIVE = {"zen": "Дзена", "vc": "VC.ru"}
 
-# code -> (short, full); `mon`..`sun` are what APScheduler's CronTrigger and the DB expect.
+# code -> (short, full); `mon`..`sun` are what the DB and the Расписание tick expect.
 WEEKDAYS = {
     "mon": ("пн", "понедельник"),
     "tue": ("вт", "вторник"),
@@ -66,6 +66,22 @@ WEEKDAYS = {
     "fri": ("пт", "пятница"),
     "sat": ("сб", "суббота"),
     "sun": ("вс", "воскресенье"),
+}
+
+# The Расписание's time zones (ADR-0015): Russia's, by offset from Moscow, no free IANA input.
+# IANA name -> label; the screen's buttons carry the index in this order.
+TIMEZONES = {
+    "Europe/Kaliningrad": "МСК−1",
+    "Europe/Moscow": "МСК",
+    "Europe/Samara": "МСК+1",
+    "Asia/Yekaterinburg": "МСК+2",
+    "Asia/Omsk": "МСК+3",
+    "Asia/Krasnoyarsk": "МСК+4",
+    "Asia/Irkutsk": "МСК+5",
+    "Asia/Yakutsk": "МСК+6",
+    "Asia/Vladivostok": "МСК+7",
+    "Asia/Magadan": "МСК+8",
+    "Asia/Kamchatka": "МСК+9",
 }
 
 # The ready-Статья card (#92).
@@ -209,6 +225,12 @@ def weekday_name(code: str) -> str:
     return WEEKDAYS[code][1] if code in WEEKDAYS else code
 
 
+def timezone_name(timezone: str) -> str:
+    """«МСК+7» for a stored IANA name; one outside `TIMEZONES` (an `APP_TIMEZONE` set to
+    something else) is shown as it is."""
+    return TIMEZONES.get(timezone, timezone)
+
+
 def parse_weekday(text: str) -> str | None:
     """`/set_schedule` input -> stored day code: the English code itself, the Russian short
     form or the full name, any case. `None` for anything else."""
@@ -330,7 +352,7 @@ SCHEDULE_LABEL = "Расписание"
 SCHEDULE_PURPOSE = "когда автоматически составляется новый План"
 SCHEDULE_CHANGE_BUTTON = "🕘 Изменить Расписание"
 SCHEDULE_TITLE = "🕘 Расписание\nНовый План составляется автоматически раз в неделю."
-SCHEDULE_HOW = "Нажмите день недели, чтобы сменить его, или «Изменить время»."
+SCHEDULE_HOW = "Нажмите день недели, чтобы сменить его, «Изменить время» или «Часовой пояс»."
 SCHEDULE_TIME_BUTTON = "🕐 Изменить время"
 SCHEDULE_DAY_SAVED = "День изменён: {schedule}"
 SCHEDULE_TIME_SAVED = "Время изменено: {schedule}"
@@ -339,6 +361,10 @@ SCHEDULE_TIME_QUESTION = (
 )
 SCHEDULE_TIME_PLACEHOLDER = "Например: 09:30"
 SCHEDULE_TIME_INVALID = "Не понял время «{text}». Нужно ЧЧ:ММ, например 09:30."
+SCHEDULE_TIMEZONE_LINE = "Часовой пояс: {timezone}"
+SCHEDULE_TIMEZONE_BUTTON = "🌍 Часовой пояс"
+SCHEDULE_TIMEZONE_QUESTION = "🌍 Выберите часовой пояс: в нём считаются день и время Расписания."
+SCHEDULE_TIMEZONE_SAVED = "Часовой пояс изменён: {timezone}"
 
 
 def schedule_text(day: str, hour: int, minute: int) -> str:

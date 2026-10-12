@@ -51,6 +51,7 @@ from content_zavod.telegram.main_menu import MainMenu
 from content_zavod.telegram.onboarding import ONBOARDING_INPUT_KIND, Onboarding
 from content_zavod.telegram.pending_inputs import PendingInput
 from content_zavod.telegram.settings_screen import SETTING_INPUT_KIND, SettingsScreen
+from content_zavod.workspaces import Workspace, WorkspaceId
 
 from .fakes import FakeJobs, FakePendingInputs
 
@@ -421,12 +422,15 @@ class FakeSchedule:
         self.config = ScheduleConfig(day_of_week, hour, minute)
 
 
-class FakeScheduler:
+class FakeWorkspace:
     def __init__(self) -> None:
-        self.rescheduled: list[str] = []
+        self.timezone = "Europe/Moscow"
 
-    def reschedule_job(self, job_id, *, trigger) -> None:
-        self.rescheduled.append(job_id)
+    async def get(self) -> Workspace:
+        return Workspace(WorkspaceId(1), OWNER_ID, None, self.timezone, None, None)
+
+    async def set_timezone(self, timezone: str) -> None:
+        self.timezone = timezone
 
 
 class FakeQueue:
@@ -474,7 +478,7 @@ class Fixtures:
         self.join_request_flow = JoinRequestFlow(self.join_requests, self.membership, self.gateway)
         self.owner_settings = FakeOwnerSettingsStore()
         self.schedule = FakeSchedule()
-        self.scheduler = FakeScheduler()
+        self.workspace = FakeWorkspace()
         self.queue = FakeQueue()
         self.prompts = InputPrompt(self.bot, self.pending_inputs)
         self.jobs = FakeJobs()
@@ -484,10 +488,9 @@ class Fixtures:
         self.settings_screen = SettingsScreen(
             SettingsService(self.owner_settings),
             self.schedule,
-            self.scheduler,
+            self.workspace,
             self.bot,
             self.prompts,
-            tz=ZoneInfo("Europe/Moscow"),
         )
         self.main_menu = MainMenu(
             self.plan,
@@ -1307,11 +1310,25 @@ async def test_pick_setting_saves_the_preset(f: Fixtures) -> None:
     assert f.owner_settings.values == {"voice": "preset:founder_operator"}
 
 
-async def test_schedule_day_reschedules(f: Fixtures) -> None:
+async def test_schedule_day_saves_the_day(f: Fixtures) -> None:
     await dispatch(f, SimpleAction("schedule_day", "fri:s"), user_id=OWNER_ID)
 
     assert f.schedule.config == ScheduleConfig("fri", 9, 0)
-    assert f.scheduler.rescheduled == ["weekly_plan_trigger"]
+
+
+async def test_schedule_tz_opens_the_chooser_and_a_pick_saves_it(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("schedule_tz", "s"), user_id=OWNER_ID)
+    await dispatch(f, SimpleAction("schedule_tz_pick", "0:s"), user_id=OWNER_ID)
+
+    assert f.bot.edited_messages[0][2].startswith("🌍 Выберите часовой пояс")
+    assert f.workspace.timezone == "Europe/Kaliningrad"
+    assert f.bot.edited_messages[1][2].startswith("✅ Часовой пояс изменён: МСК−1")
+
+
+async def test_schedule_tz_pick_is_owner_only(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("schedule_tz_pick", "0:s"), user_id=CM_ID)
+
+    assert f.workspace.timezone == "Europe/Moscow"
 
 
 async def test_schedule_time_asks_for_the_time(f: Fixtures) -> None:

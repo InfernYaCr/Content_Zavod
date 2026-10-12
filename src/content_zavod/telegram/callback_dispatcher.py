@@ -386,6 +386,19 @@ class CallbackDispatcher:
                 await self._settings_screen.ask_time(
                     chat_id, user_id, message_id, id_ or BACK_TO_MENU
                 )
+            case SimpleAction(action="schedule_tz", id_=id_):
+                if not await self._authorized("schedule_tz", role, deny_text, answer):
+                    return
+                await answer()
+                await self._settings_screen.show_timezones(chat_id, message_id, id_ or BACK_TO_MENU)
+            case SimpleAction(action="schedule_tz_pick", id_=id_):
+                if not await self._authorized("schedule_tz_pick", role, deny_text, answer):
+                    return
+                await answer()
+                index, _, back = id_.partition(":")
+                await self._settings_screen.set_timezone(
+                    chat_id, message_id, index, back or BACK_TO_MENU
+                )
             case SimpleAction(action="cancel_input", id_=id_):
                 if not await self._authorized("cancel_input", role, deny_text, answer):
                     return

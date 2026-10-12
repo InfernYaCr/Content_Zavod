@@ -22,7 +22,7 @@ from typing import Protocol
 from .service import SETTING_STORE_KEYS
 
 ONBOARDING_KEY = "onboarding"
-_STARTED = "started"
+ONBOARDING_STARTED = "started"
 _DONE = "done"
 _LATER = "later"
 
@@ -42,14 +42,14 @@ class OnboardingState:
     async def needed(self) -> bool:
         flag = await self._store.get(ONBOARDING_KEY)
         if flag is not None:
-            return flag == _STARTED
+            return flag == ONBOARDING_STARTED
         for key in SETTING_STORE_KEYS:
             if await self._store.get(key) is not None:
                 return False
         return True
 
     async def begin(self) -> None:
-        await self._store.set(ONBOARDING_KEY, _STARTED)
+        await self._store.set(ONBOARDING_KEY, ONBOARDING_STARTED)
 
     async def finish(self) -> bool:
         """«🚀 Запустить»: `True` only for the call that actually launched - a double-tapped

@@ -206,7 +206,7 @@ async def _slide_mockup(slide: Slide) -> Mockup:
         bubbles = [
             Bubble("🏠 Меню → 🕘 Расписание", service=True),
             Bubble(
-                render_schedule_text(config),
+                render_schedule_text(config, "Europe/Moscow"),
                 _buttons(build_schedule_keyboard(config, BACK_TO_MENU)),
             ),
         ]
