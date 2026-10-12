@@ -10,6 +10,7 @@ the first space is an unambiguous separator and no JSON is needed.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
 
@@ -49,7 +50,7 @@ class Project:
 def normalize_project_url(value: str) -> str:
     """Any common spelling of a channel or site link -> one canonical `https://` URL:
     `@name`, `t.me/name`, `telegram.me/name`, `t.me/s/name` -> `https://t.me/name`;
-    `example.ru`, `http://...` -> `https://...`, host lowercased, a trailing `/` dropped.
+    `example.ru`, `http://...` -> `https://...`, host lowercased, trailing `/` dropped.
     Raises `ValueError` on anything else, so a typo never reaches a Статья as a dead link."""
 
     value = value.lstrip(_WRAPPING).rstrip(_TRAILING)
@@ -63,7 +64,8 @@ def normalize_project_url(value: str) -> str:
             raise ValueError(value)
         rest = value[scheme.end() :]
     parts = urlsplit(f"https://{rest}")
-    host = parts.hostname or ""
+    # NFKC first: a fullwidth `ｅxample.ru` is the same host, not a lookalike that passes.
+    host = unicodedata.normalize("NFKC", parts.hostname or "").lower()
     if (
         any(char.isspace() for char in value)
         or parts.username is not None
@@ -78,7 +80,7 @@ def normalize_project_url(value: str) -> str:
             path = path[2:]
         if not path.strip("/"):
             raise ValueError(value)  # `t.me` alone leads nowhere - the channel name is missing
-    return urlunsplit(("https", host, path.removesuffix("/"), parts.query, parts.fragment))
+    return urlunsplit(("https", host, path.rstrip("/"), parts.query, parts.fragment))
 
 
 def serialize_project(project: Project) -> str:

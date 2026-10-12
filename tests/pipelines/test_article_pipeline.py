@@ -713,6 +713,8 @@ async def test_site_project_without_description_gets_a_neutral_fallback_line() -
         ("https://example.ru", "https://example.ru/../evil"),
         (_PROJECT_URL, "https://t.me/marketing_daily_spam"),
         (_PROJECT_URL, "https://t.me/marketing_daily/../spam"),
+        (_PROJECT_URL, "https://t.me@evil.com/marketing_daily"),
+        ("https://сайт.рф", "https://xn--80aswg.xn--p1ai"),
     ],
 )
 @pytest.mark.asyncio
@@ -725,6 +727,40 @@ async def test_foreign_url_that_only_starts_with_the_project_link_is_dropped(
 
     assert lookalike not in content
     assert content.startswith("Текст.\n\nСм.\n\nБольше по теме — ")
+    assert content.count(project.split()[0]) == 1
+
+
+@pytest.mark.parametrize(
+    ("project", "spelling"),
+    [
+        ("https://www.example.ru/blog", "https://example.ru/blog"),
+        ("https://example.ru", "https://www.example.ru/"),
+        ("https://example.ru/blog", "https://example.ru/blog/"),
+        (_PROJECT_URL, f"{_PROJECT_URL}/"),
+        (_PROJECT_URL, "HTTP://T.ME/MARKETING_DAILY"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_project_link_kept_by_the_filter_is_rewritten_to_the_exact_url(
+    project, spelling
+) -> None:
+    """Whatever spelling the foreign-URL filter keeps as the Проект link becomes the exact
+    URL in place - otherwise it stays next to an appended fallback line: two links."""
+    bare, _ = await _generate_with_project(f"Текст.\n\nБольше — тут {spelling}.", project=project)
+    linked, _ = await _generate_with_project(
+        f"Текст.\n\nБольше — [тут]({spelling}).", project=project
+    )
+
+    assert bare == f"Текст.\n\nБольше — тут {project}."
+    assert linked == f"Текст.\n\nБольше — [тут]({project})."
+
+
+@pytest.mark.asyncio
+async def test_markdown_link_to_a_foreign_url_with_the_project_as_text_is_dropped() -> None:
+    content, _ = await _generate_with_project(f"Текст.\n\nСм. [{_PROJECT_URL}](https://evil.com)")
+
+    assert "evil.com" not in content
+    assert content == f"Текст.\n\nСм. {_PROJECT_URL}"
 
 
 @pytest.mark.parametrize(

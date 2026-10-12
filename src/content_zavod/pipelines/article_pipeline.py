@@ -294,24 +294,30 @@ def _normalized_link(url: str) -> str:
 
 def _drop_foreign_urls(body: str, allowed: set[str], project: Project | None) -> str:
     """No URL outside the evidence bundle survives (docs/plans/...-saas.md, E2) - except
-    the Проект link in another spelling (`http://`, `www.`, case, trailing `/`), which
-    `_ensure_project_link` rewrites. Equality, not a prefix (#133): `https://t.me/name_spam`
-    and `https://example.ru.evil.com` are foreign."""
+    the Проект link in another spelling (`http://`, `www.`, case, trailing `/`), which is
+    rewritten into the exact `project.url` right here. Equality, not a prefix (#133):
+    `https://t.me/name_spam` and `https://example.ru.evil.com` are foreign."""
     project_link = _normalized_link(project.url) if project is not None else None
 
-    def keep(url: str) -> bool:
+    def kept(url: str) -> str | None:
         if url in allowed:
-            return True
-        return project_link is not None and _normalized_link(url) == project_link
+            return url
+        if project is not None and _normalized_link(url) == project_link:
+            return project.url
+        return None
 
     def replace_markdown(match: re.Match[str]) -> str:
-        return match.group(0) if keep(match.group(2)) else match.group(1)
+        url = kept(match.group(2))
+        return match.group(1) if url is None else f"[{match.group(1)}]({url})"
 
     def replace_bare(match: re.Match[str]) -> str:
         text = match.group(0)
         stripped = text.rstrip(_TRAILING_PUNCT)
         trailing = text[len(stripped) :]
-        return text if keep(stripped.strip()) else trailing
+        url = kept(stripped.strip())
+        if url is None:
+            return trailing
+        return stripped[: len(stripped) - len(stripped.lstrip())] + url + trailing
 
     body = _MARKDOWN_LINK_RE.sub(replace_markdown, body)
     return _BARE_URL_RE.sub(replace_bare, body)

@@ -9,6 +9,7 @@ from content_zavod.settings import (
     CustomPersona,
     Project,
     SettingsService,
+    normalize_project_url,
     persona_setting_value,
 )
 
@@ -195,6 +196,11 @@ async def test_project_is_unset_by_default() -> None:
         ("example.ru),", "https://example.ru"),
         ("сайт.рф", "https://сайт.рф"),
         ("https://Сайт.РФ/блог", "https://сайт.рф/блог"),
+        ("example.ru//", "https://example.ru"),
+        ("https://example.ru/blog//", "https://example.ru/blog"),
+        ("t.me/marketing_daily//", "https://t.me/marketing_daily"),
+        ("ｅxample.ru", "https://example.ru"),
+        ("https://ＥＸＡＭＰＬＥ．ru/blog", "https://example.ru/blog"),
     ],
 )
 async def test_set_project_normalizes_the_link_and_round_trips(link, expected_url) -> None:
@@ -205,6 +211,7 @@ async def test_set_project_normalizes_the_link_and_round_trips(link, expected_ur
 
     assert saved == Project(url=expected_url, description="Разборы кейсов\nпо маркетингу")
     assert current.project == saved
+    assert normalize_project_url(expected_url) == expected_url  # idempotent
 
 
 @pytest.mark.parametrize(
