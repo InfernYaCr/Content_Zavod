@@ -37,6 +37,9 @@ mark is ever attempted. When the recorded message was deleted in the chat,
 `get_hub` reads an approved Plan as its Хаб (#91, ADR-0014): each Тема's cover and
 per-Площадка Статья state, derived from current rows and the Jobs that own their
 generation rather than counted, so no notification replay or retry can skew it.
+
+Every method takes the Пространство's `workspace_id` first (ADR-0015) and only sees that
+Workspace's rows: an id from another Workspace is "not found", exactly like a missing one.
 """
 
 from __future__ import annotations
@@ -50,6 +53,7 @@ from uuid import uuid4
 import asyncpg
 
 from ..job_queue import JobId, JobQueue
+from ..workspaces import WorkspaceId
 from .errors import PlanItemNotEditable, PlanItemNotFound, PlanNotFound
 from .types import (
     PLATFORMS,
@@ -100,25 +104,31 @@ class Plan:
         cover cells - every caller (the fan-out, «Повторить», a stale «🖼 Обложка») follows."""
         return self._covers_enabled
 
-    async def find_active(self, week_label: str) -> PlanView | None:
+    async def find_active(self, workspace_id: WorkspaceId, week_label: str) -> PlanView | None:
         """The week's non-archived Plan, if one exists (used by the manual /generate_plan command)."""
         plan_row = await self._pool.fetchrow(
-            "SELECT id, week_label FROM plans WHERE week_label = $1 AND status IN ('pending_review', 'approved')",
+            "SELECT id, week_label FROM plans WHERE workspace_id = $1 AND week_label = $2 "
+            "AND status IN ('pending_review', 'approved')",
+            workspace_id,
             week_label,
         )
         if plan_row is None:
             return None
-        return await self.get(PlanId(plan_row["id"]))
+        return await self.get(workspace_id, PlanId(plan_row["id"]))
 
-    async def get(self, plan_id: PlanId) -> PlanView:
+    async def get(self, workspace_id: WorkspaceId, plan_id: PlanId) -> PlanView:
         plan_row = await self._pool.fetchrow(
-            "SELECT id, week_label FROM plans WHERE id = $1", plan_id
+            "SELECT id, week_label FROM plans WHERE id = $1 AND workspace_id = $2",
+            plan_id,
+            workspace_id,
         )
         if plan_row is None:
             raise PlanNotFound(plan_id)
         item_rows = await self._pool.fetch(
-            "SELECT id, title, status FROM plan_items WHERE plan_id = $1 ORDER BY position",
+            "SELECT id, title, status FROM plan_items WHERE plan_id = $1 AND workspace_id = $2 "
+            "ORDER BY position",
             plan_id,
+            workspace_id,
         )
         items = [
             PlanItemView(id=PlanItemId(row["id"]), title=row["title"], status=row["status"])
@@ -126,12 +136,17 @@ class Plan:
         ]
         return PlanView(id=PlanId(plan_row["id"]), week_label=plan_row["week_label"], items=items)
 
-    async def get_message_ref(self, plan_id: PlanId) -> PlanMessageRef | None:
+    async def get_message_ref(
+        self, workspace_id: WorkspaceId, plan_id: PlanId
+    ) -> PlanMessageRef | None:
         """The Plan's canonical Telegram message identity, if a delivery has recorded one yet
         (#73). `None` means this Plan has never been successfully delivered - the next delivery
         should send a new message rather than edit."""
         row = await self._pool.fetchrow(
-            "SELECT telegram_chat_id, telegram_message_id FROM plans WHERE id = $1", plan_id
+            "SELECT telegram_chat_id, telegram_message_id FROM plans "
+            "WHERE id = $1 AND workspace_id = $2",
+            plan_id,
+            workspace_id,
         )
         if row is None:
             raise PlanNotFound(plan_id)
@@ -141,7 +156,9 @@ class Plan:
             chat_id=row["telegram_chat_id"], message_id=row["telegram_message_id"]
         )
 
-    async def record_message_ref(self, plan_id: PlanId, chat_id: int, message_id: int) -> None:
+    async def record_message_ref(
+        self, workspace_id: WorkspaceId, plan_id: PlanId, chat_id: int, message_id: int
+    ) -> None:
         """Records the Plan's canonical Telegram message identity after a successful send
         (#73). First-writer-wins (`telegram_message_id IS NULL`) so a delivery that raced
         another one for the same still-unrecorded Plan can't clobber the identity the other
@@ -149,15 +166,21 @@ class Plan:
         await self._pool.execute(
             """
             UPDATE plans SET telegram_chat_id = $2, telegram_message_id = $3
-            WHERE id = $1 AND telegram_message_id IS NULL
+            WHERE id = $1 AND workspace_id = $4 AND telegram_message_id IS NULL
             """,
             plan_id,
             chat_id,
             message_id,
+            workspace_id,
         )
 
     async def replace_message_ref(
-        self, plan_id: PlanId, old: PlanMessageRef, chat_id: int, message_id: int
+        self,
+        workspace_id: WorkspaceId,
+        plan_id: PlanId,
+        old: PlanMessageRef,
+        chat_id: int,
+        message_id: int,
     ) -> bool:
         """Moves the Plan's canonical Telegram identity to a replacement message after the
         recorded one turned out to be gone - deleted in the chat (#106). Conditional on the
@@ -167,24 +190,29 @@ class Plan:
         status = await self._pool.execute(
             """
             UPDATE plans SET telegram_chat_id = $4, telegram_message_id = $5
-            WHERE id = $1 AND telegram_chat_id = $2 AND telegram_message_id = $3
+            WHERE id = $1 AND workspace_id = $6
+              AND telegram_chat_id = $2 AND telegram_message_id = $3
             """,
             plan_id,
             old.chat_id,
             old.message_id,
             chat_id,
             message_id,
+            workspace_id,
         )
         return status == "UPDATE 1"
 
-    async def get_hub(self, plan_id: PlanId) -> PlanHubView:
+    async def get_hub(self, workspace_id: WorkspaceId, plan_id: PlanId) -> PlanHubView:
         """The Plan as its Хаб (#91): every approved Тема with its cover and per-Площадка Статья
         state, derived right now from `plan_items`/`articles` and the `jobs` that currently own
         their generation - no counter is kept anywhere, so a redelivered notification, a
         «Повторить» or a manual re-request can never double-count. Rejected Темы are left out
         and the rest renumbered 1..N, since nothing is generated for them."""
         plan_row = await self._pool.fetchrow(
-            "SELECT id, week_label, status, hub_item_id FROM plans WHERE id = $1", plan_id
+            "SELECT id, week_label, status, hub_item_id FROM plans "
+            "WHERE id = $1 AND workspace_id = $2",
+            plan_id,
+            workspace_id,
         )
         if plan_row is None:
             raise PlanNotFound(plan_id)
@@ -193,11 +221,13 @@ class Plan:
             SELECT pi.id, pi.title, pi.cover_image IS NOT NULL AS has_cover,
                    j.status AS job_status
             FROM plan_items pi
-            LEFT JOIN jobs j ON j.id = pi.active_cover_job_id
-            WHERE pi.plan_id = $1 AND pi.status = 'approved'
+            LEFT JOIN jobs j
+                ON j.workspace_id = pi.workspace_id AND j.id = pi.active_cover_job_id
+            WHERE pi.plan_id = $1 AND pi.workspace_id = $2 AND pi.status = 'approved'
             ORDER BY pi.position
             """,
             plan_id,
+            workspace_id,
         )
         article_rows = await self._pool.fetch(
             """
@@ -206,15 +236,17 @@ class Plan:
                    latest.id IS NOT NULL AS has_content,
                    latest.research_status
             FROM articles a
-            LEFT JOIN jobs j ON j.id = a.active_generation_job_id
+            LEFT JOIN jobs j
+                ON j.workspace_id = a.workspace_id AND j.id = a.active_generation_job_id
             LEFT JOIN LATERAL (
                 SELECT v.id, v.research_status FROM article_versions v
-                WHERE v.article_id = a.id
+                WHERE v.workspace_id = a.workspace_id AND v.article_id = a.id
                 ORDER BY v.created_at DESC, v.id DESC LIMIT 1
             ) latest ON true
-            WHERE a.plan_id = $1
+            WHERE a.plan_id = $1 AND a.workspace_id = $2
             """,
             plan_id,
+            workspace_id,
         )
         articles_by_item: dict[str, dict[str, HubArticleCell]] = {}
         for row in article_rows:
@@ -256,32 +288,45 @@ class Plan:
             open_item_id=PlanItemId(hub_item_id) if hub_item_id is not None else None,
         )
 
-    async def set_hub_view(self, plan_id: PlanId, plan_item_id: PlanItemId | None) -> None:
+    async def set_hub_view(
+        self, workspace_id: WorkspaceId, plan_id: PlanId, plan_item_id: PlanItemId | None
+    ) -> None:
         """Which Тема's result card the Хаб message shows (`None` = the checklist), so a later
         notification re-renders the same screen instead of throwing the reader back (#91)."""
         result = await self._pool.execute(
-            "UPDATE plans SET hub_item_id = $2 WHERE id = $1", plan_id, plan_item_id
+            "UPDATE plans SET hub_item_id = $2 WHERE id = $1 AND workspace_id = $3",
+            plan_id,
+            plan_item_id,
+            workspace_id,
         )
         if result != "UPDATE 1":
             raise PlanNotFound(plan_id)
 
-    async def get_summary(self, plan_id: PlanId) -> PlanSummary:
+    async def get_summary(self, workspace_id: WorkspaceId, plan_id: PlanId) -> PlanSummary:
         """A Plan's header only (no items join) - what /history's week-select screen resolves
         a chosen week's `plan_id` to before listing its Статьи."""
         row = await self._pool.fetchrow(
-            "SELECT id, week_label, status FROM plans WHERE id = $1", plan_id
+            "SELECT id, week_label, status FROM plans WHERE id = $1 AND workspace_id = $2",
+            plan_id,
+            workspace_id,
         )
         if row is None:
             raise PlanNotFound(plan_id)
         return PlanSummary(id=PlanId(row["id"]), week_label=row["week_label"], status=row["status"])
 
-    async def list_page(self, *, page: int, page_size: int) -> tuple[list[PlanSummary], int]:
+    async def list_page(
+        self, workspace_id: WorkspaceId, *, page: int, page_size: int
+    ) -> tuple[list[PlanSummary], int]:
         """One page of every Plan regardless of status (including the current unfinished
         `pending_review` week), newest first - the /history week list (#29). Returns the page
         alongside the total Plan count so the caller can compute how many pages exist."""
-        total = await self._pool.fetchval("SELECT count(*) FROM plans")
+        total = await self._pool.fetchval(
+            "SELECT count(*) FROM plans WHERE workspace_id = $1", workspace_id
+        )
         rows = await self._pool.fetch(
-            "SELECT id, week_label, status FROM plans ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+            "SELECT id, week_label, status FROM plans WHERE workspace_id = $1 "
+            "ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+            workspace_id,
             page_size,
             page * page_size,
         )
@@ -291,9 +336,11 @@ class Plan:
         ]
         return plans, total
 
-    async def get_item(self, plan_item_id: PlanItemId) -> PlanItemDetail:
+    async def get_item(self, workspace_id: WorkspaceId, plan_item_id: PlanItemId) -> PlanItemDetail:
         row = await self._pool.fetchrow(
-            "SELECT id, title, summary, keywords FROM plan_items WHERE id = $1", plan_item_id
+            "SELECT id, title, summary, keywords FROM plan_items WHERE id = $1 AND workspace_id = $2",
+            plan_item_id,
+            workspace_id,
         )
         if row is None:
             raise PlanItemNotFound(plan_item_id)
@@ -304,18 +351,24 @@ class Plan:
             keywords=json.loads(row["keywords"]),
         )
 
-    async def get_plan_id_for_item(self, plan_item_id: PlanItemId) -> PlanId:
+    async def get_plan_id_for_item(
+        self, workspace_id: WorkspaceId, plan_item_id: PlanItemId
+    ) -> PlanId:
         """Resolves a Тема's owning Plan - `generate_cover`'s Job output only carries the
         `plan_item_id`, unlike `generate_article`'s which already threads `plan_id` through
         (see `Article.get_plan_id`)."""
         row = await self._pool.fetchrow(
-            "SELECT plan_id FROM plan_items WHERE id = $1", plan_item_id
+            "SELECT plan_id FROM plan_items WHERE id = $1 AND workspace_id = $2",
+            plan_item_id,
+            workspace_id,
         )
         if row is None:
             raise PlanItemNotFound(plan_item_id)
         return PlanId(row["plan_id"])
 
-    async def add_topics(self, week_label: str, topics: Sequence[TopicDraft]) -> PlanId:
+    async def add_topics(
+        self, workspace_id: WorkspaceId, week_label: str, topics: Sequence[TopicDraft]
+    ) -> PlanId:
         """Append Topics to the week's draft Plan, creating it if none exists yet.
 
         The one write path for both sourcing modes in ADR-0006: generate_plan's
@@ -343,20 +396,27 @@ class Plan:
                 candidate_id = self._new_id()
                 plan_id = await conn.fetchval(
                     """
-                    INSERT INTO plans (id, week_label)
-                    VALUES ($1, $2)
-                    ON CONFLICT (week_label) WHERE status = 'pending_review'
+                    INSERT INTO plans (id, workspace_id, week_label)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (workspace_id, week_label) WHERE status = 'pending_review'
                     DO UPDATE SET week_label = EXCLUDED.week_label
                     RETURNING id
                     """,
                     candidate_id,
+                    workspace_id,
                     week_label,
                 )
                 # Serialize appends to keep positions stable as well as Plan
                 # creation race-safe.
-                await conn.fetchrow("SELECT id FROM plans WHERE id = $1 FOR UPDATE", plan_id)
+                await conn.fetchrow(
+                    "SELECT id FROM plans WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
+                    plan_id,
+                    workspace_id,
+                )
                 item_rows = await conn.fetch(
-                    "SELECT position, title FROM plan_items WHERE plan_id = $1", plan_id
+                    "SELECT position, title FROM plan_items WHERE plan_id = $1 AND workspace_id = $2",
+                    plan_id,
+                    workspace_id,
                 )
                 next_position = max((row["position"] for row in item_rows), default=-1) + 1
                 seen_titles = {row["title"].lower() for row in item_rows}
@@ -366,10 +426,12 @@ class Plan:
                     seen_titles.add(topic.title.lower())
                     await conn.execute(
                         """
-                        INSERT INTO plan_items (id, plan_id, position, title, summary, keywords)
-                        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+                        INSERT INTO plan_items
+                            (id, workspace_id, plan_id, position, title, summary, keywords)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
                         """,
                         self._new_id(),
+                        workspace_id,
                         plan_id,
                         next_position,
                         topic.title,
@@ -379,19 +441,22 @@ class Plan:
                     next_position += 1
         return PlanId(plan_id)
 
-    async def request_new(self, week_label: str, *, generation_id: str | None = None) -> JobId:
+    async def request_new(
+        self, workspace_id: WorkspaceId, week_label: str, *, generation_id: str | None = None
+    ) -> JobId:
         payload = {"week_label": week_label}
         idempotency_key = f"generate_plan:{week_label}"
         if generation_id is not None:
             payload["generation_id"] = generation_id
             idempotency_key = f"{idempotency_key}:{generation_id}"
         return await self._queue.enqueue(
+            workspace_id,
             "generate_plan",
             payload,
             idempotency_key=idempotency_key,
         )
 
-    async def request_replacement(self, plan_id: PlanId) -> JobId:
+    async def request_replacement(self, workspace_id: WorkspaceId, plan_id: PlanId) -> JobId:
         """Enqueue a distinct replacement before retiring its source Plan.
 
         Holding the source row lock until it is archived also makes a very fast
@@ -402,47 +467,61 @@ class Plan:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
-                    "SELECT week_label, status FROM plans WHERE id = $1 FOR UPDATE", plan_id
+                    "SELECT week_label, status FROM plans WHERE id = $1 AND workspace_id = $2 "
+                    "FOR UPDATE",
+                    plan_id,
+                    workspace_id,
                 )
                 if row is None:
                     raise PlanNotFound(plan_id)
                 job_id = await self.request_new(
-                    row["week_label"], generation_id=f"replace:{plan_id}"
+                    workspace_id, row["week_label"], generation_id=f"replace:{plan_id}"
                 )
                 if row["status"] != "archived":
                     await conn.execute(
-                        "UPDATE plans SET status = 'archived', updated_at = now() WHERE id = $1",
+                        "UPDATE plans SET status = 'archived', updated_at = now() "
+                        "WHERE id = $1 AND workspace_id = $2",
                         plan_id,
+                        workspace_id,
                     )
                     await conn.execute(
                         """
                         UPDATE plan_items SET status = 'archived', updated_at = now()
-                        WHERE plan_id = $1 AND status IN ('pending_review', 'approved')
+                        WHERE plan_id = $1 AND workspace_id = $2
+                          AND status IN ('pending_review', 'approved')
                         """,
                         plan_id,
+                        workspace_id,
                     )
                 return job_id
 
-    async def delete_item(self, plan_item_id: PlanItemId) -> None:
-        status = await self._item_status(plan_item_id)
+    async def delete_item(self, workspace_id: WorkspaceId, plan_item_id: PlanItemId) -> None:
+        status = await self._item_status(workspace_id, plan_item_id)
         if status == "rejected":
             return
         if status == "approved":
             raise PlanItemNotEditable(plan_item_id, status)
         await self._pool.execute(
-            "UPDATE plan_items SET status = 'rejected', updated_at = now() WHERE id = $1",
+            "UPDATE plan_items SET status = 'rejected', updated_at = now() "
+            "WHERE id = $1 AND workspace_id = $2",
             plan_item_id,
+            workspace_id,
         )
 
-    async def regenerate_item(self, plan_item_id: PlanItemId, comment: str | None) -> None:
+    async def regenerate_item(
+        self, workspace_id: WorkspaceId, plan_item_id: PlanItemId, comment: str | None
+    ) -> None:
         row = await self._pool.fetchrow(
-            "SELECT status, updated_at FROM plan_items WHERE id = $1", plan_item_id
+            "SELECT status, updated_at FROM plan_items WHERE id = $1 AND workspace_id = $2",
+            plan_item_id,
+            workspace_id,
         )
         if row is None:
             raise PlanItemNotFound(plan_item_id)
         if row["status"] != "pending_review":
             raise PlanItemNotEditable(plan_item_id, row["status"])
         await self._queue.enqueue(
+            workspace_id,
             "regenerate_topic",
             {"plan_item_id": plan_item_id, "comment": comment},
             # Keyed on the item's current updated_at so a retried callback (same item,
@@ -450,8 +529,10 @@ class Plan:
             idempotency_key=f"regenerate_topic:{plan_item_id}:{row['updated_at'].isoformat()}",
         )
 
-    async def approve_all(self, plan_id: PlanId) -> None:
-        plan_row = await self._pool.fetchrow("SELECT status FROM plans WHERE id = $1", plan_id)
+    async def approve_all(self, workspace_id: WorkspaceId, plan_id: PlanId) -> None:
+        plan_row = await self._pool.fetchrow(
+            "SELECT status FROM plans WHERE id = $1 AND workspace_id = $2", plan_id, workspace_id
+        )
         if plan_row is None:
             raise PlanNotFound(plan_id)
         if plan_row["status"] == "approved":
@@ -459,25 +540,32 @@ class Plan:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "UPDATE plans SET status = 'approved', updated_at = now() WHERE id = $1",
+                    "UPDATE plans SET status = 'approved', updated_at = now() "
+                    "WHERE id = $1 AND workspace_id = $2",
                     plan_id,
+                    workspace_id,
                 )
                 await conn.execute(
                     """
                     UPDATE plan_items SET status = 'approved', updated_at = now()
-                    WHERE plan_id = $1 AND status = 'pending_review'
+                    WHERE plan_id = $1 AND workspace_id = $2 AND status = 'pending_review'
                     """,
                     plan_id,
+                    workspace_id,
                 )
 
-    async def approved_items(self, plan_id: PlanId) -> list[PlanItemDetail]:
+    async def approved_items(
+        self, workspace_id: WorkspaceId, plan_id: PlanId
+    ) -> list[PlanItemDetail]:
         """The Plan's currently-approved items, full detail - what `approve_all`'s Article/Job
         fan-out iterates over (#14). Safe to call repeatedly: it reflects current DB state rather
         than "items approved by this call", so replaying the fan-out after `approve_all` itself
         already returned early (already-approved Plan) still finds every approved item."""
         rows = await self._pool.fetch(
-            "SELECT id, title, summary, keywords FROM plan_items WHERE plan_id = $1 AND status = 'approved'",
+            "SELECT id, title, summary, keywords FROM plan_items "
+            "WHERE plan_id = $1 AND workspace_id = $2 AND status = 'approved'",
             plan_id,
+            workspace_id,
         )
         return [
             PlanItemDetail(
@@ -489,11 +577,15 @@ class Plan:
             for row in rows
         ]
 
-    async def get_cover(self, plan_item_id: PlanItemId) -> PlanItemCoverView | None:
+    async def get_cover(
+        self, workspace_id: WorkspaceId, plan_item_id: PlanItemId
+    ) -> PlanItemCoverView | None:
         """A Тема's stored cover, for the Хаб's «🖼 Обложка» button (#91); `None` if none yet."""
         row = await self._pool.fetchrow(
-            "SELECT id, title, cover_image, cover_mime_type FROM plan_items WHERE id = $1",
+            "SELECT id, title, cover_image, cover_mime_type FROM plan_items "
+            "WHERE id = $1 AND workspace_id = $2",
             plan_item_id,
+            workspace_id,
         )
         if row is None:
             raise PlanItemNotFound(plan_item_id)
@@ -506,14 +598,16 @@ class Plan:
             mime_type=row["cover_mime_type"],
         )
 
-    async def archive(self, plan_id: PlanId) -> None:
+    async def archive(self, workspace_id: WorkspaceId, plan_id: PlanId) -> None:
         """Soft-archive a Plan and its items so /generate_plan can regenerate the week without data loss.
 
         Idempotent (a plan already archived is a no-op), mirroring `approve_all`.
         Items already `rejected` stay `rejected` - only items still in an active
         state (`pending_review`/`approved`) move to `archived`.
         """
-        plan_row = await self._pool.fetchrow("SELECT status FROM plans WHERE id = $1", plan_id)
+        plan_row = await self._pool.fetchrow(
+            "SELECT status FROM plans WHERE id = $1 AND workspace_id = $2", plan_id, workspace_id
+        )
         if plan_row is None:
             raise PlanNotFound(plan_id)
         if plan_row["status"] == "archived":
@@ -521,40 +615,53 @@ class Plan:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "UPDATE plans SET status = 'archived', updated_at = now() WHERE id = $1",
+                    "UPDATE plans SET status = 'archived', updated_at = now() "
+                    "WHERE id = $1 AND workspace_id = $2",
                     plan_id,
+                    workspace_id,
                 )
                 await conn.execute(
                     """
                     UPDATE plan_items SET status = 'archived', updated_at = now()
-                    WHERE plan_id = $1 AND status IN ('pending_review', 'approved')
+                    WHERE plan_id = $1 AND workspace_id = $2
+                      AND status IN ('pending_review', 'approved')
                     """,
                     plan_id,
+                    workspace_id,
                 )
 
-    async def apply_regeneration(self, plan_item_id: PlanItemId, topic: TopicDraft) -> None:
+    async def apply_regeneration(
+        self, workspace_id: WorkspaceId, plan_item_id: PlanItemId, topic: TopicDraft
+    ) -> None:
         result = await self._pool.execute(
             """
             UPDATE plan_items
             SET title = $2, summary = $3, keywords = $4::jsonb, updated_at = now()
-            WHERE id = $1 AND status = 'pending_review'
+            WHERE id = $1 AND workspace_id = $5 AND status = 'pending_review'
             """,
             plan_item_id,
             topic.title,
             topic.summary,
             _keywords_json(topic.keywords),
+            workspace_id,
         )
         if result == "UPDATE 1":
             return
         # A completed Job may arrive after approval/archive.  Reporting that
         # stale result as a domain error lets notification retry/dead-letter
         # policy observe it instead of falsely announcing an update.
-        row = await self._pool.fetchrow("SELECT status FROM plan_items WHERE id = $1", plan_item_id)
+        row = await self._pool.fetchrow(
+            "SELECT status FROM plan_items WHERE id = $1 AND workspace_id = $2",
+            plan_item_id,
+            workspace_id,
+        )
         if row is None:
             raise PlanItemNotFound(plan_item_id)
         raise PlanItemNotEditable(plan_item_id, row["status"])
 
-    async def request_cover(self, plan_item_id: PlanItemId, *, manual: bool = False) -> None:
+    async def request_cover(
+        self, workspace_id: WorkspaceId, plan_item_id: PlanItemId, *, manual: bool = False
+    ) -> None:
         """`manual` marks a re-request someone made by hand (the Article card's «🖼 Обложка»):
         its result is also sent to the chat as a photo, where the person who asked is looking,
         not only reflected in the Хаб like the fan-out's covers (#91, `is_manual_cover_job`).
@@ -562,7 +669,9 @@ class Plan:
         if not self._covers_enabled:
             return
         row = await self._pool.fetchrow(
-            "SELECT title, summary, updated_at FROM plan_items WHERE id = $1", plan_item_id
+            "SELECT title, summary, updated_at FROM plan_items WHERE id = $1 AND workspace_id = $2",
+            plan_item_id,
+            workspace_id,
         )
         if row is None:
             raise PlanItemNotFound(plan_item_id)
@@ -574,6 +683,7 @@ class Plan:
         if manual:
             payload["manual"] = True
         job_id = await self._queue.enqueue(
+            workspace_id,
             "generate_cover",
             payload,
             # Keyed on the item's current updated_at so a retried callback (same item,
@@ -581,10 +691,15 @@ class Plan:
             idempotency_key=f"generate_cover:{plan_item_id}:{row['updated_at'].isoformat()}",
         )
         await self._pool.execute(
-            "UPDATE plan_items SET active_cover_job_id = $2 WHERE id = $1", plan_item_id, job_id
+            "UPDATE plan_items SET active_cover_job_id = $2 WHERE id = $1 AND workspace_id = $3",
+            plan_item_id,
+            job_id,
+            workspace_id,
         )
 
-    async def apply_cover(self, plan_item_id: PlanItemId, image: bytes, mime_type: str) -> None:
+    async def apply_cover(
+        self, workspace_id: WorkspaceId, plan_item_id: PlanItemId, image: bytes, mime_type: str
+    ) -> None:
         """Bumps `updated_at` (like `apply_regeneration`) so a later `request_cover` call - e.g. the
         manual "🖼 Обложка" re-request button (#15) - derives a fresh idempotency key instead of
         colliding with this now-completed Job's key and silently no-op'ing. Clears
@@ -595,14 +710,17 @@ class Plan:
             UPDATE plan_items
             SET cover_image = $2, cover_mime_type = $3, cover_generated_at = now(),
                 active_cover_job_id = NULL, updated_at = now()
-            WHERE id = $1
+            WHERE id = $1 AND workspace_id = $4
             """,
             plan_item_id,
             image,
             mime_type,
+            workspace_id,
         )
 
-    async def mark_cover_generation_failed(self, source_job_id: int) -> PlanItemId | None:
+    async def mark_cover_generation_failed(
+        self, workspace_id: WorkspaceId, source_job_id: int
+    ) -> PlanItemId | None:
         """Resolves a failed `generate_cover` Job back to its Тема - unlike `generate_article`'s
         output, a failure carries no `plan_item_id` of its own, so this mirrors
         `Article.mark_generation_failed`'s active-job-id lookup instead. `None` means this
@@ -614,29 +732,43 @@ class Plan:
         here. `updated_at` is bumped so a fresh `request_cover` gets a new idempotency key
         instead of collapsing into this failed Job."""
         row = await self._pool.fetchrow(
-            "UPDATE plan_items SET updated_at = now() WHERE active_cover_job_id = $1 RETURNING id",
+            "UPDATE plan_items SET updated_at = now() "
+            "WHERE active_cover_job_id = $1 AND workspace_id = $2 RETURNING id",
             source_job_id,
+            workspace_id,
         )
         return PlanItemId(row["id"]) if row is not None else None
 
-    async def is_manual_cover_job(self, job_id: int) -> bool:
+    async def is_manual_cover_job(self, workspace_id: WorkspaceId, job_id: int) -> bool:
         """Whether this `generate_cover` Job was a by-hand re-request (`request_cover(...,
         manual=True)`) rather than part of the approval fan-out."""
         return bool(
             await self._pool.fetchval(
-                "SELECT COALESCE((payload->>'manual')::boolean, false) FROM jobs WHERE id = $1",
+                "SELECT COALESCE((payload->>'manual')::boolean, false) FROM jobs "
+                "WHERE id = $1 AND workspace_id = $2",
                 job_id,
+                workspace_id,
             )
         )
 
-    async def recent_topic_titles(self, since: datetime) -> list[str]:
+    async def recent_topic_titles(self, workspace_id: WorkspaceId, since: datetime) -> list[str]:
+        """This Workspace's recent Тема titles, for the repeat check - another Workspace's
+        Темы must never reach this one's prompt (ADR-0015)."""
         rows = await self._pool.fetch(
-            "SELECT DISTINCT title FROM plan_items WHERE created_at >= $1", since
+            "SELECT DISTINCT title FROM plan_items WHERE workspace_id = $1 AND created_at >= $2",
+            workspace_id,
+            since,
         )
         return [row["title"] for row in rows]
 
-    async def _item_status(self, plan_item_id: PlanItemId) -> PlanItemStatus:
-        row = await self._pool.fetchrow("SELECT status FROM plan_items WHERE id = $1", plan_item_id)
+    async def _item_status(
+        self, workspace_id: WorkspaceId, plan_item_id: PlanItemId
+    ) -> PlanItemStatus:
+        row = await self._pool.fetchrow(
+            "SELECT status FROM plan_items WHERE id = $1 AND workspace_id = $2",
+            plan_item_id,
+            workspace_id,
+        )
         if row is None:
             raise PlanItemNotFound(plan_item_id)
         return row["status"]

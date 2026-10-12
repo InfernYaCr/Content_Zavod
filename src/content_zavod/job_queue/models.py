@@ -6,6 +6,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from ..workspaces import WorkspaceId
+
 JobId = int
 
 JobStatus = Literal["queued", "running", "done", "failed"]
@@ -19,6 +21,8 @@ class JobResult:
     job_id: JobId
     job_type: str
     status: Literal["done", "failed"]
+    # The Workspace the Job belongs to - where its result is applied and delivered.
+    workspace_id: WorkspaceId
     output: dict[str, Any] | None = None
     error: str | None = None
 

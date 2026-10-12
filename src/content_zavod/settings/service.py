@@ -1,4 +1,4 @@
-"""SettingsService: typed read/write facade over `OwnerSettingsStore` for
+"""SettingsService: typed read/write facade over one Пространство's `WorkspaceSettingsStore` for
 Ниша, Направления, and Персона - the three Настройки this module owns (#49
 brought in Ниша/Направления; #50 folded in Персона's type, Preset catalog,
 value parsing, and default from `personas.py`).

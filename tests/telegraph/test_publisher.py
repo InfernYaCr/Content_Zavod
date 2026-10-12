@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import logging
-from types import SimpleNamespace
 
 import pytest
 
 from content_zavod.domain import ArticleId, ArticleView, PlanItemId
-from content_zavod.settings import Project
+from content_zavod.settings import PROJECT_KEY
 from content_zavod.telegraph import (
     ACCESS_TOKEN_SETTING_KEY,
     FooterLink,
@@ -17,6 +16,7 @@ from content_zavod.telegraph import (
     project_footer,
 )
 from content_zavod.telegraph.nodes import Node
+from tests.tenancy import WS_A, WS_B
 
 
 class FakeTelegraph:
@@ -58,14 +58,22 @@ class FakeTelegraph:
 
 
 class FakePages:
+    """Workspace A's pages; another Workspace's are kept apart in `other`."""
+
     def __init__(self) -> None:
         self.paths: dict[str, str] = {}
+        self.other: dict[tuple[int, str], str] = {}
 
-    async def get_telegraph_path(self, article_id: ArticleId) -> str | None:
+    async def get_telegraph_path(self, workspace_id: int, article_id: ArticleId) -> str | None:
+        if workspace_id != WS_A:
+            return self.other.get((workspace_id, article_id))
         return self.paths.get(article_id)
 
-    async def set_telegraph_path(self, article_id: ArticleId, path: str) -> None:
-        self.paths[article_id] = path
+    async def set_telegraph_path(self, workspace_id: int, article_id: ArticleId, path: str) -> None:
+        if workspace_id != WS_A:
+            self.other[workspace_id, article_id] = path
+        else:
+            self.paths[article_id] = path
 
 
 class FakeSettings:
@@ -93,7 +101,7 @@ async def test_first_publish_creates_account_and_page_and_stores_both() -> None:
     telegraph, pages, settings = FakeTelegraph(), FakePages(), FakeSettings()
     publisher = TelegraphPublisher(telegraph, pages, settings)
 
-    url = await publisher.publish(_article())
+    url = await publisher.publish(WS_A, _article())
 
     assert url == "https://telegra.ph/page-1"
     assert telegraph.accounts_created == 1
@@ -110,9 +118,9 @@ async def test_first_publish_creates_account_and_page_and_stores_both() -> None:
 async def test_regeneration_edits_the_same_page_keeping_the_url() -> None:
     telegraph, pages, settings = FakeTelegraph(), FakePages(), FakeSettings()
     publisher = TelegraphPublisher(telegraph, pages, settings)
-    first_url = await publisher.publish(_article("Первая версия."))
+    first_url = await publisher.publish(WS_A, _article("Первая версия."))
 
-    second_url = await publisher.publish(_article("Вторая версия."))
+    second_url = await publisher.publish(WS_A, _article("Вторая версия."))
 
     assert second_url == first_url
     assert len(telegraph.created) == 1
@@ -125,7 +133,7 @@ async def test_stored_token_is_reused_and_no_account_is_created() -> None:
     telegraph, pages, settings = FakeTelegraph(), FakePages(), FakeSettings()
     settings.values[ACCESS_TOKEN_SETTING_KEY] = "stored-token"
 
-    await TelegraphPublisher(telegraph, pages, settings).publish(_article())
+    await TelegraphPublisher(telegraph, pages, settings).publish(WS_A, _article())
 
     assert telegraph.accounts_created == 0
     assert telegraph.created[0][0] == "stored-token"
@@ -136,7 +144,7 @@ async def test_env_token_wins_over_the_stored_one() -> None:
     settings.values[ACCESS_TOKEN_SETTING_KEY] = "stored-token"
     publisher = TelegraphPublisher(telegraph, pages, settings, access_token="env-token")
 
-    await publisher.publish(_article())
+    await publisher.publish(WS_A, _article())
 
     assert telegraph.created[0][0] == "env-token"
     assert telegraph.accounts_created == 0
@@ -146,8 +154,8 @@ async def test_account_is_created_once_across_publishes() -> None:
     telegraph, pages, settings = FakeTelegraph(), FakePages(), FakeSettings()
     publisher = TelegraphPublisher(telegraph, pages, settings)
 
-    await publisher.publish(_article(article_id="a1"))
-    await publisher.publish(_article(article_id="a2"))
+    await publisher.publish(WS_A, _article(article_id="a1"))
+    await publisher.publish(WS_A, _article(article_id="a2"))
 
     assert telegraph.accounts_created == 1
 
@@ -157,7 +165,7 @@ async def test_failed_edit_falls_back_to_a_new_page() -> None:
     pages.paths["a1"] = "foreign-page"
     telegraph.fail_edit = TelegraphError("editPage: 400 'PAGE_ACCESS_DENIED'")
 
-    url = await TelegraphPublisher(telegraph, pages, settings).publish(_article())
+    url = await TelegraphPublisher(telegraph, pages, settings).publish(WS_A, _article())
 
     assert url == "https://telegra.ph/page-1"
     assert pages.paths == {"a1": "page-1"}
@@ -171,7 +179,7 @@ async def test_any_failure_returns_none_and_logs(
     telegraph.fail_create = error
 
     with caplog.at_level(logging.ERROR, logger="content_zavod.telegraph.publisher"):
-        url = await TelegraphPublisher(telegraph, pages, settings).publish(_article())
+        url = await TelegraphPublisher(telegraph, pages, settings).publish(WS_A, _article())
 
     assert url is None
     assert pages.paths == {}
@@ -181,11 +189,11 @@ async def test_any_failure_returns_none_and_logs(
 async def test_footer_link_is_appended_when_the_source_returns_one() -> None:
     telegraph, pages, settings = FakeTelegraph(), FakePages(), FakeSettings()
 
-    async def footer() -> FooterLink | None:
+    async def footer(workspace_id: int) -> FooterLink | None:
         return FooterLink("Наш проект", "https://example.com")
 
     await TelegraphPublisher(telegraph, pages, settings, footer_link=footer).publish(
-        _article("Текст.")
+        WS_A, _article("Текст.")
     )
 
     content = telegraph.created[0][2]
@@ -210,10 +218,12 @@ async def test_footer_link_is_appended_when_the_source_returns_one() -> None:
 async def test_footer_is_skipped_when_the_text_already_links_the_project(text: str) -> None:
     telegraph, pages, settings = FakeTelegraph(), FakePages(), FakeSettings()
 
-    async def footer() -> FooterLink | None:
+    async def footer(workspace_id: int) -> FooterLink | None:
         return FooterLink("Наш проект", "https://example.com")
 
-    await TelegraphPublisher(telegraph, pages, settings, footer_link=footer).publish(_article(text))
+    await TelegraphPublisher(telegraph, pages, settings, footer_link=footer).publish(
+        WS_A, _article(text)
+    )
 
     content = telegraph.created[0][2]
     assert {"tag": "hr"} not in content
@@ -223,11 +233,11 @@ async def test_footer_is_skipped_when_the_text_already_links_the_project(text: s
 async def test_footer_is_kept_when_the_text_links_only_a_longer_url() -> None:
     telegraph, pages, settings = FakeTelegraph(), FakePages(), FakeSettings()
 
-    async def footer() -> FooterLink | None:
+    async def footer(workspace_id: int) -> FooterLink | None:
         return FooterLink("Наш канал", "https://t.me/name")
 
     await TelegraphPublisher(telegraph, pages, settings, footer_link=footer).publish(
-        _article("Соседний канал: https://t.me/name_2")
+        WS_A, _article("Соседний канал: https://t.me/name_2")
     )
 
     assert telegraph.created[0][2][-2] == {"tag": "hr"}
@@ -243,28 +253,55 @@ async def test_overlong_title_is_cut_to_telegraph_limit() -> None:
         content=b"x",
     )
 
-    await TelegraphPublisher(telegraph, pages, settings).publish(article)
+    await TelegraphPublisher(telegraph, pages, settings).publish(WS_A, article)
 
     title = telegraph.created[0][1]
     assert len(title) == 256
     assert title.endswith("…")
 
 
-class FakeSettingsReader:
-    def __init__(self, project: Project | None) -> None:
-        self.project = project
+class FakeWorkspaceSettings:
+    def __init__(self) -> None:
+        self.values: dict[tuple[int, str], str] = {}
 
-    async def read(self) -> SimpleNamespace:
-        return SimpleNamespace(project=self.project)
+    async def get(self, workspace_id: int, key: str) -> str | None:
+        return self.values.get((workspace_id, key))
 
 
 async def test_project_footer_links_the_owners_project_and_follows_changes() -> None:
-    reader = FakeSettingsReader(Project(url="https://t.me/channel", description="Наш канал"))
-    footer = project_footer(reader)
+    settings = FakeWorkspaceSettings()
+    settings.values[WS_A, PROJECT_KEY] = "https://t.me/channel Наш канал"
+    footer = project_footer(settings)
 
-    assert await footer() == FooterLink(text="Наш канал", url="https://t.me/channel")
-    reader.project = None
-    assert await footer() is None
+    assert await footer(WS_A) == FooterLink(text="Наш канал", url="https://t.me/channel")
+    settings.values[WS_A, PROJECT_KEY] = ""
+    assert await footer(WS_A) is None
+
+
+async def test_project_footer_is_the_articles_own_workspaces_project() -> None:
+    settings = FakeWorkspaceSettings()
+    settings.values[WS_A, PROJECT_KEY] = "https://a.example Проект A"
+    settings.values[WS_B, PROJECT_KEY] = "https://b.example Проект B"
+    telegraph = FakeTelegraph()
+
+    await TelegraphPublisher(
+        telegraph, FakePages(), FakeSettings(), footer_link=project_footer(settings)
+    ).publish(WS_B, _article("Текст."))
+
+    content = str(telegraph.created[0][2])
+    assert "https://b.example" in content
+    assert "https://a.example" not in content
+
+
+async def test_a_page_of_another_workspace_is_never_edited() -> None:
+    telegraph, pages, settings = FakeTelegraph(), FakePages(), FakeSettings()
+    pages.paths["a1"] = "page-of-a"
+
+    await TelegraphPublisher(telegraph, pages, settings).publish(WS_B, _article())
+
+    assert telegraph.edited == []
+    assert pages.paths == {"a1": "page-of-a"}
+    assert pages.other == {(WS_B, "a1"): "page-1"}
 
 
 def test_page_url_is_built_from_the_stored_path() -> None:

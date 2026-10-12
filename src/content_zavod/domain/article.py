@@ -6,6 +6,9 @@ a Job Handler concern, see #6 — this module only ever observes `queued` or the
 effect of `record_version`.) `record_version` always appends a new Версия
 rather than overwriting; `get`/`list_for_plan` serve the latest one. `mark_exported` and `request_regeneration` are
 idempotent on their target state so a retried Telegram callback is a no-op.
+
+Every method takes the Пространство's `workspace_id` first (ADR-0015): another Workspace's
+Статья is "not found", exactly like a missing one.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from uuid import uuid4
 import asyncpg
 
 from ..job_queue import JobQueue
+from ..workspaces import WorkspaceId
 from .errors import ArticleNotFound, ArticleNotReady, ArticleNotRegenerable, ArticleVersionNotFound
 from .types import (
     ArticleId,
@@ -50,18 +54,24 @@ class Article:
         self._new_id = new_id
 
     async def create(
-        self, plan_id: PlanId, plan_item_id: PlanItemId, title: str, platform: str
+        self,
+        workspace_id: WorkspaceId,
+        plan_id: PlanId,
+        plan_item_id: PlanItemId,
+        title: str,
+        platform: str,
     ) -> ArticleId:
         """Idempotent on (plan_item_id, platform): a second call for the same pair reuses the
         existing Статья's id instead of inserting a duplicate row (#14)."""
         row = await self._pool.fetchrow(
             """
-            INSERT INTO articles (id, plan_id, plan_item_id, title, platform)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO articles (id, workspace_id, plan_id, plan_item_id, title, platform)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (plan_item_id, platform) DO NOTHING
             RETURNING id
             """,
             self._new_id(),
+            workspace_id,
             plan_id,
             plan_item_id,
             title,
@@ -70,7 +80,9 @@ class Article:
         if row is not None:
             return ArticleId(row["id"])
         existing = await self._pool.fetchrow(
-            "SELECT id FROM articles WHERE plan_item_id = $1 AND platform = $2",
+            "SELECT id FROM articles WHERE workspace_id = $1 AND plan_item_id = $2 "
+            "AND platform = $3",
+            workspace_id,
             plan_item_id,
             platform,
         )
@@ -81,13 +93,16 @@ class Article:
             )
         return ArticleId(existing["id"])
 
-    async def get(self, article_id: ArticleId) -> ArticleView:
+    async def get(self, workspace_id: WorkspaceId, article_id: ArticleId) -> ArticleView:
         article_row = await self._pool.fetchrow(
-            "SELECT id, plan_item_id, title, platform FROM articles WHERE id = $1", article_id
+            "SELECT id, plan_item_id, title, platform FROM articles "
+            "WHERE id = $1 AND workspace_id = $2",
+            article_id,
+            workspace_id,
         )
         if article_row is None:
             raise ArticleNotFound(article_id)
-        latest = await self._latest_version(article_id)
+        latest = await self._latest_version(workspace_id, article_id)
         if latest is None:
             raise ArticleNotReady(article_id)
         return _to_view(
@@ -98,15 +113,17 @@ class Article:
             *latest,
         )
 
-    async def list_for_plan(self, plan_id: PlanId) -> list[ArticleView]:
+    async def list_for_plan(self, workspace_id: WorkspaceId, plan_id: PlanId) -> list[ArticleView]:
         rows = await self._pool.fetch(
-            "SELECT id, plan_item_id, title, platform FROM articles WHERE plan_id = $1 ORDER BY created_at",
+            "SELECT id, plan_item_id, title, platform FROM articles "
+            "WHERE plan_id = $1 AND workspace_id = $2 ORDER BY created_at",
             plan_id,
+            workspace_id,
         )
         views: list[ArticleView] = []
         for row in rows:
             article_id = ArticleId(row["id"])
-            latest = await self._latest_version(article_id)
+            latest = await self._latest_version(workspace_id, article_id)
             if latest is None:
                 continue
             views.append(
@@ -120,13 +137,17 @@ class Article:
             )
         return views
 
-    async def list_summary_for_plan(self, plan_id: PlanId) -> list[ArticleSummary]:
+    async def list_summary_for_plan(
+        self, workspace_id: WorkspaceId, plan_id: PlanId
+    ) -> list[ArticleSummary]:
         """Every Статья for a Plan, whatever its status - unlike `list_for_plan`, doesn't skip
         ones with no generated content yet. Powers /history's article list (#29), where a
         `queued`/`generating`/`error` Статья must still show up with a status label."""
         rows = await self._pool.fetch(
-            "SELECT id, title, platform, status FROM articles WHERE plan_id = $1 ORDER BY created_at",
+            "SELECT id, title, platform, status FROM articles "
+            "WHERE plan_id = $1 AND workspace_id = $2 ORDER BY created_at",
             plan_id,
+            workspace_id,
         )
         return [
             ArticleSummary(
@@ -138,9 +159,11 @@ class Article:
             for row in rows
         ]
 
-    async def get_summary(self, article_id: ArticleId) -> ArticleSummary:
+    async def get_summary(self, workspace_id: WorkspaceId, article_id: ArticleId) -> ArticleSummary:
         row = await self._pool.fetchrow(
-            "SELECT id, title, platform, status FROM articles WHERE id = $1", article_id
+            "SELECT id, title, platform, status FROM articles WHERE id = $1 AND workspace_id = $2",
+            article_id,
+            workspace_id,
         )
         if row is None:
             raise ArticleNotFound(article_id)
@@ -151,38 +174,56 @@ class Article:
             status=row["status"],
         )
 
-    async def get_plan_id(self, article_id: ArticleId) -> PlanId:
-        row = await self._pool.fetchrow("SELECT plan_id FROM articles WHERE id = $1", article_id)
+    async def get_plan_id(self, workspace_id: WorkspaceId, article_id: ArticleId) -> PlanId:
+        row = await self._pool.fetchrow(
+            "SELECT plan_id FROM articles WHERE id = $1 AND workspace_id = $2",
+            article_id,
+            workspace_id,
+        )
         if row is None:
             raise ArticleNotFound(article_id)
         return PlanId(row["plan_id"])
 
-    async def get_telegraph_path(self, article_id: ArticleId) -> str | None:
+    async def get_telegraph_path(
+        self, workspace_id: WorkspaceId, article_id: ArticleId
+    ) -> str | None:
         """The Статья's Страница для чтения on telegra.ph (#92), `None` until first published."""
         row = await self._pool.fetchrow(
-            "SELECT telegraph_path FROM articles WHERE id = $1", article_id
+            "SELECT telegraph_path FROM articles WHERE id = $1 AND workspace_id = $2",
+            article_id,
+            workspace_id,
         )
         if row is None:
             raise ArticleNotFound(article_id)
         return row["telegraph_path"]
 
-    async def set_telegraph_path(self, article_id: ArticleId, path: str) -> None:
+    async def set_telegraph_path(
+        self, workspace_id: WorkspaceId, article_id: ArticleId, path: str
+    ) -> None:
         # Deliberately leaves updated_at alone: it keys request_regeneration's idempotency.
         result = await self._pool.execute(
-            "UPDATE articles SET telegraph_path = $2 WHERE id = $1", article_id, path
+            "UPDATE articles SET telegraph_path = $2 WHERE id = $1 AND workspace_id = $3",
+            article_id,
+            path,
+            workspace_id,
         )
         if result == "UPDATE 0":
             raise ArticleNotFound(article_id)
 
-    async def list_versions(self, article_id: ArticleId) -> list[ArticleVersionSummary]:
+    async def list_versions(
+        self, workspace_id: WorkspaceId, article_id: ArticleId
+    ) -> list[ArticleVersionSummary]:
         """Every Версия's metadata, newest first, for /history's version list (#26)."""
-        article_row = await self._pool.fetchrow("SELECT id FROM articles WHERE id = $1", article_id)
+        article_row = await self._pool.fetchrow(
+            "SELECT id FROM articles WHERE id = $1 AND workspace_id = $2", article_id, workspace_id
+        )
         if article_row is None:
             raise ArticleNotFound(article_id)
         rows = await self._pool.fetch(
             "SELECT id, model, tokens, cost, created_at FROM article_versions "
-            "WHERE article_id = $1 ORDER BY created_at DESC, id DESC",
+            "WHERE article_id = $1 AND workspace_id = $2 ORDER BY created_at DESC, id DESC",
             article_id,
+            workspace_id,
         )
         return [
             ArticleVersionSummary(
@@ -195,13 +236,16 @@ class Article:
             for row in rows
         ]
 
-    async def get_version(self, article_id: ArticleId, version_id: int) -> ArticleVersionView:
+    async def get_version(
+        self, workspace_id: WorkspaceId, article_id: ArticleId, version_id: int
+    ) -> ArticleVersionView:
         """One Версия's full content, for /history's version detail screen (#26)."""
         row = await self._pool.fetchrow(
             "SELECT id, content, model, tokens, cost, created_at FROM article_versions "
-            "WHERE article_id = $1 AND id = $2",
+            "WHERE article_id = $1 AND id = $2 AND workspace_id = $3",
             article_id,
             version_id,
+            workspace_id,
         )
         if row is None:
             raise ArticleVersionNotFound(article_id, version_id)
@@ -215,7 +259,7 @@ class Article:
         )
 
     async def record_version(
-        self, article_id: ArticleId, version: GeneratedVersion
+        self, workspace_id: WorkspaceId, article_id: ArticleId, version: GeneratedVersion
     ) -> GenerationResultApplication:
         """Apply one finished generation job exactly once.
 
@@ -228,15 +272,19 @@ class Article:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 article_row = await conn.fetchrow(
-                    "SELECT active_generation_job_id FROM articles WHERE id = $1 FOR UPDATE",
+                    "SELECT active_generation_job_id FROM articles "
+                    "WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
                     article_id,
+                    workspace_id,
                 )
                 if article_row is None:
                     raise ArticleNotFound(article_id)
                 if version.source_job_id is not None:
                     existing = await conn.fetchrow(
-                        "SELECT article_id FROM article_versions WHERE source_job_id = $1",
+                        "SELECT article_id FROM article_versions "
+                        "WHERE source_job_id = $1 AND workspace_id = $2",
                         version.source_job_id,
+                        workspace_id,
                     )
                     if existing is not None:
                         return (
@@ -247,10 +295,11 @@ class Article:
                 await conn.execute(
                     """
                     INSERT INTO article_versions
-                        (article_id, content, prompt, model, tokens, cost, source_job_id,
-                         research_status)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        (workspace_id, article_id, content, prompt, model, tokens, cost,
+                         source_job_id, research_status)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     """,
+                    workspace_id,
                     article_id,
                     version.content,
                     version.prompt,
@@ -262,26 +311,31 @@ class Article:
                 )
                 await conn.execute(
                     "UPDATE articles SET status = 'ready', active_generation_job_id = NULL, "
-                    "updated_at = now() WHERE id = $1",
+                    "updated_at = now() WHERE id = $1 AND workspace_id = $2",
                     article_id,
+                    workspace_id,
                 )
         return "applied"
 
-    async def mark_generation_failed(self, source_job_id: int) -> ArticleId | None:
+    async def mark_generation_failed(
+        self, workspace_id: WorkspaceId, source_job_id: int
+    ) -> ArticleId | None:
         """Move only the Article still owned by this final failed job to ``error``."""
         row = await self._pool.fetchrow(
             """
             UPDATE articles
             SET status = 'error', updated_at = now()
-            WHERE active_generation_job_id = $1
+            WHERE active_generation_job_id = $1 AND workspace_id = $2
             RETURNING id
             """,
             source_job_id,
+            workspace_id,
         )
         return ArticleId(row["id"]) if row is not None else None
 
     async def request_generation(
         self,
+        workspace_id: WorkspaceId,
         plan_id: PlanId,
         plan_item_id: PlanItemId,
         title: str,
@@ -294,8 +348,9 @@ class Article:
         conflict, and the Job enqueue is keyed on the resulting article_id - so replaying this for
         an already-processed pair (a retried `approve_all` callback, or a crash between approving
         the Plan and enqueueing) creates neither a duplicate Статья nor a duplicate Job (#14)."""
-        article_id = await self.create(plan_id, plan_item_id, title, platform)
+        article_id = await self.create(workspace_id, plan_id, plan_item_id, title, platform)
         job_id = await self._queue.enqueue(
+            workspace_id,
             "generate_article",
             {
                 "article_id": article_id,
@@ -311,16 +366,21 @@ class Article:
             """
             UPDATE articles
             SET active_generation_job_id = $2, updated_at = now()
-            WHERE id = $1 AND status = 'queued'
+            WHERE id = $1 AND workspace_id = $3 AND status = 'queued'
             """,
             article_id,
             job_id,
+            workspace_id,
         )
         return article_id
 
-    async def request_regeneration(self, article_id: ArticleId, comment: str | None) -> None:
+    async def request_regeneration(
+        self, workspace_id: WorkspaceId, article_id: ArticleId, comment: str | None
+    ) -> None:
         row = await self._pool.fetchrow(
-            "SELECT status, updated_at FROM articles WHERE id = $1", article_id
+            "SELECT status, updated_at FROM articles WHERE id = $1 AND workspace_id = $2",
+            article_id,
+            workspace_id,
         )
         if row is None:
             raise ArticleNotFound(article_id)
@@ -331,6 +391,7 @@ class Article:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 job_id = await self._queue.enqueue(
+                    workspace_id,
                     "regenerate_article",
                     {"article_id": article_id, "comment": comment},
                     # Keyed on the pre-update updated_at so two racing calls collapse
@@ -341,37 +402,49 @@ class Article:
                     """
                     UPDATE articles
                     SET status = 'regenerating', active_generation_job_id = $2, updated_at = now()
-                    WHERE id = $1
+                    WHERE id = $1 AND workspace_id = $3
                     """,
                     article_id,
                     job_id,
+                    workspace_id,
                 )
 
-    async def mark_exported(self, article_id: ArticleId) -> None:
+    async def mark_exported(self, workspace_id: WorkspaceId, article_id: ArticleId) -> None:
         """The transition is conditional in SQL, so a regeneration requested between a status
         read and this write can't be overwritten to `exported` (#86)."""
         result = await self._pool.execute(
             "UPDATE articles SET status = 'exported', updated_at = now() "
-            "WHERE id = $1 AND status = 'ready'",
+            "WHERE id = $1 AND workspace_id = $2 AND status = 'ready'",
             article_id,
+            workspace_id,
         )
         if result == "UPDATE 1":
             return
-        if await self._article_status(article_id) != "exported":
+        if await self._article_status(workspace_id, article_id) != "exported":
             raise ArticleNotReady(article_id)
 
-    async def _article_status(self, article_id: ArticleId) -> ArticleStatus:
-        row = await self._pool.fetchrow("SELECT status FROM articles WHERE id = $1", article_id)
+    async def _article_status(
+        self, workspace_id: WorkspaceId, article_id: ArticleId
+    ) -> ArticleStatus:
+        row = await self._pool.fetchrow(
+            "SELECT status FROM articles WHERE id = $1 AND workspace_id = $2",
+            article_id,
+            workspace_id,
+        )
         if row is None:
             raise ArticleNotFound(article_id)
         return row["status"]
 
-    async def _latest_version(self, article_id: ArticleId) -> tuple[str, str | None] | None:
+    async def _latest_version(
+        self, workspace_id: WorkspaceId, article_id: ArticleId
+    ) -> tuple[str, str | None] | None:
         """The latest Версия's (content, research_status)."""
         row = await self._pool.fetchrow(
-            "SELECT content, research_status FROM article_versions WHERE article_id = $1 "
+            "SELECT content, research_status FROM article_versions "
+            "WHERE article_id = $1 AND workspace_id = $2 "
             "ORDER BY created_at DESC, id DESC LIMIT 1",
             article_id,
+            workspace_id,
         )
         return (row["content"], row["research_status"]) if row is not None else None
 

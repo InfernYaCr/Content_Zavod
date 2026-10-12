@@ -8,18 +8,27 @@ from __future__ import annotations
 
 from content_zavod.entrypoints.worker import _make_on_attempt
 from content_zavod.job_queue import ClaimedJob, JobPartialFailure
+from tests.tenancy import WS_A
 
-_CLAIMED = ClaimedJob(id=1, job_type="generate_article", payload={}, attempts=1, lease_token="t")
+_CLAIMED = ClaimedJob(
+    id=1, workspace_id=WS_A, job_type="generate_article", payload={}, attempts=1, lease_token="t"
+)
 
 
 class FakeGenerationSteps:
     def __init__(self) -> None:
-        self.recorded: list[tuple[int, str, str | None, list[dict]]] = []
+        self.recorded: list[tuple[int, int, str, str | None, list[dict]]] = []
 
     async def record_many(
-        self, *, job_id: int, job_type: str, article_id: str | None, steps: list[dict]
+        self,
+        workspace_id: int,
+        *,
+        job_id: int,
+        job_type: str,
+        article_id: str | None,
+        steps: list[dict],
     ) -> None:
-        self.recorded.append((job_id, job_type, article_id, steps))
+        self.recorded.append((workspace_id, job_id, job_type, article_id, steps))
 
 
 async def test_records_steps_from_successful_output() -> None:
@@ -28,7 +37,9 @@ async def test_records_steps_from_successful_output() -> None:
 
     await on_attempt(_CLAIMED, {"article_id": "a-1", "steps": [{"step_name": "outline"}]}, None)
 
-    assert generation_steps.recorded == [(1, "generate_article", "a-1", [{"step_name": "outline"}])]
+    assert generation_steps.recorded == [
+        (WS_A, 1, "generate_article", "a-1", [{"step_name": "outline"}])
+    ]
 
 
 async def test_records_steps_from_a_job_partial_failure() -> None:
@@ -38,7 +49,9 @@ async def test_records_steps_from_a_job_partial_failure() -> None:
 
     await on_attempt(_CLAIMED, None, error)
 
-    assert generation_steps.recorded == [(1, "generate_article", "a-1", [{"step_name": "outline"}])]
+    assert generation_steps.recorded == [
+        (WS_A, 1, "generate_article", "a-1", [{"step_name": "outline"}])
+    ]
 
 
 async def test_does_not_record_on_a_plain_exception_without_partial_output() -> None:

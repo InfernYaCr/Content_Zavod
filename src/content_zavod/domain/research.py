@@ -21,6 +21,7 @@ from typing import Any, Literal
 
 import asyncpg
 
+from ..workspaces import WorkspaceId
 from .types import PlanItemId
 
 # `ok` - at least one fact survived quote verification;
@@ -100,12 +101,15 @@ class TopicResearchStore:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
-    async def get(self, plan_item_id: PlanItemId, fingerprint: str) -> TopicResearch | None:
+    async def get(
+        self, workspace_id: WorkspaceId, plan_item_id: PlanItemId, fingerprint: str
+    ) -> TopicResearch | None:
         row = await self._pool.fetchrow(
             "SELECT bundle, outline FROM topic_research WHERE plan_item_id = $1 "
-            "AND fingerprint = $2",
+            "AND fingerprint = $2 AND workspace_id = $3",
             plan_item_id,
             fingerprint,
+            workspace_id,
         )
         if row is None:
             return None
@@ -114,19 +118,28 @@ class TopicResearchStore:
         )
 
     async def put(
-        self, plan_item_id: PlanItemId, fingerprint: str, research: TopicResearch
+        self,
+        workspace_id: WorkspaceId,
+        plan_item_id: PlanItemId,
+        fingerprint: str,
+        research: TopicResearch,
     ) -> None:
+        # The composite FK to plan_items makes a Тема of another Workspace fail the INSERT;
+        # the WHERE keeps the upsert from ever touching another Workspace's row.
         await self._pool.execute(
             """
-            INSERT INTO topic_research (plan_item_id, fingerprint, status, bundle, outline)
-            VALUES ($1, $2, $3, $4::jsonb, $5)
+            INSERT INTO topic_research
+                (workspace_id, plan_item_id, fingerprint, status, bundle, outline)
+            VALUES ($6, $1, $2, $3, $4::jsonb, $5)
             ON CONFLICT (plan_item_id) DO UPDATE
             SET fingerprint = EXCLUDED.fingerprint, status = EXCLUDED.status,
                 bundle = EXCLUDED.bundle, outline = EXCLUDED.outline, updated_at = now()
+            WHERE topic_research.workspace_id = EXCLUDED.workspace_id
             """,
             plan_item_id,
             fingerprint,
             research.bundle.status,
             json.dumps(research.bundle.to_dict(), ensure_ascii=False),
             research.outline,
+            workspace_id,
         )

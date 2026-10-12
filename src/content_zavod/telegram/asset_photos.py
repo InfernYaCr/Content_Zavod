@@ -2,7 +2,7 @@
 `content_zavod/assets/guide/*.png` and cached by Telegram `file_id`.
 
 A picture is uploaded once; the `file_id` Telegram hands back is stored in the Настройки
-key-value table (`owner_settings`, key `asset_file_id:<name>`) together with a hash of the
+key-value table (`bot_state`, key `asset_file_id:<name>`) together with a hash of the
 file, so a designer's replaced PNG (same name, new bytes) is uploaded afresh instead of the old
 picture being reused. A cached `file_id` Telegram refuses (another bot token, say) falls back
 to an upload too.
@@ -31,7 +31,7 @@ FILE_ID_KEY_PREFIX = "asset_file_id:"
 
 
 class FileIdStore(Protocol):
-    """The `owner_settings` key-value store, as far as the cache needs it."""
+    """The `bot_state` key-value store, as far as the cache needs it."""
 
     async def get(self, key: str) -> str | None: ...
 

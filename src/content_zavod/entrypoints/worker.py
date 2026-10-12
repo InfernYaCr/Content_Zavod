@@ -22,7 +22,7 @@ from ..config import Settings, YandexCredentials, load_settings
 from ..domain import Article, GenerationSteps, Plan, TopicResearchStore
 from ..job_queue import ClaimedJob, JobHandler, JobPartialFailure, JobQueue, run_worker
 from ..migrations import run_migrations
-from ..owner_settings import OwnerSettingsStore
+from ..owner_settings import WorkspaceSettingsStore
 from ..pipelines import (
     SUGGEST_DIRECTIONS_JOB,
     HttpxPageFetcher,
@@ -37,6 +37,7 @@ from ..pipelines import (
 from ..settings import SettingsService
 from ..yandex import ImageGenerator, KeywordStats, TextGenerator, WebSearch
 from ._process import register_shutdown
+from ._team_workspace import TeamScoped, team_workspace_id
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +75,13 @@ def _make_on_attempt(generation_steps: GenerationSteps) -> Callable[..., Any]:
             return
         if not steps:
             return
+        # The Job's own Workspace, never one named in its payload (ADR-0015).
         await generation_steps.record_many(
-            job_id=claimed.id, job_type=claimed.job_type, article_id=article_id, steps=steps
+            claimed.workspace_id,
+            job_id=claimed.id,
+            job_type=claimed.job_type,
+            article_id=article_id,
+            steps=steps,
         )
 
     return on_attempt
@@ -91,10 +97,14 @@ async def main(settings: Settings | None = None) -> None:
         await run_migrations(pool)
 
         queue = JobQueue(pool)
-        plan = Plan(pool, queue)
-        article = Article(pool, queue)
-        owner_settings = OwnerSettingsStore(pool)
-        owner_settings_service = SettingsService(owner_settings)
+        # shortcut: every Job Handler reads the team Workspace (ADR-0015, «Промежуточное
+        # состояние») until PR 2 of #118 passes each Job's own workspace_id to its handler.
+        workspace_id = await team_workspace_id(pool, settings)
+        plan = TeamScoped(Plan(pool, queue), workspace_id)
+        article = TeamScoped(Article(pool, queue), workspace_id)
+        owner_settings_service = SettingsService(
+            TeamScoped(WorkspaceSettingsStore(pool), workspace_id)
+        )
         generation_steps = GenerationSteps(pool)
 
         text_generator = _build_yandex_client(
@@ -125,7 +135,9 @@ async def main(settings: Settings | None = None) -> None:
             else None
         )
         page_fetcher = HttpxPageFetcher()
-        researcher = TopicResearcher(web_search, page_fetcher, TopicResearchStore(pool))
+        researcher = TopicResearcher(
+            web_search, page_fetcher, TeamScoped(TopicResearchStore(pool), workspace_id)
+        )
 
         handlers: dict[str, JobHandler] = {
             "generate_plan": make_generate_plan_handler(
