@@ -31,7 +31,7 @@ async def test_handler_returns_base64_image_and_mime_type() -> None:
 
     assert output["plan_item_id"] == "item-1"
     assert base64.b64decode(output["image"]) == b"fake-image-bytes"
-    assert output["mime_type"] == "image/jpeg"
+    assert output["mime_type"] == "image/png"
 
 
 @pytest.mark.asyncio

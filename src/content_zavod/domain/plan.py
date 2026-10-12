@@ -87,10 +87,18 @@ class Plan:
         queue: JobQueue,
         *,
         new_id: Callable[[], str] = lambda: uuid4().hex,
+        covers_enabled: bool = True,
     ) -> None:
         self._pool = pool
         self._queue = queue
         self._new_id = new_id
+        self._covers_enabled = covers_enabled
+
+    @property
+    def covers_enabled(self) -> bool:
+        """`YANDEX_COVERS` (#123): off, `request_cover` enqueues nothing and the Хаб has no
+        cover cells - every caller (the fan-out, «Повторить», a stale «🖼 Обложка») follows."""
+        return self._covers_enabled
 
     async def find_active(self, week_label: str) -> PlanView | None:
         """The week's non-archived Plan, if one exists (used by the manual /generate_plan command)."""
@@ -227,7 +235,11 @@ class Plan:
                     id=PlanItemId(row["id"]),
                     number=number,
                     title=row["title"],
-                    cover=_cover_cell_state(row["has_cover"], row["job_status"]),
+                    cover=(
+                        _cover_cell_state(row["has_cover"], row["job_status"])
+                        if self._covers_enabled
+                        else None
+                    ),
                     has_cover=row["has_cover"],
                     articles=[
                         cells.get(platform, HubArticleCell(platform=platform, state="pending"))
@@ -545,7 +557,10 @@ class Plan:
     async def request_cover(self, plan_item_id: PlanItemId, *, manual: bool = False) -> None:
         """`manual` marks a re-request someone made by hand (the Article card's «🖼 Обложка»):
         its result is also sent to the chat as a photo, where the person who asked is looking,
-        not only reflected in the Хаб like the fan-out's covers (#91, `is_manual_cover_job`)."""
+        not only reflected in the Хаб like the fan-out's covers (#91, `is_manual_cover_job`).
+        A no-op while covers are switched off (#123)."""
+        if not self._covers_enabled:
+            return
         row = await self._pool.fetchrow(
             "SELECT title, summary, updated_at FROM plan_items WHERE id = $1", plan_item_id
         )

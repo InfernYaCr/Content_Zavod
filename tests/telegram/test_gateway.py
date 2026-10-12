@@ -429,6 +429,18 @@ async def test_send_article_ready_with_read_url_puts_read_button_first() -> None
 
 
 @pytest.mark.asyncio
+async def test_send_article_ready_with_covers_off_has_no_cover_button() -> None:
+    """#123: `YANDEX_COVERS=off`."""
+    bot = FakeBot()
+    gateway = TelegramGateway(bot, covers=False)
+
+    await gateway.send_article_ready(chat_id=42, article=make_article())
+
+    _, _, keyboard = bot.sent_messages[0]
+    assert [button.text for button in keyboard.inline_keyboard[-1]] == ["✅"]
+
+
+@pytest.mark.asyncio
 async def test_send_article_ready_without_read_url_has_no_read_button() -> None:
     bot = FakeBot()
     gateway = TelegramGateway(bot)

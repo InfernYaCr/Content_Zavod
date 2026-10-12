@@ -29,6 +29,7 @@ from .pending_inputs import PendingInput
 from .plan_hub import render_hub_screen
 from .texts import (
     COVER_CAPTION,
+    HUB_BUTTON_COVER,
     READ_BUTTON,
     REFINE_BUTTON,
     TO_MENU_BUTTON,
@@ -497,12 +498,24 @@ def build_article_keyboard(
     *,
     read_url: str | None = None,
     exported: bool = False,
+    covers: bool = True,
 ) -> InlineKeyboardMarkup:
     """«📖 Читать» opens the Статья's Страница для чтения (#92) and is left out when it
     couldn't be published; «✏️ Доработать» is the comment-gated Перегенерация. `exported`
     swaps ✅ for «✅ Готово» so the card shows it was accepted (#86); the button keeps the
-    same `approve` callback, which is idempotent."""
+    same `approve` callback, which is idempotent. «🖼 Обложка» only while `covers` are on
+    (`YANDEX_COVERS`, #123)."""
     read = [InlineKeyboardButton(text=READ_BUTTON, url=read_url)] if read_url else []
+    cover = (
+        [
+            InlineKeyboardButton(
+                text=HUB_BUTTON_COVER,
+                callback_data=encode_callback_data(SimpleAction("request_cover", plan_item_id)),
+            )
+        ]
+        if covers
+        else []
+    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -520,10 +533,7 @@ def build_article_keyboard(
                     text="✅ Готово" if exported else "✅",
                     callback_data=encode_callback_data(SimpleAction("approve", article_id)),
                 ),
-                InlineKeyboardButton(
-                    text="🖼 Обложка",
-                    callback_data=encode_callback_data(SimpleAction("request_cover", plan_item_id)),
-                ),
+                *cover,
             ],
         ]
     )
@@ -627,8 +637,10 @@ class BotClient(Protocol):
 class TelegramGateway:
     """Thin adapter over a Telegram bot client: rendering, chunking, keyboards only."""
 
-    def __init__(self, bot: BotClient) -> None:
+    def __init__(self, bot: BotClient, *, covers: bool = True) -> None:
         self._bot = bot
+        # `YANDEX_COVERS` (#123): whether Статья cards offer «🖼 Обложка».
+        self._covers = covers
 
     async def send_message(
         self, chat_id: int, text: str, reply_markup: InlineKeyboardMarkup | None = None
@@ -754,7 +766,9 @@ class TelegramGateway:
     async def send_article_ready(
         self, chat_id: int, article: ArticleView, *, read_url: str | None = None
     ) -> None:
-        keyboard = build_article_keyboard(article.id, article.plan_item_id, read_url=read_url)
+        keyboard = build_article_keyboard(
+            article.id, article.plan_item_id, read_url=read_url, covers=self._covers
+        )
         await self._bot.send_message(
             chat_id, render_article_card_text(article), reply_markup=keyboard
         )
@@ -765,7 +779,7 @@ class TelegramGateway:
         """Redraws an Article card's buttons in place after ✅, text untouched (#86);
         `read_url` keeps «📖 Читать» on the redrawn card (#92)."""
         keyboard = build_article_keyboard(
-            article.id, article.plan_item_id, read_url=read_url, exported=True
+            article.id, article.plan_item_id, read_url=read_url, exported=True, covers=self._covers
         )
         await self._bot.edit_message_reply_markup(chat_id, message_id, reply_markup=keyboard)
 

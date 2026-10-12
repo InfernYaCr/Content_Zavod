@@ -13,18 +13,35 @@ from .http import HttpResponse
 
 
 def map_error(response: HttpResponse) -> YandexError:
+    message = _error_message(response.body)
     if response.status == 429:
         retry_after = response.body.get("retryAfter") if response.body else None
         return RateLimited(retry_after=retry_after)
     if response.status in (401, 403):
-        return AuthError(f"Yandex API rejected credentials (status={response.status})")
-    if response.status == 400 and _is_content_policy_violation(response.body):
-        return ContentPolicyError(str(response.body.get("message", "Content policy violation")))
+        # 403 is also a missing role or API-key scope - the message says which.
+        return AuthError(
+            f"Yandex API rejected credentials (status={response.status}): {message or response.body}"
+        )
+    if response.status == 402:
+        return YandexError(
+            f"Yandex Cloud refused to bill the request - check the billing account balance "
+            f"(status=402): {message or response.body}"
+        )
+    if response.status == 400 and _is_content_policy_violation(message):
+        return ContentPolicyError(message or "Content policy violation")
     return YandexError(f"Yandex API request failed (status={response.status}): {response.body}")
 
 
-def _is_content_policy_violation(body: dict[str, Any]) -> bool:
-    message = str(body.get("message", "")).lower()
+def _error_message(body: dict[str, Any]) -> str:
+    """`message` at the top (Yandex's own APIs) or under `error` (the OpenAI-compatible ones)."""
+    error = body.get("error")
+    if isinstance(error, dict) and error.get("message"):
+        return str(error["message"])
+    return str(body.get("message") or "")
+
+
+def _is_content_policy_violation(message: str) -> bool:
+    message = message.lower()
     return "content" in message and any(w in message for w in ("polic", "filter", "block"))
 
 

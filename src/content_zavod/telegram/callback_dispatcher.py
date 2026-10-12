@@ -64,6 +64,7 @@ from .plan_review import PlanReview
 from .settings_screen import BACK_TO_MENU, SettingsScreen
 from .texts import (
     COVER_REQUESTED,
+    COVERS_OFF,
     DIRECTIONS_STALE,
     HUB_ALERT_NO_COVER,
     HUB_ALERT_NOTHING_TO_RETRY,
@@ -502,6 +503,13 @@ class CallbackDispatcher:
             case SimpleAction(action="retry", id_=id_):
                 if not await self._authorized("retry", role, deny_text, answer):
                     return
+                # «🔁 Повторить» under an old cover failure must not draw (and bill) a cover
+                # after `YANDEX_COVERS=off` (#123).
+                if not self._plan.covers_enabled:
+                    job = await self._queue.get_job(JobId(int(id_)))
+                    if job is not None and job.job_type == "generate_cover":
+                        await answer(COVERS_OFF)
+                        return
                 await answer()
                 await self._queue.retry(JobId(int(id_)))
             case SimpleAction(action="regenerate_article", id_=id_):
@@ -529,6 +537,10 @@ class CallbackDispatcher:
                 )
             case SimpleAction(action="request_cover", id_=id_):
                 if not await self._authorized("request_cover", role, deny_text, answer):
+                    return
+                # A card sent while covers were on, pressed after `YANDEX_COVERS=off` (#123).
+                if not self._plan.covers_enabled:
+                    await answer(COVERS_OFF)
                     return
                 await answer(COVER_REQUESTED)
                 # By hand, from a Статья card: the result comes back here as a photo (#91).
@@ -589,7 +601,7 @@ class CallbackDispatcher:
                     return
                 cover = await self._plan.get_cover(PlanItemId(id_))
                 if cover is None:
-                    await answer(HUB_ALERT_NO_COVER)
+                    await answer(HUB_ALERT_NO_COVER if self._plan.covers_enabled else COVERS_OFF)
                     return
                 await answer()
                 await self._gateway.send_cover(chat_id, cover.image, cover.mime_type, cover.title)
