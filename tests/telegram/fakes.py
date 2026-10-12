@@ -167,8 +167,8 @@ class FakeReservation:
     def __init__(self, limits: FakeLimits) -> None:
         self._limits = limits
 
-    def require(self, *, plans: int = 0, articles: int = 0) -> None:
-        self._limits.required.append((plans, articles))
+    def require(self, job_type: str, count: int = 1) -> None:
+        self._limits.required.append((job_type, count))
         if self._limits.short is not None:
             raise self._limits.short
 
@@ -176,7 +176,7 @@ class FakeReservation:
 class FakeLimits:
     """`Limits` in memory: lets everything through, or raises `refusal` from every check
     (`short` - only from `Reservation.require`). `reserved`/`required`/`prechecked` - the
-    (plans, articles) each check asked for."""
+    (job type, count) each check asked for."""
 
     def __init__(self, usage: Usage | None = None) -> None:
         self.usage_value = usage or Usage(
@@ -184,23 +184,23 @@ class FakeLimits:
         )
         self.refusal: LimitRefused | None = None
         self.short: LimitRefused | None = None
-        self.reserved: list[tuple[int, int]] = []
-        self.required: list[tuple[int, int]] = []
-        self.prechecked: list[tuple[int, int]] = []
+        self.reserved: list[tuple[str | None, int]] = []
+        self.required: list[tuple[str, int]] = []
+        self.prechecked: list[str] = []
 
     async def usage(self, workspace_id: int) -> Usage:
         return self.usage_value
 
-    async def precheck(self, workspace_id: int, *, plans: int = 0, articles: int = 0) -> None:
-        self.prechecked.append((plans, articles))
+    async def precheck(self, workspace_id: int, job_type: str) -> None:
+        self.prechecked.append(job_type)
         if self.refusal is not None:
             raise self.refusal
 
     @asynccontextmanager
     async def reserve(
-        self, workspace_id: int, *, plans: int = 0, articles: int = 0
+        self, workspace_id: int, job_type: str | None = None, count: int = 1
     ) -> AsyncIterator[FakeReservation]:
         if self.refusal is not None:
             raise self.refusal
-        self.reserved.append((plans, articles))
+        self.reserved.append((job_type, count))
         yield FakeReservation(self)

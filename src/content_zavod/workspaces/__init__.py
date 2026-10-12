@@ -1,5 +1,7 @@
 from .limits import (
+    DailyFreeJobLimitReached,
     DailyJobLimitReached,
+    DailyPlanLimitReached,
     GenerationBusy,
     LimitRefused,
     Limits,
@@ -11,7 +13,9 @@ from .limits import (
 from .workspaces import Workspace, WorkspaceId, Workspaces
 
 __all__ = [
+    "DailyFreeJobLimitReached",
     "DailyJobLimitReached",
+    "DailyPlanLimitReached",
     "GenerationBusy",
     "LimitRefused",
     "Limits",

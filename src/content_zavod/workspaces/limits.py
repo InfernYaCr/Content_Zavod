@@ -6,8 +6,9 @@ One check, `Limits.reserve`, runs before every generation in the same transactio
 1. no unfinished Job (queued, running, or finished with its notification not yet handled) -
    «Дождитесь окончания текущей генерации»;
 2. fewer than `jobs_per_day` Jobs created in the last 24 hours;
-3. charged + requested ≤ Лимит, for Планы and Статьи separately (only for a non-zero request:
-   a cover or a Тема regeneration costs no Лимит).
+3. what the Job type costs: a Plan (charged + requested ≤ Лимит of Планов, and at most
+   `plan_jobs_per_day` runs a day), a Статья (≤ Лимит of Статей), or nothing of the Лимит -
+   a cover, a Тема regeneration, a style analysis - braked by `free_jobs_per_day` instead.
 
 There is no separate "in flight" count: (1) guarantees that whatever should have been charged
 is charged by the time of the check. The lock (`FOR NO KEY UPDATE`, which still lets the
@@ -40,12 +41,17 @@ Unit = Literal["plan", "article"]
 @dataclass(frozen=True)
 class TrialLimits:
     """The config side (`TRIAL_PLAN_LIMIT`, `TRIAL_ARTICLE_LIMIT`, `JOBS_PER_DAY_LIMIT`,
-    `LIMIT_CONTACT`): the Лимит of every Workspace whose own `plan_limit`/`article_limit` is
-    `NULL`, so a change in env applies to all of them at once."""
+    `FREE_JOBS_PER_DAY_LIMIT`, `LIMIT_CONTACT`): the Лимит of every Workspace whose own
+    `plan_limit`/`article_limit` is `NULL`, so a change in env applies to all of them at once.
+    `plan_jobs_per_day` caps `generate_plan` runs (each may rebuild the Niche Map: a model call
+    and Wordstat requests from a quota shared by all Workspaces), reruns and replacements
+    included."""
 
     plans: int = 1
     articles: int = 8
-    jobs_per_day: int = 50
+    jobs_per_day: int = 30
+    free_jobs_per_day: int = 10
+    plan_jobs_per_day: int = 5
     contact: str | None = None
 
     def usage(
@@ -81,6 +87,12 @@ class Usage:
         return max(0, self.article_limit - self.articles_used)
 
 
+# What a Job type costs: a Plan, a Статья, or nothing of the Лимит («free» - a cover, a Тема
+# regeneration, a style analysis; braked by their own daily cap instead).
+PLAN_JOB = "generate_plan"
+ARTICLE_JOBS = ("generate_article", "regenerate_article")
+
+
 class LimitRefused(Exception):
     """A generation this Пространство may not start now. Nothing was enqueued."""
 
@@ -92,7 +104,15 @@ class GenerationBusy(LimitRefused):
 
 class DailyJobLimitReached(LimitRefused):
     def __init__(self) -> None:
-        super().__init__("the Workspace reached its daily Job ceiling")
+        super().__init__(f"the Workspace reached a daily Job cap ({type(self).__name__})")
+
+
+class DailyPlanLimitReached(DailyJobLimitReached):
+    """`plan_jobs_per_day` `generate_plan` runs in the last 24 hours."""
+
+
+class DailyFreeJobLimitReached(DailyJobLimitReached):
+    """`free_jobs_per_day` Jobs that cost no Лимит in the last 24 hours."""
 
 
 class TrialLimitExhausted(LimitRefused):
@@ -106,31 +126,80 @@ class TrialLimitExhausted(LimitRefused):
         self.contact = contact
 
 
-@dataclass(frozen=True)
+class _Quota:
+    """What is left today and of the Лимит, and what this one check has asked for so far."""
+
+    def __init__(self, usage: Usage, counts: asyncpg.Record, trial: TrialLimits) -> None:
+        self.usage = usage
+        self._counts = counts
+        self._trial = trial
+        self._asked = {"plan": 0, "article": 0, "free": 0}
+
+    def check(self, job_type: str | None, count: int) -> None:
+        """In order: no unfinished Job, the total daily cap, then what `job_type` costs."""
+        if self._counts["busy"]:
+            raise GenerationBusy()
+        if self._counts["jobs_today"] >= self._trial.jobs_per_day:
+            raise DailyJobLimitReached()
+        if job_type is not None:
+            self.require(job_type, count)
+
+    def require(self, job_type: str, count: int) -> None:
+        if job_type == PLAN_JOB:
+            asked = self._asked["plan"] + count
+            if asked > self.usage.plans_left:
+                raise TrialLimitExhausted(
+                    self.usage, plans=asked, articles=0, contact=self._trial.contact
+                )
+            if self._counts["plan_jobs_today"] + asked > self._trial.plan_jobs_per_day:
+                raise DailyPlanLimitReached()
+            self._asked["plan"] = asked
+        elif job_type in ARTICLE_JOBS:
+            asked = self._asked["article"] + count
+            if asked > self.usage.articles_left:
+                raise TrialLimitExhausted(
+                    self.usage, plans=0, articles=asked, contact=self._trial.contact
+                )
+            self._asked["article"] = asked
+        else:
+            asked = self._asked["free"] + count
+            if self._counts["free_jobs_today"] + asked > self._trial.free_jobs_per_day:
+                raise DailyFreeJobLimitReached()
+            self._asked["free"] = asked
+
+
 class Reservation:
-    """The checked transaction: enqueue on `conn`. `require` checks a request whose size is only
-    known once the lock is held (the Статьи of «Утвердить всё»)."""
+    """The checked transaction: enqueue on `conn`. `require` adds a request whose size is only
+    known once the lock is held (the Статьи and covers of «Утвердить всё»)."""
 
-    conn: asyncpg.Connection
-    usage: Usage
-    contact: str | None
+    def __init__(self, conn: asyncpg.Connection, quota: _Quota) -> None:
+        self.conn = conn
+        self._quota = quota
 
-    def require(self, *, plans: int = 0, articles: int = 0) -> None:
-        _require(self.usage, plans, articles, self.contact)
+    @property
+    def usage(self) -> Usage:
+        return self._quota.usage
+
+    def require(self, job_type: str, count: int = 1) -> None:
+        self._quota.require(job_type, count)
 
 
 _LOCK = "SELECT plan_limit, article_limit FROM workspaces WHERE id = $1 FOR NO KEY UPDATE"
 _READ = "SELECT plan_limit, article_limit FROM workspaces WHERE id = $1"
 # One statement, so one snapshot: a Job seen as notified has its charge seen too (the charge
 # commits before `mark_notified`). Run after the lock is taken, never in the locking statement:
-# that one's snapshot predates the wait for the lock.
+# that one's snapshot predates the wait for the lock. A «🔁 Повторить» reuses its Job, so a
+# retry is checked against these caps but adds nothing to them (ADR-0015).
 _COUNTS = """
 SELECT
     EXISTS (SELECT 1 FROM jobs WHERE workspace_id = $1 AND notified_at IS NULL) AS busy,
-    (SELECT count(*) FROM jobs
-     WHERE workspace_id = $1 AND created_at > now() - interval '24 hours') AS jobs_today,
+    count(*) AS jobs_today,
+    count(*) FILTER (WHERE job_type = $2) AS plan_jobs_today,
+    count(*) FILTER (WHERE job_type <> $2 AND job_type <> ALL($3::text[])) AS free_jobs_today,
     (SELECT count(*) FROM limit_charges WHERE workspace_id = $1 AND unit = 'plan') AS plans,
     (SELECT count(*) FROM limit_charges WHERE workspace_id = $1 AND unit = 'article') AS articles
+FROM jobs
+WHERE workspace_id = $1 AND created_at > now() - interval '24 hours'
 """
 
 
@@ -141,58 +210,39 @@ class Limits:
 
     async def usage(self, workspace_id: WorkspaceId) -> Usage:
         """Charged and Лимит, for the menu's «Осталось» line and `/admin`."""
-        limits = await self._pool.fetchrow(_READ, workspace_id)
-        counts = await self._pool.fetchrow(_COUNTS, workspace_id)
-        assert limits is not None and counts is not None
-        return self._usage(limits, counts)
+        return (await self._quota(self._pool, _READ, workspace_id)).usage
 
-    async def precheck(
-        self, workspace_id: WorkspaceId, *, plans: int = 0, articles: int = 0
-    ) -> None:
+    async def precheck(self, workspace_id: WorkspaceId, job_type: str) -> None:
         """The same refusals without the lock - to refuse at the press, before asking for a
         comment. Only `reserve` decides."""
-        await self._check(self._pool, _READ, workspace_id, plans, articles)
+        (await self._quota(self._pool, _READ, workspace_id)).check(job_type, 1)
 
     @asynccontextmanager
     async def reserve(
-        self, workspace_id: WorkspaceId, *, plans: int = 0, articles: int = 0
+        self, workspace_id: WorkspaceId, job_type: str | None = None, count: int = 1
     ) -> AsyncIterator[Reservation]:
-        """Raises `LimitRefused` before yielding; leaving the block commits."""
+        """`count` Jobs of `job_type` (none yet: add them with `Reservation.require`). Raises
+        `LimitRefused` before yielding; leaving the block commits. E.g. a style analysis:
+        `async with limits.reserve(workspace.id, "analyze_style") as reservation:` and
+        enqueue with `conn=reservation.conn`."""
         async with self._pool.acquire() as conn, conn.transaction():
-            usage = await self._check(conn, _LOCK, workspace_id, plans, articles)
-            yield Reservation(conn, usage, self._trial.contact)
+            quota = await self._quota(conn, _LOCK, workspace_id)
+            quota.check(job_type, count)
+            yield Reservation(conn, quota)
 
-    async def _check(
-        self,
-        db: asyncpg.Pool | asyncpg.Connection,
-        limits_sql: str,
-        workspace_id: WorkspaceId,
-        plans: int,
-        articles: int,
-    ) -> Usage:
+    async def _quota(
+        self, db: asyncpg.Pool | asyncpg.Connection, limits_sql: str, workspace_id: WorkspaceId
+    ) -> _Quota:
         limits = await db.fetchrow(limits_sql, workspace_id)
-        counts = await db.fetchrow(_COUNTS, workspace_id)
+        counts = await db.fetchrow(_COUNTS, workspace_id, PLAN_JOB, list(ARTICLE_JOBS))
         assert limits is not None and counts is not None
-        if counts["busy"]:
-            raise GenerationBusy()
-        if counts["jobs_today"] >= self._trial.jobs_per_day:
-            raise DailyJobLimitReached()
-        usage = self._usage(limits, counts)
-        _require(usage, plans, articles, self._trial.contact)
-        return usage
-
-    def _usage(self, limits: asyncpg.Record, counts: asyncpg.Record) -> Usage:
-        return self._trial.usage(
+        usage = self._trial.usage(
             plan_limit=limits["plan_limit"],
             article_limit=limits["article_limit"],
             plans_used=counts["plans"],
             articles_used=counts["articles"],
         )
-
-
-def _require(usage: Usage, plans: int, articles: int, contact: str | None) -> None:
-    if (plans and plans > usage.plans_left) or (articles and articles > usage.articles_left):
-        raise TrialLimitExhausted(usage, plans=plans, articles=articles, contact=contact)
+        return _Quota(usage, counts, self._trial)
 
 
 async def charge(

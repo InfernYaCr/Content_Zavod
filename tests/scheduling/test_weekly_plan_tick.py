@@ -256,3 +256,16 @@ async def test_a_limit_of_one_workspace_does_not_stop_the_other(
 
     assert await _plan_jobs(pool) == [(WS_B, f"generate_plan:{WEEK}")]
     assert told == [WS_A]
+
+
+async def test_a_week_skipped_for_the_limit_stays_skipped_even_if_the_limit_is_raised(
+    pool: asyncpg.Pool, plan: Plan
+) -> None:
+    """Once told «no Plan this week», the tick leaves the week alone - no lock every minute; a
+    Лимит raised by `/admin limit` mid-week applies from the next week (or «🪄 Составить План»)."""
+    await _with_niche(pool, WS_A)
+    await WorkspaceSettingsStore(pool).set(WS_A, f"schedule_skipped:{WEEK}", "1")
+
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+
+    assert await _plan_jobs(pool) == []

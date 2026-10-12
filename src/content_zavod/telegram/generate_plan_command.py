@@ -153,7 +153,7 @@ async def _run_week_generation(
     # replacement still in flight (`request_replacement` is off this chain) is read as "no
     # Plan" too and gets a rerun - worst case one extra generation appending to the same
     # draft Plan. Look up the week's latest generate_plan Job instead if that bites.
-    async with limits.reserve(workspace_id, plans=1) as reservation:
+    async with limits.reserve(workspace_id, "generate_plan") as reservation:
         conn = reservation.conn
         job_id = await plan.request_new(workspace_id, week_label, conn=conn)
         status = await queue.get_status(workspace_id, job_id, conn=conn)
@@ -180,7 +180,7 @@ async def handle_confirm_regenerate_plan(
     the chat (#106) is simply left gone: an archived Plan needs no replacement message. A
     refusal of the Лимит leaves the Plan as it is and takes the confirmation's place."""
     try:
-        async with limits.reserve(workspace_id, plans=1) as reservation:
+        async with limits.reserve(workspace_id, "generate_plan") as reservation:
             await plan.request_replacement(workspace_id, plan_id, conn=reservation.conn)
     except LimitRefused as exc:
         await gateway.edit_notice(chat_id, message_id, error_alert_text(exc))

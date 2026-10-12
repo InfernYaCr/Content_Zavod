@@ -5,12 +5,21 @@ from content_zavod.domain.types import ArticleStatus, PlanStatus
 from content_zavod.telegram.texts import (
     ARTICLE_STATUSES,
     PLAN_STATUSES,
+    approve_shortfall_text,
     article_status,
+    error_alert_text,
     job_failure_text,
     parse_weekday,
     plan_status,
     platform_name,
     weekday_name,
+)
+from content_zavod.workspaces import (
+    DailyFreeJobLimitReached,
+    DailyJobLimitReached,
+    DailyPlanLimitReached,
+    TrialLimitExhausted,
+    Usage,
 )
 
 
@@ -108,3 +117,32 @@ def test_a_button_of_another_workspace_reads_like_a_stale_one() -> None:
         JobNotFound(1),
     ):
         assert error_alert_text(exc) == STALE_BUTTON
+
+
+def _short(used: int, asked: int, contact: str | None = "@owner") -> TrialLimitExhausted:
+    usage = Usage(plans_used=1, plan_limit=1, articles_used=used, article_limit=8)
+    return TrialLimitExhausted(usage, plans=0, articles=asked, contact=contact)
+
+
+def test_a_shortfall_counts_statyi_in_the_accusative_and_gives_the_contact() -> None:
+    assert error_alert_text(_short(7, 3)) == (
+        "Пробного лимита хватит ещё на 1 Статью, а нужно 3.\nЧтобы продолжить, напишите @owner."
+    )
+    assert "на 2 Статьи," in error_alert_text(_short(6, 3))
+    assert "на 5 Статей," in error_alert_text(_short(3, 6, None))
+    assert "напишите" not in error_alert_text(_short(3, 6, None))
+
+
+def test_approving_too_many_temy_asks_to_remove_some_only_if_one_tema_fits() -> None:
+    assert "🗑" in approve_shortfall_text(_short(4, 6), per_tema=2)
+    nearly = approve_shortfall_text(_short(7, 6), per_tema=2)
+    assert "почти исчерпан" in nearly and "@owner" in nearly and "🗑" not in nearly
+    assert approve_shortfall_text(_short(8, 6), per_tema=2).startswith("Пробный лимит исчерпан")
+
+
+def test_daily_caps_have_their_own_reasons() -> None:
+    texts = {
+        error_alert_text(exc)
+        for exc in (DailyJobLimitReached(), DailyPlanLimitReached(), DailyFreeJobLimitReached())
+    }
+    assert len(texts) == 3 and all("завтра" in text for text in texts)

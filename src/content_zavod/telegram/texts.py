@@ -22,7 +22,14 @@ from ..domain.errors import (
     PlanNotFound,
 )
 from ..job_queue import JobNotFound
-from ..workspaces import DailyJobLimitReached, GenerationBusy, TrialLimitExhausted, Usage
+from ..workspaces import (
+    DailyFreeJobLimitReached,
+    DailyJobLimitReached,
+    DailyPlanLimitReached,
+    GenerationBusy,
+    TrialLimitExhausted,
+    Usage,
+)
 
 ARTICLE_STATUSES = {
     "queued": "в очереди",
@@ -160,6 +167,10 @@ ERROR_ALERTS: dict[type[Exception], str] = {
     # ADR-0015, «Защита от лавины»: one generation at a time, and a daily ceiling of Jobs.
     GenerationBusy: "⏳ Дождитесь окончания текущей генерации — потом можно продолжить.",
     DailyJobLimitReached: "На сегодня генераций достаточно — продолжим завтра.",
+    DailyPlanLimitReached: "Планов на сегодня составлено достаточно — новый можно будет завтра.",
+    DailyFreeJobLimitReached: (
+        "Перегенераций Тем и обложек на сегодня достаточно — продолжим завтра."
+    ),
 }
 ERROR_ALERT_FALLBACK = "Не получилось, попробуйте ещё раз"
 
@@ -293,20 +304,46 @@ def remaining_text(usage: Usage) -> str:
     return f"Осталось: {plans_text(usage.plans_left)}, {articles_text(usage.articles_left)}"
 
 
+def _articles_accusative(count: int) -> str:
+    """«хватит на 1 Статью, 2 Статьи, 5 Статей»."""
+    return f"{count} {_plural(count, 'Статью', 'Статьи', 'Статей')}"
+
+
+def _with_contact(text: str, contact: str | None) -> str:
+    return f"{text}\nЧтобы продолжить, напишите {contact}." if contact else text
+
+
 def limit_exhausted_text(exc: TrialLimitExhausted) -> str:
-    """A refused generation (fits a callback alert, 200 characters). «Утвердить всё» that asks
-    for more Статьи than are left, but some are, is told how many and to remove Темы."""
+    """A refused generation (fits a callback alert, 200 characters): what is left when some
+    Статьи are, but fewer than asked (a «🔁 Повторить» of several), else the used-up Лимит."""
     usage = exc.usage
-    if exc.articles > 1 and usage.articles_left:
+    if exc.articles > usage.articles_left > 0:
+        text = (
+            f"Пробного лимита хватит ещё на {_articles_accusative(usage.articles_left)}, "
+            f"а нужно {exc.articles}."
+        )
+    else:
+        text = (
+            f"Пробный лимит исчерпан: Планов {usage.plans_used} из {usage.plan_limit}, "
+            f"Статей {usage.articles_used} из {usage.article_limit}."
+        )
+    return _with_contact(text, exc.contact)
+
+
+def approve_shortfall_text(exc: TrialLimitExhausted, *, per_tema: int) -> str:
+    """«Утвердить всё» asking for more Статьи than are left: removing Темы helps only while the
+    remainder still fits one Тема (`per_tema` Статьи, one per Площадка)."""
+    left = exc.usage.articles_left
+    if left >= per_tema:
         return (
-            f"Пробного лимита хватит ещё на {articles_text(usage.articles_left)}, а утверждение "
+            f"Пробного лимита хватит ещё на {_articles_accusative(left)}, а утверждение "
             f"запустит {exc.articles}. Уберите лишние Темы (🗑) и утвердите снова."
         )
-    text = (
-        f"Пробный лимит исчерпан: Планов {usage.plans_used} из {usage.plan_limit}, "
-        f"Статей {usage.articles_used} из {usage.article_limit}."
-    )
-    return f"{text}\nЧтобы продолжить, напишите {exc.contact}." if exc.contact else text
+    if left:
+        remains = _plural(left, "осталась", "осталось", "осталось")
+        text = f"Пробный лимит почти исчерпан: {remains} {articles_text(left)} — меньше одной Темы."
+        return _with_contact(text, exc.contact)
+    return limit_exhausted_text(exc)
 
 
 def schedule_skipped_text(exc: TrialLimitExhausted) -> str:
@@ -360,8 +397,12 @@ ADMIN_UNITS = {
 }
 ADMIN_COST = "≈ {cost:.2f} ₽"
 ADMIN_COST_INCOMPLETE = " (неполная)"
-ADMIN_HINT = "Задать Лимит: /admin limit <id> <планы> <статьи>, например /admin limit 12 2 12"
+ADMIN_HINT = (
+    "Задать Лимит: /admin limit <id> <планы> <статьи>, например /admin limit 12 2 12. "
+    "Вернуть Лимит по конфигу: /admin limit <id> default"
+)
 ADMIN_LIMIT_SET = "✅ Лимит Пространства #{id}: Планов {plans}, Статей {articles}."
+ADMIN_LIMIT_DEFAULT = "✅ Лимит Пространства #{id} снова по конфигу."
 ADMIN_LIMIT_NOT_FOUND = "Пространства #{id} нет."
 MENU_TEXT = "🏠 Главное меню\nВыберите, что сделать:"
 MENU_PLAN_BUTTON = "📋 План недели"

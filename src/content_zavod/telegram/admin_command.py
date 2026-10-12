@@ -21,6 +21,7 @@ from .texts import (
     ADMIN_CUSTOM_LIMIT,
     ADMIN_EMPTY,
     ADMIN_HINT,
+    ADMIN_LIMIT_DEFAULT,
     ADMIN_LIMIT_NOT_FOUND,
     ADMIN_LIMIT_SET,
     ADMIN_NO_ACTIVITY,
@@ -34,13 +35,21 @@ from .texts import (
 # One message: ~170 characters each keeps the list under Telegram's 4096.
 SHOWN_WORKSPACES = 20
 SPEND_PERIOD = timedelta(days=30)
+# Past these Postgres would refuse the number (`workspaces.id` is BIGINT, the limits INT); a
+# Лимит this high is "unlimited" anyway.
+MAX_WORKSPACE_ID = 2**63 - 1
+MAX_LIMIT = 1_000_000
 
 
 class AdminRegistry(Protocol):
     async def overview(self, *, limit: int) -> tuple[list[WorkspaceOverview], int]: ...
 
     async def set_limits(
-        self, admin_telegram_id: int, workspace_id: WorkspaceId, plans: int, articles: int
+        self,
+        admin_telegram_id: int,
+        workspace_id: WorkspaceId,
+        plans: int | None,
+        articles: int | None,
     ) -> bool: ...
 
 
@@ -62,17 +71,36 @@ async def handle_admin_command(
     if not parts:
         await gateway.send_notice(chat_id, await _overview_text(admin, spend, now()))
         return
-    numbers = parts[1:]
-    if parts[0] != "limit" or len(numbers) != 3 or not all(n.isdecimal() for n in numbers):
+    parsed = _parse_limit(parts)
+    if parsed is None:
         await gateway.send_notice(chat_id, ADMIN_HINT)
         return
-    workspace_id, plans, articles = (int(n) for n in numbers)
+    workspace_id, plans, articles = parsed
     if not await admin.set_limits(admin_telegram_id, WorkspaceId(workspace_id), plans, articles):
         await gateway.send_notice(chat_id, ADMIN_LIMIT_NOT_FOUND.format(id=workspace_id))
+        return
+    if plans is None:
+        await gateway.send_notice(chat_id, ADMIN_LIMIT_DEFAULT.format(id=workspace_id))
         return
     await gateway.send_notice(
         chat_id, ADMIN_LIMIT_SET.format(id=workspace_id, plans=plans, articles=articles)
     )
+
+
+def _parse_limit(parts: list[str]) -> tuple[int, int | None, int | None] | None:
+    """`limit <id> <планы> <статьи>` or `limit <id> default` (back to the config's numbers);
+    `None` for anything else, numbers out of range included."""
+    if len(parts) not in (3, 4) or parts[0] != "limit" or not parts[1].isdecimal():
+        return None
+    workspace_id = int(parts[1])
+    if workspace_id > MAX_WORKSPACE_ID:
+        return None
+    if parts[2:] == ["default"]:
+        return workspace_id, None, None
+    numbers = parts[2:]
+    if len(numbers) != 2 or not all(n.isdecimal() and int(n) <= MAX_LIMIT for n in numbers):
+        return None
+    return workspace_id, int(numbers[0]), int(numbers[1])
 
 
 async def _overview_text(admin: AdminRegistry, spend: SpendSource, now: datetime) -> str:

@@ -14,8 +14,8 @@ configure. `GLOBAL_ADMIN_TELEGRAM_IDS` (comma-separated telegram ids, may be emp
 Глобальные администраторы: not a Role, just this list. `SIGNUP_DAILY_LIMIT` (default 50) caps
 how many new Пространства `/start` creates in 24 hours; past it the admins are told once a day.
 The trial Лимит of a Пространство (`TRIAL_PLAN_LIMIT`, `TRIAL_ARTICLE_LIMIT`), the daily Job
-ceiling (`JOBS_PER_DAY_LIMIT`) and whom to ask for more (`LIMIT_CONTACT`) are `TrialLimits`
-(ADR-0015, «Лимит»).
+caps (`JOBS_PER_DAY_LIMIT`, and `FREE_JOBS_PER_DAY_LIMIT` for Jobs that cost no Лимит) and whom
+to ask for more (`LIMIT_CONTACT`) are `TrialLimits` (ADR-0015, «Лимит»).
 """
 
 from __future__ import annotations
@@ -133,6 +133,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
             articles=_non_negative_int(env, "TRIAL_ARTICLE_LIMIT", default=TrialLimits.articles),
             jobs_per_day=_non_negative_int(
                 env, "JOBS_PER_DAY_LIMIT", default=TrialLimits.jobs_per_day
+            ),
+            free_jobs_per_day=_non_negative_int(
+                env, "FREE_JOBS_PER_DAY_LIMIT", default=TrialLimits.free_jobs_per_day
             ),
             contact=(env.get("LIMIT_CONTACT") or "").strip() or None,
         ),

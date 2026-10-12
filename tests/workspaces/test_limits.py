@@ -20,7 +20,9 @@ from content_zavod.telegram.generate_plan_command import (
     handle_generate_plan_command,
 )
 from content_zavod.workspaces import (
+    DailyFreeJobLimitReached,
     DailyJobLimitReached,
+    DailyPlanLimitReached,
     GenerationBusy,
     Limits,
     TrialLimitExhausted,
@@ -109,7 +111,7 @@ async def test_the_trial_gives_one_plan_and_eight_statyi_counting_refinements(
 ) -> None:
     """The done criterion: 1/8 - one Plan, its six Статьи and two «✏️ Доработать»; the ninth
     Статья and the second Plan are refused with the contact; `/admin limit` opens them again."""
-    async with limits.reserve(WS_A, plans=1) as reservation:
+    async with limits.reserve(WS_A, "generate_plan") as reservation:
         plan_job = await plan.request_new(WS_A, "2026-W42", conn=reservation.conn)
     plan_id = await plan.add_topics(WS_A, "2026-W42", TOPICS, source_job_id=plan_job)
     await _all_notified(pool, WS_A)
@@ -120,7 +122,7 @@ async def test_the_trial_gives_one_plan_and_eight_statyi_counting_refinements(
     await _all_notified(pool, WS_A)
     refined = [article_id for article_id, _ in await _article_jobs(pool, WS_A)][:2]
     for article_id in refined:
-        async with limits.reserve(WS_A, articles=1) as reservation:
+        async with limits.reserve(WS_A, "regenerate_article") as reservation:
             await article.request_regeneration(WS_A, article_id, None, conn=reservation.conn)
         [(_, job_id)] = [row for row in await _article_jobs(pool, WS_A) if row[0] == article_id]
         assert await _write(article, WS_A, article_id, job_id) == "applied"
@@ -129,16 +131,16 @@ async def test_the_trial_gives_one_plan_and_eight_statyi_counting_refinements(
     usage = await limits.usage(WS_A)
     assert (usage.plans_used, usage.articles_used) == (1, 8)
     with pytest.raises(TrialLimitExhausted) as ninth:
-        async with limits.reserve(WS_A, articles=1):
+        async with limits.reserve(WS_A, "regenerate_article"):
             pass
     assert ninth.value.contact == "@owner"
     with pytest.raises(TrialLimitExhausted):
-        async with limits.reserve(WS_A, plans=1):
+        async with limits.reserve(WS_A, "generate_plan"):
             pass
 
     assert await WorkspaceAdmin(pool, TRIAL).set_limits(1, WS_A, 2, 12)
-    async with limits.reserve(WS_A, plans=1, articles=4):
-        pass
+    async with limits.reserve(WS_A, "generate_plan") as reservation:
+        reservation.require("generate_article", 4)
 
 
 async def test_two_simultaneous_approvals_with_room_for_one_set_enqueue_exactly_one(
@@ -171,12 +173,12 @@ async def test_while_a_job_is_unfinished_nothing_new_starts(
     for status in ("queued", "running", "done"):
         await pool.execute("UPDATE jobs SET status = $2 WHERE workspace_id = $1", WS_A, status)
         with pytest.raises(GenerationBusy):
-            async with limits.reserve(WS_A, plans=1) as reservation:
+            async with limits.reserve(WS_A, "generate_plan") as reservation:
                 await plan.request_new(WS_A, "2026-W42", conn=reservation.conn)
 
     assert await _jobs(pool, WS_A, "generate_plan") == []
     await _all_notified(pool, WS_A)
-    async with limits.reserve(WS_A, plans=1) as reservation:
+    async with limits.reserve(WS_A, "generate_plan") as reservation:
         await plan.request_new(WS_A, "2026-W42", conn=reservation.conn)
 
 
@@ -221,7 +223,7 @@ async def test_a_failed_job_charges_nothing_and_its_retry_charges_once(
     await article.mark_generation_failed(WS_A, job_id)
     assert (await limits.usage(WS_A)).articles_used == 0
 
-    async with limits.reserve(WS_A, articles=1) as reservation:
+    async with limits.reserve(WS_A, "regenerate_article") as reservation:
         assert await queue.retry(WS_A, JobId(job_id), conn=reservation.conn)
     assert await _write(article, WS_A, article_id, job_id) == "applied"
     # A redelivered notification of the same Job.
@@ -271,7 +273,7 @@ async def test_a_replacement_or_a_rerun_after_the_trial_plan_is_refused_with_the
 ) -> None:
     """Every `generate_plan` run is a Plan of the Лимит - «Перегенерировать» (`replace:`) and
     the `rerun:` chain of «🪄 Составить План» too: each may rebuild the Niche Map (#140)."""
-    async with limits.reserve(WS_A, plans=1) as reservation:
+    async with limits.reserve(WS_A, "generate_plan") as reservation:
         job_id = await plan.request_new(WS_A, "2026-W42", conn=reservation.conn)
     plan_id = await plan.add_topics(WS_A, "2026-W42", TOPICS, source_job_id=job_id)
     await _all_notified(pool, WS_A)
@@ -319,6 +321,61 @@ async def test_the_daily_ceiling_stops_new_jobs(pool: asyncpg.Pool, queue: JobQu
         pass
 
 
+async def test_jobs_free_of_the_limit_have_their_own_smaller_daily_cap(
+    pool: asyncpg.Pool, queue: JobQueue
+) -> None:
+    """A Тема regeneration or a cover costs no Лимит, so «🔄» in a loop is braked by
+    `FREE_JOBS_PER_DAY_LIMIT`, not only by the total cap."""
+    limits = Limits(pool, TrialLimits(jobs_per_day=30, free_jobs_per_day=2))
+    await queue.enqueue(WS_A, "regenerate_topic", {}, "topic:1")
+    await queue.enqueue(WS_A, "generate_cover", {}, "cover:1")
+    await _all_notified(pool, WS_A)
+
+    for job_type in ("regenerate_topic", "generate_cover", "analyze_style"):
+        with pytest.raises(DailyFreeJobLimitReached):
+            async with limits.reserve(WS_A, job_type):
+                pass
+    async with limits.reserve(WS_A, "regenerate_article"):  # a Статья is braked by the Лимит
+        pass
+
+
+async def test_plan_generations_have_their_own_daily_cap(
+    pool: asyncpg.Pool, plan: Plan, queue: JobQueue
+) -> None:
+    limits = Limits(pool, TrialLimits(plans=100, plan_jobs_per_day=2))
+    for week in ("2026-W40", "2026-W41"):
+        await plan.request_new(WS_A, week)
+    await _all_notified(pool, WS_A)
+
+    with pytest.raises(DailyPlanLimitReached):
+        async with limits.reserve(WS_A, "generate_plan"):
+            pass
+    async with limits.reserve(WS_A, "regenerate_topic"):
+        pass
+
+
+async def test_one_reservation_adds_up_what_it_asked_for(pool: asyncpg.Pool) -> None:
+    limits = Limits(pool, TrialLimits(articles=8, free_jobs_per_day=3))
+
+    async with limits.reserve(WS_A) as reservation:
+        reservation.require("generate_article", 6)
+        reservation.require("generate_cover", 3)
+        with pytest.raises(TrialLimitExhausted):
+            reservation.require("regenerate_article", 3)
+        with pytest.raises(DailyFreeJobLimitReached):
+            reservation.require("generate_cover")
+
+
+async def test_admin_limit_can_go_back_to_the_config(pool: asyncpg.Pool, limits: Limits) -> None:
+    admin = WorkspaceAdmin(pool, TRIAL)
+    assert await admin.set_limits(1, WS_A, 3, 30)
+
+    assert await admin.set_limits(1, WS_A, None, None)
+
+    usage = await limits.usage(WS_A)
+    assert (usage.plan_limit, usage.article_limit) == (TRIAL.plans, TRIAL.articles)
+
+
 async def test_charges_and_limits_of_a_dont_touch_b(
     pool: asyncpg.Pool, plan: Plan, limits: Limits
 ) -> None:
@@ -332,7 +389,7 @@ async def test_charges_and_limits_of_a_dont_touch_b(
     a, b = await limits.usage(WS_A), await limits.usage(WS_B)
     assert (a.plans_used, a.plan_limit, a.article_limit) == (1, 5, 50)
     assert (b.plans_used, b.plan_limit, b.article_limit) == (0, 1, 8)
-    async with limits.reserve(WS_B, plans=1):  # B's busy-check doesn't see A's Jobs either
+    async with limits.reserve(WS_B, "generate_plan"):  # B's busy-check doesn't see A's Jobs either
         pass
 
 

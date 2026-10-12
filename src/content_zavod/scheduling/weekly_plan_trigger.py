@@ -158,9 +158,23 @@ async def _first_skip(pool: asyncpg.Pool, workspace_id: WorkspaceId, week_label:
         "INSERT INTO workspace_settings (workspace_id, key, value) VALUES ($1, $2, '1') "
         "ON CONFLICT (workspace_id, key) DO NOTHING",
         workspace_id,
-        f"schedule_skipped:{week_label}",
+        _skip_key(week_label),
     )
     return status == "INSERT 0 1"
+
+
+async def _week_skipped(pool: asyncpg.Pool, workspace_id: WorkspaceId, week_label: str) -> bool:
+    """The week was already skipped for the Лимит: the tick leaves it alone - no lock every
+    minute. A Лимит raised mid-week applies from the next week (or «🪄 Составить План»)."""
+    return await pool.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM workspace_settings WHERE workspace_id = $1 AND key = $2)",
+        workspace_id,
+        _skip_key(week_label),
+    )
+
+
+def _skip_key(week_label: str) -> str:
+    return f"schedule_skipped:{week_label}"
 
 
 async def _request_week_plan(
@@ -171,8 +185,10 @@ async def _request_week_plan(
     week_label: str,
     on_limit_exhausted: OnLimitExhausted,
 ) -> None:
+    if await _week_skipped(pool, workspace_id, week_label):
+        return
     try:
-        async with limits.reserve(workspace_id, plans=1) as reservation:
+        async with limits.reserve(workspace_id, "generate_plan") as reservation:
             await plan.request_new(workspace_id, week_label, conn=reservation.conn)
     except TrialLimitExhausted as exc:
         if await _first_skip(pool, workspace_id, week_label):

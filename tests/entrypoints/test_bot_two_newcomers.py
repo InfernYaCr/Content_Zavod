@@ -102,10 +102,10 @@ class Telegram:
                     self.plan,
                     TelegramCommentPrompt(self.bot),
                     pending,
-                    regenerate=reserved(limits, self.plan.regenerate_item),
+                    regenerate=reserved(limits, self.plan.regenerate_item, "regenerate_topic"),
                 ),
                 CommentGatedRegeneration[ArticleId](
-                    reserved(limits, article.request_regeneration, articles=1),
+                    reserved(limits, article.request_regeneration, "regenerate_article"),
                     TelegramCommentPrompt(self.bot, action="regenerate_article"),
                     pending,
                     kind="article_comment",

@@ -166,7 +166,7 @@ async def test_every_start_of_the_weeks_plan_is_one_reserved_plan() -> None:
 
     await _run(plan, gateway, FakeQueue({1: "done", 2: "failed"}), limits=limits)
 
-    assert limits.reserved == [(1, 0)]
+    assert limits.reserved == [("generate_plan", 1)]
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,7 @@ class FakePlan:
     def __init__(self, items: list[PlanItemDetail], *, approved: bool = False) -> None:
         self._items = items
         self.approved = approved
+        self.covers_enabled = True
         self.cover_requests: list[PlanItemId] = []
 
     async def approve_all(self, workspace_id, plan_id: PlanId, *, conn=None) -> bool:
@@ -77,8 +78,11 @@ async def test_the_whole_set_of_statyi_is_checked_against_the_limit_at_once() ->
 
     await approve(plan, article, limits)
 
-    assert limits.reserved == [(0, 0)]
-    assert limits.required == [(0, len(ITEMS) * len(PLATFORMS))]
+    assert limits.reserved == [(None, 1)]
+    assert limits.required == [
+        ("generate_article", len(ITEMS) * len(PLATFORMS)),
+        ("generate_cover", len(ITEMS)),
+    ]
 
 
 async def test_an_already_approved_plan_starts_nothing_again() -> None:

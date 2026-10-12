@@ -1122,22 +1122,52 @@ BUSY = "⏳ Дождитесь окончания текущей генерац�
 async def test_approve_all_asks_the_limit_for_every_statya_at_once(f: Fixtures) -> None:
     await dispatch(f, SimpleAction("approve_all", "plan-1"))
 
-    assert f.limits.required == [(0, 2)]  # one Тема × two Площадки
+    # One Тема × two Площадки, and its cover.
+    assert f.limits.required == [("generate_article", 2), ("generate_cover", 1)]
 
 
 async def test_approve_all_short_of_the_limit_alerts_the_remainder_and_starts_nothing(
     f: Fixtures,
 ) -> None:
-    usage = Usage(plans_used=1, plan_limit=1, articles_used=7, article_limit=8)
-    f.limits.short = TrialLimitExhausted(usage, plans=0, articles=2, contact=None)
+    usage = Usage(plans_used=1, plan_limit=1, articles_used=4, article_limit=8)
+    f.limits.short = TrialLimitExhausted(usage, plans=0, articles=6, contact=None)
 
     answer = await dispatch(f, SimpleAction("approve_all", "plan-1"))
 
     [(text, alert)] = answer.calls
     assert alert is True
-    assert "хватит ещё на 1 Статья" in text and "запустит 2" in text and "🗑" in text
+    assert "хватит ещё на 4 Статьи" in text and "запустит 6" in text and "🗑" in text
     assert f.article.requested_generations == [] and f.plan.cover_requests == []
     assert f.bot.edited_messages == []
+
+
+async def test_approve_all_with_less_than_one_tema_left_says_the_limit_is_nearly_used(
+    f: Fixtures,
+) -> None:
+    """Removing Темы can't help when not even one Тема's Статьи fit."""
+    usage = Usage(plans_used=1, plan_limit=1, articles_used=7, article_limit=8)
+    f.limits.short = TrialLimitExhausted(usage, plans=0, articles=6, contact="@owner")
+
+    answer = await dispatch(f, SimpleAction("approve_all", "plan-1"))
+
+    [(text, _)] = answer.calls
+    assert "почти исчерпан" in text and "1 Статья" in text and "@owner" in text
+    assert "🗑" not in text
+
+
+async def test_hub_retry_short_of_the_limit_says_so_without_asking_to_remove_temy(
+    f: Fixtures,
+) -> None:
+    usage = Usage(plans_used=1, plan_limit=1, articles_used=7, article_limit=8)
+    f.limits.short = TrialLimitExhausted(usage, plans=0, articles=3, contact="@owner")
+
+    answer = await dispatch(f, SimpleAction("hub_retry", "plan-1"))
+
+    [(text, alert)] = answer.calls
+    assert alert is True
+    assert "хватит ещё на 1 Статью, а нужно 3" in text and "@owner" in text
+    assert "🗑" not in text and "утвердите" not in text
+    assert f.queue.retried == []
 
 
 async def test_approve_all_of_an_approved_plan_just_redraws_the_hub(f: Fixtures) -> None:
@@ -1161,7 +1191,7 @@ async def test_refine_while_a_generation_runs_is_refused_before_asking_for_a_com
 
     assert answer.calls == [(BUSY, True)]
     assert f.article_prompt.prompted == []
-    assert f.limits.prechecked == [(0, 1)]
+    assert f.limits.prechecked == ["regenerate_article"]
 
 
 async def test_regenerate_topic_while_a_generation_runs_is_refused(f: Fixtures) -> None:
@@ -1178,7 +1208,7 @@ async def test_retry_of_a_statya_reserves_one_statya(f: Fixtures) -> None:
 
     await dispatch(f, SimpleAction("retry", "7"))
 
-    assert f.limits.reserved == [(0, 1)]
+    assert f.limits.reserved == [("regenerate_article", 1)]
 
 
 async def test_retry_refused_requeues_nothing(f: Fixtures) -> None:
@@ -1194,7 +1224,7 @@ async def test_retry_refused_requeues_nothing(f: Fixtures) -> None:
 async def test_hub_retry_reserves_one_statya_per_failed_statya(f: Fixtures) -> None:
     await dispatch(f, SimpleAction("hub_retry", "plan-1"))
 
-    assert f.limits.reserved == [(0, 1)]
+    assert f.limits.required == [("generate_cover", 1), ("generate_article", 1)]
 
 
 async def test_a_cover_refused_requests_nothing(f: Fixtures) -> None:

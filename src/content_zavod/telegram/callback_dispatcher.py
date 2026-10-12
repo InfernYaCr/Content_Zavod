@@ -33,7 +33,7 @@ from aiogram.types import CallbackQuery
 from ..domain import PLATFORMS, Article, DomainError, HubTopic, Plan
 from ..job_queue import JobId, JobQueue, JobQueueError
 from ..telegraph import page_url
-from ..workspaces import LimitRefused, Limits, Workspace, WorkspaceId
+from ..workspaces import LimitRefused, Limits, TrialLimitExhausted, Workspace, WorkspaceId
 from .article_card import ArticlePagePublisher, send_article_card
 from .callback_codec import (
     CallbackPayload,
@@ -67,6 +67,7 @@ from .texts import (
     HUB_ALERT_NOTHING_TO_RETRY,
     HUB_ALERT_RETRYING,
     STALE_BUTTON,
+    approve_shortfall_text,
     error_alert_text,
 )
 from .types import ArticleId, PlanId, PlanItemId
@@ -108,7 +109,9 @@ async def approve_and_generate(
         if not await plan.approve_all(workspace_id, plan_id, conn=conn):
             return
         items = await plan.approved_items(workspace_id, plan_id, conn=conn)
-        reservation.require(articles=len(items) * len(PLATFORMS))
+        reservation.require("generate_article", len(items) * len(PLATFORMS))
+        if plan.covers_enabled:
+            reservation.require("generate_cover", len(items))
         for item in items:
             await plan.request_cover(workspace_id, item.id, conn=conn)
             for platform in PLATFORMS:
@@ -122,16 +125,6 @@ async def approve_and_generate(
                     platform,
                     conn=conn,
                 )
-
-
-def _limit_cost(job_type: str) -> dict[str, int]:
-    """What re-running a Job of this type may cost of the Лимит (ADR-0015): a Plan, a Статья, or
-    nothing (a cover, a Тема)."""
-    if job_type == "generate_plan":
-        return {"plans": 1}
-    if job_type in ("generate_article", "regenerate_article"):
-        return {"articles": 1}
-    return {}
 
 
 def unpack_callback_query(callback: CallbackQuery) -> CallbackInput | None:
@@ -369,14 +362,14 @@ class CallbackDispatcher:
                 if not self._plan.covers_enabled and job.job_type == "generate_cover":
                     await answer(COVERS_OFF)
                     return
-                async with self._limits.reserve(ws, **_limit_cost(job.job_type)) as reservation:
+                async with self._limits.reserve(ws, job.job_type) as reservation:
                     await self._queue.retry(ws, job.job_id, conn=reservation.conn)
                 await answer()
             case SimpleAction(action="regenerate_article", id_=id_):
                 # Looked up first: the comment prompt must not open for a Статья this
                 # Пространство doesn't have (ADR-0015).
                 await self._article.get_summary(ws, ArticleId(id_))
-                await self._limits.precheck(ws, articles=1)
+                await self._limits.precheck(ws, "regenerate_article")
                 will_enqueue = await self._article_regeneration.has_matching_pending(
                     ws, chat_id, user_id, ArticleId(id_)
                 )
@@ -402,7 +395,7 @@ class CallbackDispatcher:
                     await answer(COVERS_OFF)
                     return
                 # By hand, from a Статья card: the result comes back here as a photo (#91).
-                async with self._limits.reserve(ws) as reservation:
+                async with self._limits.reserve(ws, "generate_cover") as reservation:
                     await self._plan.request_cover(
                         ws, PlanItemId(id_), manual=True, conn=reservation.conn
                     )
@@ -416,7 +409,7 @@ class CallbackDispatcher:
                 # Looked up first: the comment prompt must not open for a Тема this
                 # Пространство doesn't have (ADR-0015).
                 await self._plan.get_plan_id_for_item(ws, plan_item_id)
-                await self._limits.precheck(ws)
+                await self._limits.precheck(ws, "regenerate_topic")
                 will_enqueue = await self._plan_review.will_enqueue_regeneration(
                     ws, chat_id, user_id, plan_item_id
                 )
@@ -435,9 +428,15 @@ class CallbackDispatcher:
             case SimpleAction(action="approve_all", id_=id_):
                 summary = await self._plan.get_summary(ws, PlanId(id_))
                 if summary.status != "approved":  # a repeated press just redraws the Хаб
-                    await approve_and_generate(
-                        self._limits, self._plan, self._article, ws, PlanId(id_)
-                    )
+                    try:
+                        await approve_and_generate(
+                            self._limits, self._plan, self._article, ws, PlanId(id_)
+                        )
+                    except TrialLimitExhausted as exc:
+                        # Only here may the answer be «remove Темы»: it's their Статьи.
+                        text = approve_shortfall_text(exc, per_tema=len(PLATFORMS))
+                        await answer(text, show_alert=True)
+                        return
                 await answer()
                 await self._plan_review.cancel_comment(ws, chat_id, user_id)
                 # #81/#91: from now on the Plan message is the Хаб.
@@ -516,7 +515,11 @@ class CallbackDispatcher:
         ]
         retried = 0
         if covers or jobs:
-            async with self._limits.reserve(workspace_id, articles=len(jobs)) as reservation:
+            async with self._limits.reserve(workspace_id) as reservation:
+                if covers:
+                    reservation.require("generate_cover", len(covers))
+                if jobs:
+                    reservation.require("generate_article", len(jobs))
                 for plan_item_id in covers:
                     await self._plan.request_cover(
                         workspace_id, plan_item_id, conn=reservation.conn

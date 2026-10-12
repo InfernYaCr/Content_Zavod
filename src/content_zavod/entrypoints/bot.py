@@ -295,14 +295,14 @@ class _ConnRegenerateOp[Id](Protocol):
 
 
 def reserved[Id](
-    limits: Limits, regenerate: _ConnRegenerateOp[Id], *, articles: int = 0
+    limits: Limits, regenerate: _ConnRegenerateOp[Id], job_type: str
 ) -> Callable[[WorkspaceId, Id, str | None], Awaitable[None]]:
     """A comment-gated regeneration (`Plan.regenerate_item`, `Article.request_regeneration`)
     enqueued in a `Limits.reserve` transaction (ADR-0015): «✏️ Доработать» costs a Статья, a
-    Тема costs nothing but still waits for the current generation."""
+    Тема costs nothing of the Лимит but counts toward the daily cap of such Jobs."""
 
     async def run(workspace_id: WorkspaceId, id_: Id, comment: str | None) -> None:
-        async with limits.reserve(workspace_id, articles=articles) as reservation:
+        async with limits.reserve(workspace_id, job_type) as reservation:
             await regenerate(workspace_id, id_, comment, conn=reservation.conn)
 
     return run
@@ -863,10 +863,10 @@ async def main(settings: Settings | None = None) -> None:
             plan,
             TelegramCommentPrompt(bot_client),
             pending_inputs,
-            regenerate=reserved(limits, plan.regenerate_item),
+            regenerate=reserved(limits, plan.regenerate_item, "regenerate_topic"),
         )
         article_regeneration = CommentGatedRegeneration[ArticleId](
-            reserved(limits, article.request_regeneration, articles=1),
+            reserved(limits, article.request_regeneration, "regenerate_article"),
             TelegramCommentPrompt(bot_client, action="regenerate_article"),
             pending_inputs,
             kind="article_comment",

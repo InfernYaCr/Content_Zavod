@@ -28,6 +28,8 @@ from content_zavod.telegram.onboarding import Onboarding
 from content_zavod.telegram.settings_screen import SETTING_INPUT_KIND, SettingsScreen
 from content_zavod.telegram.start_guard import START_INTERVAL_SECONDS, StartGuard
 from content_zavod.telegram.texts import (
+    ADMIN_HINT,
+    ADMIN_LIMIT_DEFAULT,
     ADMIN_LIMIT_SET,
     GROUP_START_TEXT,
     NO_WORKSPACE_TEXT,
@@ -121,7 +123,7 @@ class FakeAdmin:
         return [workspace], 1
 
     async def set_limits(
-        self, admin_telegram_id: int, workspace_id: int, plans: int, articles: int
+        self, admin_telegram_id: int, workspace_id: int, plans: int | None, articles: int | None
     ) -> bool:
         self.limits_set.append((admin_telegram_id, workspace_id, plans, articles))
         return True
@@ -309,6 +311,18 @@ async def test_admin_from_a_global_admin_is_answered(bot: Bot_) -> None:
     assert "30 дней: расхода нет" in overview
     assert limit_set == ADMIN_LIMIT_SET.format(id=12, plans=2, articles=12)
     assert bot.admin.limits_set == [(ADMIN, 12, 2, 12)]
+
+
+async def test_admin_limit_default_and_out_of_range_numbers(bot: Bot_) -> None:
+    await bot.message("/start", user=ADMIN)
+    bot.bot.sent.clear()
+
+    await bot.message("/admin limit 12 default", user=ADMIN)
+    for bad in ("12 1000001 1", "9223372036854775808 1 1", "12 1", "12 x 1"):
+        await bot.message(f"/admin limit {bad}", user=ADMIN)
+
+    assert bot.texts(ADMIN) == [ADMIN_LIMIT_DEFAULT.format(id=12)] + [ADMIN_HINT] * 4
+    assert bot.admin.limits_set == [(ADMIN, 12, None, None)]
 
 
 async def test_start_creates_one_workspace_per_person_and_opens_the_wizard(bot: Bot_) -> None:

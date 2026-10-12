@@ -73,10 +73,15 @@ class WorkspaceAdmin:
         ], total
 
     async def set_limits(
-        self, admin_telegram_id: int, workspace_id: WorkspaceId, plans: int, articles: int
+        self,
+        admin_telegram_id: int,
+        workspace_id: WorkspaceId,
+        plans: int | None,
+        articles: int | None,
     ) -> bool:
-        """`/admin limit`: absolute numbers for one Workspace (`0 0` stops it). `False` - no
-        such Workspace. Logged with who did it (a real audit log is C5)."""
+        """`/admin limit`: absolute numbers for one Workspace (`0 0` stops it; `None` - back to
+        the config's). `False` - no such Workspace. Logged with who did it (a real audit log is
+        C5)."""
         status = await self._pool.execute(
             "UPDATE workspaces SET plan_limit = $2, article_limit = $3, updated_at = now() "
             "WHERE id = $1",
