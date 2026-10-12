@@ -20,9 +20,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from .persona import PERSONA_MAX_LENGTH
+
 STYLE_PROFILE_KEY = "style_profile"
 
-STYLE_PROFILE_MAX_LENGTH = 1500
+STYLE_PROFILE_MAX_LENGTH = PERSONA_MAX_LENGTH
 """The rendered traits (`style_profile_text`), the same cap as a typed Персона."""
 MAX_VOICE_EXAMPLES = 3
 VOICE_EXAMPLE_MAX_LENGTH = 400
