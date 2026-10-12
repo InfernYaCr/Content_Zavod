@@ -24,8 +24,10 @@ from ..job_queue import ClaimedJob, JobHandler, JobPartialFailure, JobQueue, run
 from ..migrations import run_migrations
 from ..owner_settings import WorkspaceSettingsStore
 from ..pipelines import (
+    ANALYZE_STYLE_JOB,
     HttpxPageFetcher,
     TopicResearcher,
+    make_analyze_style_handler,
     make_generate_article_handler,
     make_generate_cover_handler,
     make_generate_plan_handler,
@@ -144,6 +146,8 @@ async def main(settings: Settings | None = None) -> None:
             "regenerate_topic": make_regenerate_topic_handler(
                 plan, text_generator, owner_settings_service
             ),
+            # The Профиль стиля from the Владелец's Образцы (#134).
+            ANALYZE_STYLE_JOB: make_analyze_style_handler(text_generator, page_fetcher),
         }
 
         stop = asyncio.Event()

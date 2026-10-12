@@ -20,6 +20,8 @@ accept, or `InvalidSettingValue("project")` for empty input; a lone
 `set_audience` (#100) stores the reader portrait as stripped free text, raising
 `InvalidSettingValue("audience")` for empty input and `"audience_too_long"` past
 `AUDIENCE_MAX_LENGTH`; a lone `CLEAR_AUDIENCE` (`-`) removes it.
+`set_style_profile` (#134) stores the Профиль стиля the Владелец confirmed; while one is stored
+it is the Стиль автора, and `set_persona` clears it - the last choice wins.
 
 Направления (#128) have no screen any more: the bot is to find its own queries from the Ниша
 (the Niche Map). Until that pipeline lands, a stored `directions` value is still read and
@@ -50,6 +52,12 @@ from .project import (
     parse_stored_project,
     serialize_project,
 )
+from .style_profile import (
+    STYLE_PROFILE_KEY,
+    StyleProfile,
+    parse_stored_style_profile,
+    serialize_style_profile,
+)
 from .values import OwnerSettings
 
 NICHE_KEY = "niche"
@@ -64,6 +72,7 @@ SETTING_STORE_KEYS: tuple[str, ...] = (
     AUDIENCE_KEY,
     PERSONA_KEY,
     PROJECT_KEY,
+    STYLE_PROFILE_KEY,
 )
 
 
@@ -77,6 +86,7 @@ async def _read_settings(get: Callable[[str], Awaitable[str | None]]) -> OwnerSe
     persona_raw = await get(PERSONA_KEY)
     project_raw = await get(PROJECT_KEY)
     audience_raw = await get(AUDIENCE_KEY)
+    style_profile_raw = await get(STYLE_PROFILE_KEY)
     niche = niche_raw if niche_raw else DEFAULT_NICHE
     directions = parse_directions(directions_raw) if directions_raw else None
     persona, custom_persona = resolve_persona(persona_raw)
@@ -88,6 +98,7 @@ async def _read_settings(get: Callable[[str], Awaitable[str | None]]) -> OwnerSe
         project=parse_stored_project(project_raw),
         audience=parse_stored_audience(audience_raw),
         niche_saved=bool(niche_raw),
+        style_profile=parse_stored_style_profile(style_profile_raw),
     )
 
 
@@ -126,6 +137,7 @@ class SettingsService:
             raise InvalidSettingValue("persona")
         if normalized.startswith(PERSONA_VALUE_PREFIX):
             await self._store.set(workspace_id, PERSONA_KEY, normalized)
+            await self._clear_style_profile(workspace_id)
             return normalized
         try:
             custom_persona = parse_custom_persona(normalized)
@@ -133,7 +145,17 @@ class SettingsService:
             raise InvalidSettingValue("persona") from exc
         serialized = serialize_custom_persona(custom_persona)
         await self._store.set(workspace_id, PERSONA_KEY, serialized)
+        await self._clear_style_profile(workspace_id)
         return serialized
+
+    async def set_style_profile(self, workspace_id: WorkspaceId, profile: StyleProfile) -> None:
+        """The Профиль стиля the Владелец confirmed (#134): the Стиль автора from now on."""
+        await self._store.set(workspace_id, STYLE_PROFILE_KEY, serialize_style_profile(profile))
+
+    async def _clear_style_profile(self, workspace_id: WorkspaceId) -> None:
+        """A Пресет or «Свой стиль» picked after a Профиль стиля is the Стиль автора again."""
+        if await self._store.get(workspace_id, STYLE_PROFILE_KEY):
+            await self._store.set(workspace_id, STYLE_PROFILE_KEY, "")
 
     async def set_project(self, workspace_id: WorkspaceId, value: str) -> Project | None:
         if value.strip() == CLEAR_PROJECT:

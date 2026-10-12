@@ -33,6 +33,14 @@ from .service import (
     SettingsService,
     parse_directions,
 )
+from .style_profile import (
+    STYLE_PROFILE_KEY,
+    STYLE_PROFILE_MAX_LENGTH,
+    StyleProfile,
+    style_profile_from_dict,
+    style_profile_text,
+    style_profile_to_dict,
+)
 from .values import OwnerSettings
 
 __all__ = [
@@ -51,6 +59,8 @@ __all__ = [
     "PERSONA_VALUE_PREFIX",
     "PROJECT_KEY",
     "SETTING_STORE_KEYS",
+    "STYLE_PROFILE_KEY",
+    "STYLE_PROFILE_MAX_LENGTH",
     "CustomPersona",
     "OnboardingState",
     "OwnerSettings",
@@ -58,6 +68,7 @@ __all__ = [
     "Project",
     "SettingsReader",
     "SettingsService",
+    "StyleProfile",
     "audience_detail_text",
     "audience_screen_text",
     "custom_persona_label",
@@ -71,4 +82,7 @@ __all__ = [
     "project_detail_text",
     "resolve_persona",
     "serialize_custom_persona",
+    "style_profile_from_dict",
+    "style_profile_text",
+    "style_profile_to_dict",
 ]

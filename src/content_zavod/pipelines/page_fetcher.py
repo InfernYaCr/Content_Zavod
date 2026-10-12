@@ -126,6 +126,23 @@ class HttpxPageFetcher:
         self._robots: dict[str, RobotFileParser] = {}
 
     async def fetch(self, url: str) -> FetchedPage | None:
+        found = await self.fetch_html(url)
+        if found is None:
+            return None
+        final_url, html = found
+        parsed = parse_html(html)
+        return FetchedPage(
+            url=final_url,
+            title=parsed.title,
+            text=parsed.text,
+            publisher=parsed.publisher or (urlsplit(final_url).hostname or ""),
+            published_at=parsed.published_at,
+        )
+
+    async def fetch_html(self, url: str) -> tuple[str, str] | None:
+        """The page's final URL (after redirects) and raw HTML, for a caller that reads more
+        than `parse_html` keeps - the Образцы of a Профиль стиля (#134). Same policy as
+        `fetch`; `None` for anything it would skip."""
         try:
             return await asyncio.wait_for(self._fetch(url), timeout=self._total_timeout)
         except TimeoutError:
@@ -138,7 +155,7 @@ class HttpxPageFetcher:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def _fetch(self, url: str) -> FetchedPage | None:
+    async def _fetch(self, url: str) -> tuple[str, str] | None:
         current = url
         for _ in range(_MAX_REDIRECTS + 1):
             if not await is_public_http_url(current, self._resolve):
@@ -160,15 +177,7 @@ class HttpxPageFetcher:
                 if "html" not in content_type.lower():
                     return None
                 raw = await _read_capped(response, self._max_bytes)
-                html = raw.decode(_charset(response, raw), errors="replace")
-            parsed = parse_html(html)
-            return FetchedPage(
-                url=current,
-                title=parsed.title,
-                text=parsed.text,
-                publisher=parsed.publisher or (urlsplit(current).hostname or ""),
-                published_at=parsed.published_at,
-            )
+                return current, raw.decode(_charset(response, raw), errors="replace")
         return None
 
     async def _robots_allow(self, url: str) -> bool:
