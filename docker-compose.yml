@@ -47,6 +47,8 @@ services:
   worker:
     <<: *app
     command: ["python", "worker_main.py"]
+    # Let an in-flight generation finish instead of being killed after 10 s and retried 10 min later.
+    stop_grace_period: 2m
 
 volumes:
   pgdata:
