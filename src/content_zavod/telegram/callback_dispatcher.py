@@ -52,9 +52,9 @@ from .history_command import (
 )
 from .input_prompt import InputPrompt
 from .main_menu import MainMenu
-from .onboarding import ONBOARDING_INPUT_KIND, Onboarding
+from .onboarding import ONBOARDING_INPUT_KIND, Onboarding, StepRef
 from .plan_review import PlanReview
-from .settings_screen import BACK_TO_MENU, SettingsScreen
+from .settings_screen import BACK_TO_MENU, STYLE_FROM_WIZARD, SettingsScreen
 from .style_samples import STYLE_SAMPLES_KIND, StyleSamples
 from .texts import (
     COVER_REQUESTED,
@@ -266,6 +266,16 @@ class CallbackDispatcher:
                 await self._settings_screen.set_timezone(
                     workspace, chat_id, message_id, index, back or BACK_TO_MENU
                 )
+            case SimpleAction(action="cancel_input", id_=id_) if (
+                id_ == STYLE_SAMPLES_KIND and self._style_samples is not None
+            ):
+                await answer()
+                origin = await self._style_samples.cancel(workspace, chat_id, user_id, message_id)
+                if origin == STYLE_FROM_WIZARD:
+                    # Back to the wizard's Стиль автора step, never an empty chat (#96).
+                    await self._back_to_wizard_persona(workspace, chat_id, user_id, message_id)
+                else:
+                    await self._bot_client.delete_message(chat_id, message_id)
             case SimpleAction(action="cancel_input", id_=id_):
                 await answer()
                 # Drops only the presser's own wait asked by this very message. With none
@@ -277,8 +287,6 @@ class CallbackDispatcher:
                     await self._bot_client.delete_message(chat_id, message_id)
                 if cancelled and id_ == ONBOARDING_INPUT_KIND:
                     await self._onboarding.cancelled(chat_id)  # say how to come back (#96)
-                if id_ == STYLE_SAMPLES_KIND and self._style_samples is not None:
-                    await self._style_samples.drop(workspace, chat_id, user_id)
             case SimpleAction(
                 action="style_start" | "style_done" | "style_presets" | "style_ok" | "style_fix"
             ) if self._style_samples is None:
@@ -289,11 +297,16 @@ class CallbackDispatcher:
             case SimpleAction(action="style_done"):
                 alert = await self._style().done(workspace, chat_id, user_id, message_id)
                 await answer(alert, show_alert=True if alert else None)
-            case SimpleAction(action="style_presets"):
+            case SimpleAction(action="style_presets", id_=id_):
                 await answer()
-                # Collecting stops; the message itself becomes the Стиль автора chooser.
+                # Collecting stops; back to the Стиль автора chooser it was asked from.
                 await self._style().drop(workspace, chat_id, user_id)
-                await self._settings_screen.edit(workspace, chat_id, user_id, message_id, "persona")
+                if id_ == STYLE_FROM_WIZARD:
+                    await self._back_to_wizard_persona(workspace, chat_id, user_id, message_id)
+                else:
+                    await self._settings_screen.edit(
+                        workspace, chat_id, user_id, message_id, "persona"
+                    )
             case SimpleAction(action="style_ok", id_=id_):
                 # Looked up in this Пространство first: a stale or foreign Job id saves nothing.
                 if not await self._style().confirm(workspace, chat_id, message_id, id_):
@@ -301,7 +314,7 @@ class CallbackDispatcher:
                     return
                 await answer()
             case SimpleAction(action="style_fix", id_=id_):
-                if not await self._style().ask_fix(workspace, chat_id, user_id, id_):
+                if not await self._style().ask_fix(workspace, chat_id, user_id, message_id, id_):
                     await answer(STALE_BUTTON, show_alert=True)
                     return
                 await answer()
@@ -491,6 +504,14 @@ class CallbackDispatcher:
                 )
             case SimpleAction(action=unreachable):
                 assert_never(unreachable)
+
+    async def _back_to_wizard_persona(
+        self, workspace: Workspace, chat_id: int, user_id: int, message_id: int
+    ) -> None:
+        """The wizard's Стиль автора step, in place of `message_id`."""
+        await self._onboarding.go(
+            workspace, chat_id, user_id, message_id, StepRef("persona").encode()
+        )
 
     def _style(self) -> StyleSamples:
         assert self._style_samples is not None  # the guarded `case` above answers otherwise

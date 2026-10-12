@@ -117,6 +117,7 @@ class RecordingBot:
         self.photos: list[tuple[int, object, str | None, object]] = []
         self.edited_media: list[tuple[int, int, object, str | None, object]] = []
         self.pinned: list[tuple[int, int]] = []
+        self.markups: list[tuple[int, int, object]] = []
         self.fail_edits = False
         self.fail_pins = False
         self._next_id = 100
@@ -155,7 +156,7 @@ class RecordingBot:
         self.edited.append((chat_id, message_id, text, reply_markup))
 
     async def edit_message_reply_markup(self, chat_id, message_id, reply_markup=None) -> None:
-        pass
+        self.markups.append((chat_id, message_id, reply_markup))
 
     async def delete_message(self, chat_id, message_id) -> None:
         self.deleted.append((chat_id, message_id))

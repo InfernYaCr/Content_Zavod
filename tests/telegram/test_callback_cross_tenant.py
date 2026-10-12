@@ -99,7 +99,10 @@ async def _content(pool: asyncpg.Pool, plan: Plan, article: Article, ws: Workspa
     )
     # A finished Профиль стиля analysis (#134), its profile waiting for «✅ Да, это я».
     style_job_id = await queue_.enqueue(ws, "analyze_style", {"message_id": 1}, "style")
-    output = {"status": "ok", "profile": {"summary": "Вы пишете коротко."}}
+    output = {
+        "status": "ok",
+        "profile": {"traits": {"tone": "сухой"}, "summary": "Вы пишете коротко."},
+    }
     await pool.execute(
         "UPDATE jobs SET status = 'done', output = $2::jsonb, notified_at = now() WHERE id = $1",
         style_job_id,

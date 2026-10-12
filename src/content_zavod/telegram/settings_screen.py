@@ -86,6 +86,7 @@ from .texts import (
     SETTINGS_TITLE,
     SETTINGS_TOO_LONG,
     STYLE_ARTICLES_BUTTON,
+    STYLE_CORRECTIONS_LINE,
     STYLE_FROM_SAMPLES,
     STYLE_POSTS_BUTTON,
     TIMEZONES,
@@ -141,14 +142,17 @@ class SettingField:
 
 STYLE_ARTICLES = "a"
 STYLE_POSTS = "p"
-"""`style_start` ids: Образцы are articles, or a channel's posts."""
+"""`style_start` ids: Образцы are articles, or a channel's posts …"""
+STYLE_FROM_SETTINGS = "s"
+STYLE_FROM_WIZARD = "o"
+"""… `:` the screen they were asked from, where «Отмена»/«🎨 Готовый стиль» return."""
 
 
-def build_style_start_rows() -> list[list[InlineKeyboardButton]]:
+def build_style_start_rows(origin: str = STYLE_FROM_SETTINGS) -> list[list[InlineKeyboardButton]]:
     """The chooser's «по вашим текстам» buttons, shared with the onboarding wizard."""
     return [
-        [_button(STYLE_ARTICLES_BUTTON, "style_start", STYLE_ARTICLES)],
-        [_button(STYLE_POSTS_BUTTON, "style_start", STYLE_POSTS)],
+        [_button(STYLE_ARTICLES_BUTTON, "style_start", f"{STYLE_ARTICLES}:{origin}")],
+        [_button(STYLE_POSTS_BUTTON, "style_start", f"{STYLE_POSTS}:{origin}")],
     ]
 
 
@@ -161,7 +165,10 @@ def _persona_show(current: OwnerSettings) -> str:
 def _persona_detail(current: OwnerSettings) -> str:
     profile = current.style_profile
     if profile is not None:
-        return f"{STYLE_FROM_SAMPLES}\n{profile.summary or style_profile_text(profile)}"
+        text = f"{STYLE_FROM_SAMPLES}\n{profile.summary or style_profile_text(profile)}"
+        if profile.corrections:
+            text += "\n" + STYLE_CORRECTIONS_LINE.format(corrections=profile.corrections)
+        return text
     return persona_detail_text(current.persona, current.custom_persona)
 
 
@@ -344,7 +351,9 @@ def render_chooser_text(setting: SettingField, current: OwnerSettings) -> str:
 
 def build_chooser_keyboard(setting: SettingField, current: OwnerSettings) -> InlineKeyboardMarkup:
     shown = setting.show(current)
-    rows = [
+    # The Владелец's own texts first: the easiest way, if they have any (#134).
+    rows = build_style_start_rows() if setting.from_samples else []
+    rows += [
         [
             _button(
                 f"✅ {title}" if title == shown else title,
@@ -354,8 +363,6 @@ def build_chooser_keyboard(setting: SettingField, current: OwnerSettings) -> Inl
         ]
         for index, (title, _value) in enumerate(setting.presets)
     ]
-    if setting.from_samples:
-        rows += build_style_start_rows()
     rows.append([_button(setting.custom_button, "ask_setting", setting.key)])
     rows.append([_button(BACK_BUTTON, "settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

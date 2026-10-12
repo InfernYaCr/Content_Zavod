@@ -537,3 +537,13 @@ STYLE_FIX_QUESTION = (
 STYLE_FIX_INVALID = "Напишите поправку текстом, не длиннее {limit} знаков."
 STYLE_CORRECTIONS_LINE = "Ваши поправки: {corrections}"
 STYLE_CONTINUE_BUTTON = "▶ Продолжить настройку"
+STYLE_WARN_TELEGRAM_LINK = (
+    "⚠️ Это ссылка на Telegram. Посты канала присылайте через «📨 Посты канала» — там же "
+    "подтверждается, что канал ваш."
+)
+STYLE_WARN_FILE_SIZE_UNKNOWN = "⚠️ Не вижу размер файла — пришлите статью текстом."
+STYLE_RESTARTED = (
+    "⚠️ Я перезапускался и потерял то, что вы прислали раньше, — пришлите тексты ещё раз."
+)
+STYLE_DONE_WORDS = frozenset({"готово", "всё", "все", "готов", "done"})
+"""Typed instead of pressing «✅ Готово» - taken as the button, not as an Образец."""

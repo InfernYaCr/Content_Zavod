@@ -1163,3 +1163,30 @@ async def test_style_buttons_of_a_build_without_the_flow_are_stale(f: Fixtures) 
     answer = await dispatch(f, SimpleAction("style_ok", "1"))
 
     assert answer.calls == [("Кнопка устарела.", True)]
+
+
+async def _style_question_from_the_wizard(f: Fixtures) -> int:
+    """The wizard's Стиль автора step, then «📄 Пришлю статью» on it."""
+    await dispatch(f, SimpleAction("onboarding_step", "persona"))
+    await dispatch(f, SimpleAction("style_start", "a:o"), message_id=len(f.bot.sent_messages))
+    return len(f.bot.sent_messages)
+
+
+async def test_cancel_of_samples_asked_from_the_wizard_returns_to_its_step(f: Fixtures) -> None:
+    question = await _style_question_from_the_wizard(f)
+
+    await dispatch(f, SimpleAction("cancel_input", STYLE_SAMPLES_KIND), message_id=question)
+
+    assert (USER, question) in f.bot.deleted_messages
+    assert f.bot.sent_messages[-1][1].startswith("Шаг 3 из 4 · Стиль автора")
+    assert f.pending_inputs.rows[(USER, USER)].kind == ONBOARDING_INPUT_KIND
+
+
+async def test_presets_from_the_wizard_return_to_its_step_not_to_settings(f: Fixtures) -> None:
+    question = await _style_question_from_the_wizard(f)
+
+    await dispatch(f, SimpleAction("style_presets", "o"), message_id=question)
+
+    assert f.bot.sent_messages[-1][1].startswith("Шаг 3 из 4 · Стиль автора")
+    assert f.pending_inputs.rows[(USER, USER)].kind == ONBOARDING_INPUT_KIND
+    assert not any(text.startswith("Стиль автора — ") for _, _, text, _ in f.bot.edited_messages)

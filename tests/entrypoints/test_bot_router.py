@@ -511,7 +511,9 @@ async def test_texts_and_files_reach_the_style_samples_of_the_senders_workspace(
 
     await bot.message("Первая часть статьи.", user=USER)
     await bot.message(
-        None, user=USER, document=Document(file_id="f1", file_unique_id="u1", file_name="a.txt")
+        None,
+        user=USER,
+        document=Document(file_id="f1", file_unique_id="u1", file_name="a.txt", file_size=40),
     )
 
     assert "Получено: 39 знаков текста" in bot.bot.edited[-1][2]
