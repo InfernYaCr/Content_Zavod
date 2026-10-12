@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from content_zavod.job_queue import JobResult, JobSnapshot
 from content_zavod.telegram.gateway import SentPhoto
 from content_zavod.telegram.pending_inputs import PendingInput
+from content_zavod.workspaces import LimitRefused, Usage
 from tests.tenancy import WS_A
 
 
@@ -156,3 +159,48 @@ def button_data(markup) -> list[list[str | None]]:
     return [
         [button.callback_data or button.url for button in row] for row in markup.inline_keyboard
     ]
+
+
+class FakeReservation:
+    conn = None
+
+    def __init__(self, limits: FakeLimits) -> None:
+        self._limits = limits
+
+    def require(self, *, plans: int = 0, articles: int = 0) -> None:
+        self._limits.required.append((plans, articles))
+        if self._limits.short is not None:
+            raise self._limits.short
+
+
+class FakeLimits:
+    """`Limits` in memory: lets everything through, or raises `refusal` from every check
+    (`short` - only from `Reservation.require`). `reserved`/`required`/`prechecked` - the
+    (plans, articles) each check asked for."""
+
+    def __init__(self, usage: Usage | None = None) -> None:
+        self.usage_value = usage or Usage(
+            plans_used=0, plan_limit=1, articles_used=0, article_limit=8
+        )
+        self.refusal: LimitRefused | None = None
+        self.short: LimitRefused | None = None
+        self.reserved: list[tuple[int, int]] = []
+        self.required: list[tuple[int, int]] = []
+        self.prechecked: list[tuple[int, int]] = []
+
+    async def usage(self, workspace_id: int) -> Usage:
+        return self.usage_value
+
+    async def precheck(self, workspace_id: int, *, plans: int = 0, articles: int = 0) -> None:
+        self.prechecked.append((plans, articles))
+        if self.refusal is not None:
+            raise self.refusal
+
+    @asynccontextmanager
+    async def reserve(
+        self, workspace_id: int, *, plans: int = 0, articles: int = 0
+    ) -> AsyncIterator[FakeReservation]:
+        if self.refusal is not None:
+            raise self.refusal
+        self.reserved.append((plans, articles))
+        yield FakeReservation(self)

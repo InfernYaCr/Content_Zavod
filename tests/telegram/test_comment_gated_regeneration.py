@@ -3,6 +3,7 @@ import pytest
 from content_zavod.telegram import CommentGatedRegeneration
 from content_zavod.telegram.comment_gated_regeneration import COMMENT_MAX_LENGTH
 from content_zavod.telegram.pending_inputs import PendingInput
+from content_zavod.workspaces import GenerationBusy
 from tests.tenancy import WS_A, WS_B
 
 from .fakes import FakePendingInputs
@@ -25,6 +26,7 @@ class FakePrompt:
         self.generating: list[tuple[int, int]] = []
         self.withdrawn: list[tuple[int, int]] = []
         self.rejected: list[int] = []
+        self.refused: list[tuple[int, str]] = []
         self._next_message_id = 100
 
     async def prompt_for_comment(self, chat_id: int, id_: str) -> int:
@@ -40,6 +42,9 @@ class FakePrompt:
 
     async def reject_too_long(self, chat_id: int) -> None:
         self.rejected.append(chat_id)
+
+    async def refuse(self, chat_id: int, pending: PendingInput, text: str) -> None:
+        self.refused.append((pending.prompt_message_id, text))
 
 
 @pytest.fixture
@@ -62,6 +67,28 @@ def flow(
     regenerate: FakeRegenerate, prompt: FakePrompt, pending: FakePendingInputs
 ) -> CommentGatedRegeneration[str]:
     return CommentGatedRegeneration(regenerate, prompt, pending, kind="test_comment")
+
+
+@pytest.mark.asyncio
+async def test_a_regeneration_the_limit_refuses_says_why_on_the_prompt(
+    prompt: FakePrompt, pending: FakePendingInputs
+) -> None:
+    """ADR-0015: the wait is closed, nothing was enqueued, and the prompt says why - not
+    «⏳ Генерирую...»."""
+
+    async def refused(workspace_id: int, id_: str, comment: str | None) -> None:
+        raise GenerationBusy()
+
+    flow = CommentGatedRegeneration(refused, prompt, pending, kind="test_comment")
+    await flow.request(WS_A, 1, 10, "item-1")
+
+    assert await flow.handle_comment_reply(WS_A, 1, 10, "короче") is True
+
+    assert prompt.generating == []
+    assert prompt.refused == [
+        (100, "⏳ Дождитесь окончания текущей генерации — потом можно продолжить.")
+    ]
+    assert await flow.handle_comment_reply(WS_A, 1, 10, "ещё") is False
 
 
 @pytest.mark.asyncio

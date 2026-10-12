@@ -42,7 +42,7 @@ from content_zavod.telegram.onboarding import Onboarding
 from content_zavod.telegram.pending_inputs import PendingInputs
 from content_zavod.telegram.settings_screen import SettingsScreen
 from content_zavod.telegram.texts import STALE_BUTTON
-from content_zavod.workspaces import Workspace, WorkspaceId, Workspaces
+from content_zavod.workspaces import Limits, TrialLimits, Workspace, WorkspaceId, Workspaces
 from tests.tenancy import WS_A, WS_B
 
 from .fakes import RecordingBot
@@ -109,6 +109,7 @@ def _dispatcher(pool: asyncpg.Pool, queue: JobQueue, bot: RecordingBot) -> Callb
     settings = SettingsService(WorkspaceSettingsStore(pool))
     schedule = ScheduleSettings(pool)
     onboarding_state = OnboardingState(WorkspaceSettingsStore(pool))
+    limits = Limits(pool, TrialLimits(plans=100, articles=100, jobs_per_day=100))
     menu = MainMenu(
         plan,
         queue,
@@ -118,6 +119,7 @@ def _dispatcher(pool: asyncpg.Pool, queue: JobQueue, bot: RecordingBot) -> Callb
         prompts,
         settings=settings,
         onboarding=onboarding_state,
+        limits=limits,
     )
     return CallbackDispatcher(
         plan,
@@ -137,6 +139,7 @@ def _dispatcher(pool: asyncpg.Pool, queue: JobQueue, bot: RecordingBot) -> Callb
         prompts,
         Onboarding(onboarding_state, settings, prompts, bot, menu, schedule),
         guide=Guide(AssetPhotos(bot, BotStateStore(pool)), bot),
+        limits=limits,
     )
 
 

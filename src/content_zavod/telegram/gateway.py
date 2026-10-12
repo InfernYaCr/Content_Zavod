@@ -782,6 +782,14 @@ class TelegramCommentPrompt:
     async def withdraw(self, chat_id: int, pending: PendingInput) -> None:
         await self._bot.delete_message(chat_id, pending.prompt_message_id)
 
+    async def refuse(self, chat_id: int, pending: PendingInput, text: str) -> None:
+        try:
+            await self._bot.edit_message_text(chat_id, pending.prompt_message_id, text)
+        except Exception:
+            # The prompt is gone: the refusal still has to reach the chat.
+            logger.info("could not edit comment prompt, sending the refusal", exc_info=True)
+            await self._bot.send_message(chat_id, text)
+
     async def reject_too_long(self, chat_id: int) -> None:
         await self._bot.send_message(
             chat_id, COMMENT_TOO_LONG_TEXT.format(limit=COMMENT_MAX_LENGTH)

@@ -14,8 +14,8 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
 from content_zavod.config import load_settings
-from content_zavod.domain import Article, Plan
-from content_zavod.entrypoints.bot import _build_router, _make_notification_handler
+from content_zavod.domain import Article, GenerationSteps, Plan
+from content_zavod.entrypoints.bot import _build_router, _make_notification_handler, reserved
 from content_zavod.job_queue import JobQueue
 from content_zavod.owner_settings import BotStateStore, WorkspaceSettingsStore
 from content_zavod.scheduling import ScheduleSettings
@@ -34,7 +34,8 @@ from content_zavod.telegram.main_menu import MainMenu
 from content_zavod.telegram.onboarding import Onboarding
 from content_zavod.telegram.pending_inputs import PendingInputs
 from content_zavod.telegram.settings_screen import SettingsScreen
-from content_zavod.workspaces import Workspaces
+from content_zavod.workspaces import Limits, Workspaces
+from content_zavod.workspaces.admin import WorkspaceAdmin
 from tests.telegram.fakes import RecordingBot
 from tests.tenancy import WS_A, WS_B
 
@@ -68,6 +69,15 @@ class Telegram:
         pending = PendingInputs(pool)
         self.gateway = TelegramGateway(self.bot)
         prompts = InputPrompt(self.bot, pending)
+        config = load_settings(
+            {
+                "TELEGRAM_BOT_TOKEN": "123456:test",
+                "POSTGRES_DSN": "postgresql://localhost/x",
+                "YANDEX_FOLDER_ID": "f",
+                "YANDEX_API_KEY": "k",
+            }
+        )
+        limits = Limits(pool, config.trial_limits)
         menu = MainMenu(
             self.plan,
             self.queue,
@@ -77,16 +87,9 @@ class Telegram:
             prompts,
             settings=settings,
             onboarding=OnboardingState(store),
+            limits=limits,
         )
         self.settings = settings
-        config = load_settings(
-            {
-                "TELEGRAM_BOT_TOKEN": "123456:test",
-                "POSTGRES_DSN": "postgresql://localhost/x",
-                "YANDEX_FOLDER_ID": "f",
-                "YANDEX_API_KEY": "k",
-            }
-        )
         self.dispatcher = Dispatcher()
         self.dispatcher.include_router(
             _build_router(
@@ -95,9 +98,14 @@ class Telegram:
                 article,
                 self.gateway,
                 self.bot,
-                PlanReview(self.plan, TelegramCommentPrompt(self.bot), pending),
+                PlanReview(
+                    self.plan,
+                    TelegramCommentPrompt(self.bot),
+                    pending,
+                    regenerate=reserved(limits, self.plan.regenerate_item),
+                ),
                 CommentGatedRegeneration[ArticleId](
-                    article.request_regeneration,
+                    reserved(limits, article.request_regeneration, articles=1),
                     TelegramCommentPrompt(self.bot, action="regenerate_article"),
                     pending,
                     kind="article_comment",
@@ -109,6 +117,9 @@ class Telegram:
                 config,
                 Onboarding(OnboardingState(store), settings, prompts, self.bot, menu, schedule),
                 Guide(AssetPhotos(self.bot, BotStateStore(pool)), self.bot),
+                limits=limits,
+                admin=WorkspaceAdmin(pool, config.trial_limits),
+                spend=GenerationSteps(pool),
             )
         )
         self.notify = _make_notification_handler(self.plan, article, self.gateway, self.workspaces)

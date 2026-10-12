@@ -14,6 +14,11 @@ answers the callback; «not found» - deleted, another Workspace's or never exis
 alert, «Кнопка устарела», so the answer never hints that an id exists elsewhere. Telegram takes
 only the first answer to a callback: a branch that answered before its lookup would leave the
 alert unseen.
+
+The same goes for the Лимит (ADR-0015): a branch that starts a generation does it in a
+`Limits.reserve` transaction before answering, so «Дождитесь окончания текущей генерации» or
+«Пробный лимит исчерпан» is the alert. «✏️ Доработать» and «🔄» on a Тема enqueue only after
+a comment, so they `precheck` first - nobody is asked for a comment that can't be used.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ from aiogram.types import CallbackQuery
 from ..domain import PLATFORMS, Article, DomainError, HubTopic, Plan
 from ..job_queue import JobId, JobQueue, JobQueueError
 from ..telegraph import page_url
-from ..workspaces import Workspace, WorkspaceId
+from ..workspaces import LimitRefused, Limits, Workspace, WorkspaceId
 from .article_card import ArticlePagePublisher, send_article_card
 from .callback_codec import (
     CallbackPayload,
@@ -87,25 +92,46 @@ class CallbackAnswerer(Protocol):
     async def __call__(self, text: str | None = None, show_alert: bool | None = None) -> object: ...
 
 
-async def _generate_articles_for_approved_plan(
-    plan: Plan, article: Article, workspace_id: WorkspaceId, plan_id: PlanId
+async def approve_and_generate(
+    limits: Limits, plan: Plan, article: Article, workspace_id: WorkspaceId, plan_id: PlanId
 ) -> None:
-    """Fan out each approved Тема into one Статья per Площадка and enqueue its `generate_article`
-    Job (#14), plus one `generate_cover` Job per Тема (#15 - the whole week's content, including
-    covers, is generated together, so no separate manual trigger is needed for the common case).
-    Reads current DB state (`Plan.approved_items`) rather than acting only on items this call just
-    approved, and both `Article.request_generation` and `Plan.request_cover` are themselves
-    idempotent - so replaying this for an already-approved Plan (a retried `approve_all` callback,
-    or a crash between approving and enqueueing) creates neither duplicate Статьи/обложки nor
-    duplicate Jobs.
+    """«Утвердить всё»: approve the Plan and fan each approved Тема out into one Статья per
+    Площадка with its `generate_article` Job (#14), plus one `generate_cover` Job per Тема (#15) -
+    all in one `Limits.reserve` transaction (ADR-0015). Either everything is enqueued or nothing
+    is: a Лимит short of the Статьи this asks for leaves the Plan unapproved, so its 🗑 can trim
+    it. A Plan already approved (a repeated press) starts nothing again - its Статьи were enqueued
+    together with the approval, so no Статья is ever counted twice.
 
     Nothing here tracks progress (#91): the Хаб derives it from the rows these calls create."""
-    for item in await plan.approved_items(workspace_id, plan_id):
-        await plan.request_cover(workspace_id, item.id)
-        for platform in PLATFORMS:
-            await article.request_generation(
-                workspace_id, plan_id, item.id, item.title, item.summary, item.keywords, platform
-            )
+    async with limits.reserve(workspace_id) as reservation:
+        conn = reservation.conn
+        if not await plan.approve_all(workspace_id, plan_id, conn=conn):
+            return
+        items = await plan.approved_items(workspace_id, plan_id, conn=conn)
+        reservation.require(articles=len(items) * len(PLATFORMS))
+        for item in items:
+            await plan.request_cover(workspace_id, item.id, conn=conn)
+            for platform in PLATFORMS:
+                await article.request_generation(
+                    workspace_id,
+                    plan_id,
+                    item.id,
+                    item.title,
+                    item.summary,
+                    item.keywords,
+                    platform,
+                    conn=conn,
+                )
+
+
+def _limit_cost(job_type: str) -> dict[str, int]:
+    """What re-running a Job of this type may cost of the Лимит (ADR-0015): a Plan, a Статья, or
+    nothing (a cover, a Тема)."""
+    if job_type == "generate_plan":
+        return {"plans": 1}
+    if job_type in ("generate_article", "regenerate_article"):
+        return {"articles": 1}
+    return {}
 
 
 def unpack_callback_query(callback: CallbackQuery) -> CallbackInput | None:
@@ -148,9 +174,11 @@ class CallbackDispatcher:
         onboarding: Onboarding,
         *,
         guide: Guide,
+        limits: Limits,
         publisher: ArticlePagePublisher | None = None,
     ) -> None:
         self._guide = guide
+        self._limits = limits
         self._plan = plan
         self._article = article
         self._gateway = gateway
@@ -169,9 +197,9 @@ class CallbackDispatcher:
     ) -> None:
         try:
             await self._dispatch(workspace, callback_input, answer)
-        except (DomainError, JobQueueError) as exc:
+        except (DomainError, JobQueueError, LimitRefused) as exc:
             # Russian alert by error class (#89): «Кнопка устарела» for any id this Пространство
-            # doesn't have; the English technical text only goes to the log.
+            # doesn't have, the Лимит's refusals; the English technical text only goes to the log.
             logger.info("Callback %r refused: %s", callback_input.payload, exc)
             await answer(error_alert_text(exc), show_alert=True)
 
@@ -197,9 +225,9 @@ class CallbackDispatcher:
                 if id_ == FROM_GUIDE:
                     # «🏠 В меню» on the Инструкция: the menu takes the carousel's place (#114).
                     await self._bot_client.delete_message(chat_id, message_id)
-                    await self._main_menu.send(chat_id)
+                    await self._main_menu.send(workspace, chat_id)
                     return
-                await self._main_menu.show(chat_id, message_id)
+                await self._main_menu.show(workspace, chat_id, message_id)
             case SimpleAction(action="guide", id_=id_):
                 await answer()
                 if id_ == FROM_MENU:  # the carousel takes the menu's place
@@ -325,7 +353,7 @@ class CallbackDispatcher:
                 await self._plan.get_summary(ws, PlanId(id_))
                 await answer()
                 await handle_confirm_regenerate_plan(
-                    self._plan, self._gateway, ws, chat_id, message_id, PlanId(id_)
+                    self._plan, self._gateway, self._limits, ws, chat_id, message_id, PlanId(id_)
                 )
             case SimpleAction(action="cancel_regenerate_plan", id_=id_):
                 await self._plan.get_summary(ws, PlanId(id_))
@@ -341,12 +369,14 @@ class CallbackDispatcher:
                 if not self._plan.covers_enabled and job.job_type == "generate_cover":
                     await answer(COVERS_OFF)
                     return
+                async with self._limits.reserve(ws, **_limit_cost(job.job_type)) as reservation:
+                    await self._queue.retry(ws, job.job_id, conn=reservation.conn)
                 await answer()
-                await self._queue.retry(ws, JobId(int(id_)))
             case SimpleAction(action="regenerate_article", id_=id_):
                 # Looked up first: the comment prompt must not open for a Статья this
                 # Пространство doesn't have (ADR-0015).
                 await self._article.get_summary(ws, ArticleId(id_))
+                await self._limits.precheck(ws, articles=1)
                 will_enqueue = await self._article_regeneration.has_matching_pending(
                     ws, chat_id, user_id, ArticleId(id_)
                 )
@@ -371,9 +401,12 @@ class CallbackDispatcher:
                 if not self._plan.covers_enabled:
                     await answer(COVERS_OFF)
                     return
-                await answer(COVER_REQUESTED)
                 # By hand, from a Статья card: the result comes back here as a photo (#91).
-                await self._plan.request_cover(ws, PlanItemId(id_), manual=True)
+                async with self._limits.reserve(ws) as reservation:
+                    await self._plan.request_cover(
+                        ws, PlanItemId(id_), manual=True, conn=reservation.conn
+                    )
+                await answer(COVER_REQUESTED)
             case ExportArticle(article_id=article_id, article_format=article_format):
                 view = await self._article.get(ws, ArticleId(article_id))
                 await answer()
@@ -383,6 +416,7 @@ class CallbackDispatcher:
                 # Looked up first: the comment prompt must not open for a Тема this
                 # Пространство doesn't have (ADR-0015).
                 await self._plan.get_plan_id_for_item(ws, plan_item_id)
+                await self._limits.precheck(ws)
                 will_enqueue = await self._plan_review.will_enqueue_regeneration(
                     ws, chat_id, user_id, plan_item_id
                 )
@@ -399,15 +433,14 @@ class CallbackDispatcher:
                 ):
                     await self._article_regeneration.cancel(ws, chat_id, user_id, ArticleId(id_))
             case SimpleAction(action="approve_all", id_=id_):
-                await self._plan.get_summary(ws, PlanId(id_))
+                summary = await self._plan.get_summary(ws, PlanId(id_))
+                if summary.status != "approved":  # a repeated press just redraws the Хаб
+                    await approve_and_generate(
+                        self._limits, self._plan, self._article, ws, PlanId(id_)
+                    )
                 await answer()
-                await self._plan_review.handle_action(ws, chat_id, user_id, id_, "approve_all")
-                await _generate_articles_for_approved_plan(
-                    self._plan, self._article, ws, PlanId(id_)
-                )
-                # #81/#91: redrawn from the DB only once the fan-out is through, so a crash
-                # mid-fan-out still leaves "Утвердить всё" there to replay it - and from now on
-                # the Plan message is the Хаб.
+                await self._plan_review.cancel_comment(ws, chat_id, user_id)
+                # #81/#91: from now on the Plan message is the Хаб.
                 hub = await self._plan.get_hub(ws, PlanId(id_))
                 await self._gateway.edit_hub(chat_id, message_id, hub)
             case SimpleAction(action="hub_topic", id_=id_):
@@ -472,14 +505,24 @@ class CallbackDispatcher:
     ) -> None:
         """Re-runs every ❌ cell of `topics` (#91): a failed cover is requested afresh, a failed
         Статья's own Job is re-queued (the same thing the old «🔁 Повторить» message did). The
-        Хаб then shows them ⏳ straight away - its state is read from those Jobs."""
+        Хаб then shows them ⏳ straight away - its state is read from those Jobs. One
+        `Limits.reserve` for all of them: each Статья re-run may cost one of the Лимит."""
+        covers = [topic.id for topic in topics if topic.cover == "failed"]
+        jobs = [
+            JobId(cell.job_id)
+            for topic in topics
+            for cell in topic.articles
+            if cell.state == "failed" and cell.job_id is not None
+        ]
         retried = 0
-        for topic in topics:
-            if topic.cover == "failed":
-                await self._plan.request_cover(workspace_id, topic.id)
-                retried += 1
-            for cell in topic.articles:
-                if cell.state == "failed" and cell.job_id is not None:
-                    if await self._queue.retry(workspace_id, JobId(cell.job_id)):
+        if covers or jobs:
+            async with self._limits.reserve(workspace_id, articles=len(jobs)) as reservation:
+                for plan_item_id in covers:
+                    await self._plan.request_cover(
+                        workspace_id, plan_item_id, conn=reservation.conn
+                    )
+                    retried += 1
+                for job_id in jobs:
+                    if await self._queue.retry(workspace_id, job_id, conn=reservation.conn):
                         retried += 1
         await answer(HUB_ALERT_RETRYING if retried else HUB_ALERT_NOTHING_TO_RETRY)
