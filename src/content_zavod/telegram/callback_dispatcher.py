@@ -503,6 +503,13 @@ class CallbackDispatcher:
             case SimpleAction(action="retry", id_=id_):
                 if not await self._authorized("retry", role, deny_text, answer):
                     return
+                # «🔁 Повторить» under an old cover failure must not draw (and bill) a cover
+                # after `YANDEX_COVERS=off` (#123).
+                if not self._plan.covers_enabled:
+                    job = await self._queue.get_job(JobId(int(id_)))
+                    if job is not None and job.job_type == "generate_cover":
+                        await answer(COVERS_OFF)
+                        return
                 await answer()
                 await self._queue.retry(JobId(int(id_)))
             case SimpleAction(action="regenerate_article", id_=id_):
@@ -594,7 +601,7 @@ class CallbackDispatcher:
                     return
                 cover = await self._plan.get_cover(PlanItemId(id_))
                 if cover is None:
-                    await answer(HUB_ALERT_NO_COVER)
+                    await answer(HUB_ALERT_NO_COVER if self._plan.covers_enabled else COVERS_OFF)
                     return
                 await answer()
                 await self._gateway.send_cover(chat_id, cover.image, cover.mime_type, cover.title)

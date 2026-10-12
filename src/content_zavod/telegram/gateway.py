@@ -29,6 +29,7 @@ from .pending_inputs import PendingInput
 from .plan_hub import render_hub_screen
 from .texts import (
     COVER_CAPTION,
+    HUB_BUTTON_COVER,
     READ_BUTTON,
     REFINE_BUTTON,
     TO_MENU_BUTTON,
@@ -508,7 +509,7 @@ def build_article_keyboard(
     cover = (
         [
             InlineKeyboardButton(
-                text="🖼 Обложка",
+                text=HUB_BUTTON_COVER,
                 callback_data=encode_callback_data(SimpleAction("request_cover", plan_item_id)),
             )
         ]

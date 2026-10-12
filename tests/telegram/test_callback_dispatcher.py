@@ -14,6 +14,7 @@ from content_zavod.access import MemberNotFound
 from content_zavod.access.membership import MemberView, Role
 from content_zavod.domain import HubArticleCell, HubTopic, PlanHubView, PlanItemCoverView
 from content_zavod.domain.plan import PlanItemDetail
+from content_zavod.job_queue.models import JobSnapshot
 from content_zavod.scheduling import ScheduleConfig
 from content_zavod.settings import OnboardingState, SettingsService
 from content_zavod.telegram import (
@@ -431,6 +432,11 @@ class FakeScheduler:
 class FakeQueue:
     def __init__(self) -> None:
         self.retried: list[int] = []
+        self.job_types: dict[int, str] = {}
+
+    async def get_job(self, job_id: int) -> JobSnapshot | None:
+        job_type = self.job_types.get(job_id)
+        return None if job_type is None else JobSnapshot(job_id, job_type, "failed", {})
 
     async def get_status(self, job_id: int) -> str:
         return "queued"
@@ -798,6 +804,28 @@ async def test_retry_requeues_the_job(f: Fixtures) -> None:
     assert f.queue.retried == [7]
 
 
+async def test_retry_of_a_cover_with_covers_off_says_so_and_requeues_nothing(
+    f: Fixtures,
+) -> None:
+    """#123: «🔁 Повторить» under a cover failure sent before `YANDEX_COVERS=off`."""
+    f.plan.covers_enabled = False
+    f.queue.job_types[7] = "generate_cover"
+
+    answer = await dispatch(f, SimpleAction("retry", "7"))
+
+    assert answer.calls == [("Обложки сейчас выключены.", None)]
+    assert f.queue.retried == []
+
+
+async def test_retry_of_an_article_with_covers_off_still_requeues(f: Fixtures) -> None:
+    f.plan.covers_enabled = False
+    f.queue.job_types[7] = "regenerate_article"
+
+    await dispatch(f, SimpleAction("retry", "7"))
+
+    assert f.queue.retried == [7]
+
+
 async def test_regenerate_article_prompts_for_a_comment_on_first_press(f: Fixtures) -> None:
     answer = await dispatch(f, SimpleAction("regenerate_article", "article-1"))
 
@@ -1022,6 +1050,15 @@ async def test_hub_cover_without_a_cover_just_says_so(f: Fixtures) -> None:
 
     assert answer.calls == [("Обложки пока нет.", None)]
     assert f.bot.sent_photos == []
+
+
+async def test_hub_cover_with_covers_off_says_covers_are_off(f: Fixtures) -> None:
+    """#123: a stale Хаб «🖼 Обложка» must not promise a cover that will never come."""
+    f.plan.covers_enabled = False
+
+    answer = await dispatch(f, SimpleAction("hub_cover", "item-1"))
+
+    assert answer.calls == [("Обложки сейчас выключены.", None)]
 
 
 async def test_hub_article_sends_the_usual_article_card_below(f: Fixtures) -> None:
