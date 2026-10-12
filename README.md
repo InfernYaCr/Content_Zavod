@@ -1,6 +1,6 @@
 # Content Zavod
 
-Генерация недельных контент-планов и статей для медиаплощадок (Дзен, VC) для ниши маркетинга, с рабочим процессом через Telegram-бота для команды контент-менеджеров.
+Генерация недельных контент-планов и статей для медиаплощадок (Дзен, VC) через Telegram-бота. Бот открыт любому: каждый, кто нажал `/start`, получает своё Пространство — свои Настройки, Планы, Статьи и Расписание — и работает с ботом в личном чате (ADR-0015).
 
 Домен и терминология — [CONTEXT.md](CONTEXT.md). Архитектурные решения и их обоснование — [docs/adr/](docs/adr/).
 
@@ -13,28 +13,27 @@ MVP в разработке. Реализовано:
 - **Доменный слой** (`src/content_zavod/domain/`) — `Plan`/`Article` и их жизненный цикл.
 - **Job Handlers** (`src/content_zavod/pipelines/`) — `generate_plan`/`generate_article`/`regenerate_article`/`generate_cover`/`regenerate_topic`.
 - **Telegram-слой** (`src/content_zavod/telegram/`) — `TelegramGateway`, `PlanReview` (согласование плана кнопками), `/topic` (ручное предложение Темы).
-- **Membership** (`src/content_zavod/access/`) — allowlist Telegram-id с ролями Owner/Content-manager.
-- **Планировщик** (`src/content_zavod/scheduling/`) — еженедельный триггер `generate_plan`.
+- **Пространства** (`src/content_zavod/workspaces/`) — одно на Telegram id, создаётся на `/start`; у каждой строки данных `workspace_id`.
+- **Планировщик** (`src/content_zavod/scheduling/`) — раз в минуту ставит `generate_plan` каждому Пространству по его Расписанию и часовому поясу.
 - **Точки входа** (`bot_main.py`, `worker_main.py`) — два процесса по ADR-0004, см. «Локальный запуск» ниже.
 
 Запуск в Docker (на VPS или своём компьютере) — см. «Развернуть на VPS за 10 минут» ниже.
+
+> **Пока нет пробного Лимита** (следующий шаг эпика #118), бот открыт любому без ограничений
+> расхода: не давайте ссылку на бота посторонним.
 
 ## Локальный запуск
 
 Два отдельных процесса (ADR-0004): `bot_main.py` (Telegram + планировщик) и `worker_main.py` (разбор очереди задач).
 
-1. `cp .env.example .env` и заполнить: токен тестового Telegram-бота (`@BotFather`), `TELEGRAM_NOTIFY_CHAT_ID`, DSN локального/тестового Postgres (`POSTGRES_DSN`), Yandex Cloud `YANDEX_FOLDER_ID` и один из `YANDEX_API_KEY`/`YANDEX_OAUTH_TOKEN`.
+1. `cp .env.example .env` и заполнить: токен тестового Telegram-бота (`@BotFather`), DSN локального/тестового Postgres (`POSTGRES_DSN`), Yandex Cloud `YANDEX_FOLDER_ID` и один из `YANDEX_API_KEY`/`YANDEX_OAUTH_TOKEN`. По желанию — свой Telegram id в `GLOBAL_ADMIN_TELEGRAM_IDS` (Глобальный администратор).
 2. Поднять Postgres (например, `docker run -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine`) и указать его DSN в `.env`.
 3. В двух терминалах:
    ```bash
    uv run python bot_main.py
    uv run python worker_main.py
    ```
-4. Зарегистрировать свой `telegram_id` Владельцем в allowlist (замените число на свой id):
-   ```bash
-   uv run python scripts/add_owner.py 123456789
-   ```
-5. Проверить: бот отвечает незарегистрированному `telegram_id` отказом; после регистрации — `/topic <текст>` кладёт Тему в План и присылает её с кнопками; воркер разбирает `generate_plan`/`regenerate_topic`/`generate_article`/`generate_cover` из очереди и результат приходит в `TELEGRAM_NOTIFY_CHAT_ID`.
+4. Проверить: написать боту `/start` в личном чате — бот создаст Пространство и проведёт по Онбордингу; «🚀 Запустить» ставит `generate_plan`, воркер разбирает очередь (`generate_plan`/`regenerate_topic`/`generate_article`/`generate_cover`), и План приходит в этот же личный чат.
 
 ## Развернуть на VPS за 10 минут
 
@@ -45,11 +44,10 @@ MVP в разработке. Реализовано:
 **Что понадобится**
 
 - VPS с Ubuntu 22.04 или 24.04 (хватит 2 vCPU / 4 ГБ), доступ по SSH под `root`.
-- Токен Telegram-бота от `@BotFather` и id чата для результатов (`TELEGRAM_NOTIFY_CHAT_ID`).
-  Проще всего — ваш же Telegram id (см. ниже): результаты будут приходить вам в личный чат с
-  ботом. Для общего чата команды — см. подсказку в `.env.example`.
+- Токен Telegram-бота от `@BotFather`.
 - Yandex Cloud: id каталога и API-ключ сервисного аккаунта (или OAuth-токен).
-- Свой Telegram id (число) — узнать можно, например, у бота `@userinfobot`.
+- Свой Telegram id (число) — для `GLOBAL_ADMIN_TELEGRAM_IDS`; узнать можно, например, у бота
+  `@userinfobot`.
 
 > **Секреты — только в файле `.env` на сервере.** Не присылайте токены и ключи в чаты, не
 > вставляйте их в issues и не коммитьте в git. Если секрет утёк — перевыпустите его
@@ -107,7 +105,8 @@ nano .env
 
 В `.env` заполнить:
 
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_NOTIFY_CHAT_ID`;
+- `TELEGRAM_BOT_TOKEN`;
+- `GLOBAL_ADMIN_TELEGRAM_IDS` — свой Telegram id (через запятую, если администраторов несколько);
 - `YANDEX_FOLDER_ID` и **один** из `YANDEX_API_KEY` / `YANDEX_OAUTH_TOKEN`;
 - `POSTGRES_PASSWORD` — вставить пароль из `openssl rand -hex 24`. `POSTGRES_USER` и
   `POSTGRES_DB` можно оставить как есть. `POSTGRES_DSN` оставить пустым — в Docker адрес базы
@@ -142,14 +141,9 @@ docker compose logs -f bot worker
 `missing required environment variable` — не заполнена указанная переменная в `.env`. Поправить
 `.env` и снова выполнить `docker compose up -d`.
 
-**7. Назначить себя Владельцем** (замените число на свой Telegram id):
-
-```bash
-docker compose run --rm bot python scripts/add_owner.py 123456789
-```
-
-Должно напечатать `Владелец 123456789 добавлен`. Теперь напишите боту `/start`. Остальных
-участников Владелец добавляет уже в самом боте.
+**7. Начать:** напишите боту `/start` в личном чате. Бот сам создаст ваше Пространство и
+проведёт по настройке. Регистрировать никого не нужно: каждый, кто нажал `/start`, получает своё
+Пространство и видит только свои Планы и Статьи.
 
 **Обновить до новой версии:**
 
@@ -222,10 +216,7 @@ docker compose start bot worker
    docker compose logs -f bot worker
    ```
    Что должно получиться — как в шаге 6 выше. Выйти из логов — `Ctrl+C`.
-5. Назначить себя Владельцем:
-   ```powershell
-   docker compose run --rm bot python scripts/add_owner.py 123456789
-   ```
+5. Написать боту `/start` в личном чате — он сам создаст ваше Пространство.
 6. Остановить: `docker compose stop`, запустить снова: `docker compose start`. Обновление:
    `git pull`, затем `docker compose up -d --build`.
 
@@ -269,13 +260,12 @@ uv run pre-commit run --all-files
 
 Слайды «📖 Как пользоваться» и картинки к приветствиям лежат в `src/content_zavod/assets/guide/` и
 закоммичены: бот просто отправляет PNG и браузер ему не нужен. Telegram `file_id` загруженной
-картинки кэшируется в `owner_settings` вместе с хэшем файла, так что изменённый PNG бот загрузит
+картинки кэшируется в `bot_state` вместе с хэшем файла, так что изменённый PNG бот загрузит
 заново сам.
 
-- Слайды (1280×960) — по ключу слайда из `telegram/guide.py`: `about`, `week`, `niche`, `audience`,
-  `persona`, `directions`, `project`, `schedule`, `article`, `roles`, `faq`.
-- Баннеры (1280×640): `welcome` (/start), `onboarding` (вступление Онбординга), `cm_welcome`
-  (приветствие Контент-менеджера), `team_note` (закреплённая памятка «📌 Как мы работаем»).
+- Слайды (1280×960) — по ключу слайда из `telegram/guide.py`: `about`, `sourcing`, `week`,
+  `niche`, `audience`, `persona`, `project`, `schedule`, `propose`, `article`, `faq`.
+- Баннеры (1280×640): `welcome` (/start), `onboarding` (вступление Онбординга).
 
 Слайды — макеты экрана Telegram из настоящих текстов бота (`texts.py`, `SETTING_FIELDS`, экраны
 Онбординга), поэтому после правки текстов их стоит пересобрать одной командой (Chromium от
