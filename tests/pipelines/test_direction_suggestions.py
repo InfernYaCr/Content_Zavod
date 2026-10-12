@@ -13,19 +13,17 @@ from content_zavod.pipelines.direction_suggestions import (
     make_suggest_directions_handler,
     parse_suggested_queries,
 )
-from content_zavod.settings import SettingsService
-from content_zavod.yandex import Completion, KeywordStat, Message
+from content_zavod.settings import WorkspaceSettingsReader
+from content_zavod.yandex import Completion, KeywordStat, KeywordStatsUsage, Message
+from tests.tenancy import WS_A
 
 
 class FakeStore:
     def __init__(self, values: dict[str, str] | None = None) -> None:
         self.values = dict(values or {})
 
-    async def get(self, key: str) -> str | None:
+    async def get(self, workspace_id: int, key: str) -> str | None:
         return self.values.get(key)
-
-    async def set(self, key: str, value: str) -> None:
-        self.values[key] = value
 
 
 class FakeTextGenerator:
@@ -43,22 +41,24 @@ class FakeTextGenerator:
 
 
 class FakeKeywordStats:
-    """Like `KeywordStats.keyword_stats`: a keyword it has no number for is just missing."""
+    """Like `KeywordStats.keyword_stats_with_usage`: a keyword it has no number for is just
+    missing; every keyword asked is one real request (no cache here)."""
 
     def __init__(self, frequencies: dict[str, int], *, delay: float = 0.0) -> None:
         self.frequencies = frequencies
         self.delay = delay
         self.asked: list[list[str]] = []
 
-    async def keyword_stats(self, keywords: list[str]) -> dict[str, KeywordStat]:
+    async def keyword_stats_with_usage(self, keywords: list[str]) -> KeywordStatsUsage:
         self.asked.append(keywords)
         if self.delay:
             await asyncio.sleep(self.delay)
-        return {
+        stats = {
             k: KeywordStat(keyword=k, frequency=self.frequencies[k])
             for k in keywords
             if k in self.frequencies
         }
+        return KeywordStatsUsage(stats=stats, requests=len(keywords))
 
 
 def _input_data(message: Message) -> dict:
@@ -193,10 +193,10 @@ async def test_queries_without_wordstat_demand_are_dropped() -> None:
     handler = make_suggest_directions_handler(
         FakeTextGenerator(ANSWER),
         stats,
-        SettingsService(FakeStore({"niche": "домашняя выпечка"})),
+        WorkspaceSettingsReader(FakeStore({"niche": "домашняя выпечка"})),
     )
 
-    output = await handler({"chat_id": 1, "message_id": 2, "origin": "s:0"})
+    output = await handler(WS_A, {"chat_id": 1, "message_id": 2, "origin": "s:0"})
 
     assert output["niche"] == "домашняя выпечка"
     assert output["queries"] == [
@@ -214,10 +214,10 @@ async def test_thin_demand_is_dropped_when_enough_queries_have_real_demand() -> 
         {"торт": 900, "эклеры": 500, "закваска": 300, "хлеб на пиве": 40, "кекс без глютена": 0}
     )
     handler = make_suggest_directions_handler(
-        FakeTextGenerator(answer), stats, SettingsService(FakeStore())
+        FakeTextGenerator(answer), stats, WorkspaceSettingsReader(FakeStore())
     )
 
-    output = await handler({})
+    output = await handler(WS_A, {})
 
     assert [item["query"] for item in output["queries"]] == ["торт", "эклеры", "закваска"]
     assert output["dropped"] == ["хлеб на пиве", "кекс без глютена"]
@@ -227,10 +227,10 @@ async def test_a_narrow_niche_keeps_thin_demand_rather_than_nothing() -> None:
     answer = "торт\nхлеб на пиве\nкекс без глютена"
     stats = FakeKeywordStats({"торт": 900, "хлеб на пиве": 40, "кекс без глютена": 0})
     handler = make_suggest_directions_handler(
-        FakeTextGenerator(answer), stats, SettingsService(FakeStore())
+        FakeTextGenerator(answer), stats, WorkspaceSettingsReader(FakeStore())
     )
 
-    output = await handler({})
+    output = await handler(WS_A, {})
 
     assert [item["query"] for item in output["queries"]] == ["торт", "хлеб на пиве"]
     assert output["dropped"] == ["кекс без глютена"]
@@ -238,10 +238,10 @@ async def test_a_narrow_niche_keeps_thin_demand_rather_than_nothing() -> None:
 
 async def test_unavailable_wordstat_keeps_the_model_list_and_says_so() -> None:
     handler = make_suggest_directions_handler(
-        FakeTextGenerator(ANSWER), FakeKeywordStats({}), SettingsService(FakeStore())
+        FakeTextGenerator(ANSWER), FakeKeywordStats({}), WorkspaceSettingsReader(FakeStore())
     )
 
-    output = await handler({})
+    output = await handler(WS_A, {})
 
     assert [item["query"] for item in output["queries"]] == parse_suggested_queries(ANSWER)
     assert all(item["frequency"] is None for item in output["queries"])
@@ -253,11 +253,11 @@ async def test_slow_wordstat_counts_as_unavailable() -> None:
     handler = make_suggest_directions_handler(
         FakeTextGenerator("торт"),
         FakeKeywordStats({"торт": 5}, delay=1.0),
-        SettingsService(FakeStore()),
+        WorkspaceSettingsReader(FakeStore()),
         wordstat_timeout=0.01,
     )
 
-    output = await handler({})
+    output = await handler(WS_A, {})
 
     assert output["queries"] == [{"query": "торт", "frequency": None}]
     assert output["wordstat"] == "unavailable"
@@ -267,10 +267,10 @@ async def test_a_query_wordstat_skipped_is_kept_without_a_number() -> None:
     handler = make_suggest_directions_handler(
         FakeTextGenerator("торт\nэклер"),
         FakeKeywordStats({"торт": 5}),
-        SettingsService(FakeStore()),
+        WorkspaceSettingsReader(FakeStore()),
     )
 
-    output = await handler({})
+    output = await handler(WS_A, {})
 
     assert output["queries"] == [
         {"query": "торт", "frequency": 5},
@@ -284,10 +284,10 @@ async def test_more_variants_exclude_what_was_shown_and_read_the_audience() -> N
     handler = make_suggest_directions_handler(
         generator,
         FakeKeywordStats({"торт": 5, "эклер": 7}),
-        SettingsService(FakeStore({"niche": "выпечка", "audience": "сладкоежки"})),
+        WorkspaceSettingsReader(FakeStore({"niche": "выпечка", "audience": "сладкоежки"})),
     )
 
-    output = await handler({"exclude": ["Торты"]})
+    output = await handler(WS_A, {"exclude": ["Торты"]})
 
     assert _input_data(generator.calls[0][1]) == {
         "niche": "выпечка",
@@ -301,10 +301,10 @@ async def test_at_most_eight_queries_are_kept() -> None:
     answer = "\n".join(f"запрос {n}" for n in range(12))
     stats = FakeKeywordStats({f"запрос {n}": 10 for n in range(12)})
     handler = make_suggest_directions_handler(
-        FakeTextGenerator(answer), stats, SettingsService(FakeStore())
+        FakeTextGenerator(answer), stats, WorkspaceSettingsReader(FakeStore())
     )
 
-    output = await handler({})
+    output = await handler(WS_A, {})
 
     assert len(output["queries"]) == 8
     assert len(stats.asked[0]) == 8
@@ -312,23 +312,34 @@ async def test_at_most_eight_queries_are_kept() -> None:
 
 async def test_the_llm_call_is_recorded_as_a_provenance_step() -> None:
     handler = make_suggest_directions_handler(
-        FakeTextGenerator("торт"), FakeKeywordStats({"торт": 5}), SettingsService(FakeStore())
+        FakeTextGenerator("торт"),
+        FakeKeywordStats({"торт": 5}),
+        WorkspaceSettingsReader(FakeStore()),
     )
 
-    output = await handler({})
+    output = await handler(WS_A, {})
 
-    ((step),) = output["steps"]
+    step, wordstat = output["steps"]
     assert step["step_name"] == "directions_suggest"
     assert step["prompt_template_version"] == "directions-suggest-v2"
     assert step["tokens"] == 42 and step["cost"] == 0.1
+    assert (step["unit"], step["quantity"]) == ("tokens", 42)
+    # ADR-0015: the Wordstat check is booked too, its price unknown until configured.
+    assert (wordstat["unit"], wordstat["quantity"], wordstat["cost"]) == (
+        "wordstat_request",
+        1,
+        None,
+    )
 
 
 async def test_a_failing_llm_call_fails_the_job() -> None:
     handler = make_suggest_directions_handler(
-        FakeTextGenerator(RuntimeError("boom")), FakeKeywordStats({}), SettingsService(FakeStore())
+        FakeTextGenerator(RuntimeError("boom")),
+        FakeKeywordStats({}),
+        WorkspaceSettingsReader(FakeStore()),
     )
 
     with pytest.raises(JobPartialFailure) as raised:
-        await handler({})
+        await handler(WS_A, {})
 
     assert raised.value.partial_output == {"steps": []}

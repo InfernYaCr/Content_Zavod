@@ -28,9 +28,12 @@ keep working unmodified; this module is the single place that defines them.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Protocol
 
 from ..domain.errors import InvalidSettingValue
+from ..workspaces import WorkspaceId
 from .audience import AUDIENCE_KEY, AUDIENCE_MAX_LENGTH, CLEAR_AUDIENCE, parse_stored_audience
 from .persona import (
     PERSONA_KEY,
@@ -91,8 +94,44 @@ class _OwnerSettingsStoreOperations(Protocol):
     async def set(self, key: str, value: str) -> None: ...
 
 
+async def _read_settings(get: Callable[[str], Awaitable[str | None]]) -> OwnerSettings:
+    niche_raw = await get(NICHE_KEY)
+    directions_raw = await get(DIRECTIONS_KEY)
+    persona_raw = await get(PERSONA_KEY)
+    project_raw = await get(PROJECT_KEY)
+    audience_raw = await get(AUDIENCE_KEY)
+    niche = niche_raw if niche_raw else DEFAULT_NICHE
+    directions = parse_directions(directions_raw) if directions_raw else None
+    persona, custom_persona = resolve_persona(persona_raw)
+    return OwnerSettings(
+        niche=niche,
+        directions=tuple(directions or DEFAULT_DIRECTIONS),
+        persona=persona,
+        custom_persona=custom_persona,
+        project=parse_stored_project(project_raw),
+        audience=parse_stored_audience(audience_raw),
+    )
+
+
+class _WorkspaceSettingsStoreReads(Protocol):
+    async def get(self, workspace_id: WorkspaceId, key: str) -> str | None: ...
+
+
 class SettingsReader(Protocol):
-    async def read(self) -> OwnerSettings: ...
+    """What a Job Handler reads its Настройки through: always those of the Job's own
+    Пространство, named by the worker, never by the payload (ADR-0015)."""
+
+    async def read(self, workspace_id: WorkspaceId) -> OwnerSettings: ...
+
+
+class WorkspaceSettingsReader:
+    """The Настройки of any Пространство, by id - for the worker, which serves them all."""
+
+    def __init__(self, store: _WorkspaceSettingsStoreReads) -> None:
+        self._store = store
+
+    async def read(self, workspace_id: WorkspaceId) -> OwnerSettings:
+        return await _read_settings(partial(self._store.get, workspace_id))
 
 
 class SettingsService:
@@ -100,22 +139,7 @@ class SettingsService:
         self._store = store
 
     async def read(self) -> OwnerSettings:
-        niche_raw = await self._store.get(NICHE_KEY)
-        directions_raw = await self._store.get(DIRECTIONS_KEY)
-        persona_raw = await self._store.get(PERSONA_KEY)
-        project_raw = await self._store.get(PROJECT_KEY)
-        audience_raw = await self._store.get(AUDIENCE_KEY)
-        niche = niche_raw if niche_raw else DEFAULT_NICHE
-        directions = parse_directions(directions_raw) if directions_raw else None
-        persona, custom_persona = resolve_persona(persona_raw)
-        return OwnerSettings(
-            niche=niche,
-            directions=tuple(directions or DEFAULT_DIRECTIONS),
-            persona=persona,
-            custom_persona=custom_persona,
-            project=parse_stored_project(project_raw),
-            audience=parse_stored_audience(audience_raw),
-        )
+        return await _read_settings(self._store.get)
 
     async def set_niche(self, value: str) -> str:
         normalized = value.strip()

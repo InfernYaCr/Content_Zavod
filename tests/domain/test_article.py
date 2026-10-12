@@ -130,6 +130,8 @@ async def test_stale_generation_result_cannot_replace_a_newer_version(
     article_id = await article.request_generation(WS_A, plan_id, item_id, "Topic A", "s", [], "zen")
     old_job = await queue.claim_next()
     assert old_job is not None
+    # The worker finishes it first: it never runs two Jobs of one Workspace at once.
+    assert await queue.complete(old_job.id, {}, old_job.lease_token)
     await article.mark_generation_failed(WS_A, old_job.id)
     await article.request_regeneration(WS_A, article_id, comment="retry")
     new_job = await queue.claim_next()
@@ -237,6 +239,8 @@ async def test_request_regeneration_is_idempotent_while_already_regenerating(
 
     first_claim = await queue.claim_next()
     assert first_claim is not None
+    # The worker finishes it first: it never runs two Jobs of one Workspace at once.
+    assert await queue.complete(first_claim.id, {}, first_claim.lease_token)
     second_claim = await queue.claim_next()
     assert second_claim is None
 
@@ -473,5 +477,7 @@ async def test_request_generation_is_idempotent_for_the_same_plan_item_and_platf
     assert first_id == second_id
     first_claim = await queue.claim_next()
     assert first_claim is not None
+    # The worker finishes it first: it never runs two Jobs of one Workspace at once.
+    assert await queue.complete(first_claim.id, {}, first_claim.lease_token)
     second_claim = await queue.claim_next()
     assert second_claim is None

@@ -108,6 +108,21 @@ async def test_caches_frequency_within_ttl() -> None:
 
 
 @pytest.mark.asyncio
+async def test_usage_counts_real_requests_only_not_cache_hits() -> None:
+    """ADR-0015: only a request actually sent is booked in the Учёт расхода."""
+    transport = FakeHttpTransport()
+    transport.queue_post(TOP_REQUESTS_URL, _top_requests_response(100))
+    transport.queue_post(TOP_REQUESTS_URL, HttpResponse(status=500, body={}))
+    client = _make_client(transport, max_retries=0)
+
+    first = await client.keyword_stats_with_usage(["kw", "broken"])
+    second = await client.keyword_stats_with_usage(["kw"])
+
+    assert (set(first.stats), first.requests) == ({"kw"}, 2)
+    assert (set(second.stats), second.requests) == ({"kw"}, 0)
+
+
+@pytest.mark.asyncio
 async def test_refetches_after_cache_expires() -> None:
     transport = FakeHttpTransport()
     clock = FakeClock()

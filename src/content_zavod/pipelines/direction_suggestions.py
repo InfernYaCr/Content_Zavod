@@ -30,13 +30,15 @@ import asyncio
 import json
 import logging
 import re
+import time
 from collections.abc import Sequence
 from typing import Any, Protocol
 
 from ..job_queue import JobHandler
 from ..settings import SettingsReader
-from ..yandex import DEFAULT_TEMPERATURE, Completion, KeywordStat, Message
-from .provenance import StepRecord, StepRecorder
+from ..workspaces import WorkspaceId
+from ..yandex import DEFAULT_TEMPERATURE, Completion, KeywordStat, KeywordStatsUsage, Message
+from .provenance import StepRecord, StepRecorder, wordstat_step
 
 __all__ = [
     "SUGGEST_DIRECTIONS_JOB",
@@ -127,7 +129,7 @@ class _TextGenerator(Protocol):
 
 
 class _KeywordStats(Protocol):
-    async def keyword_stats(self, keywords: list[str]) -> dict[str, KeywordStat]: ...
+    async def keyword_stats_with_usage(self, keywords: list[str]) -> KeywordStatsUsage: ...
 
 
 def build_suggestion_messages(
@@ -221,17 +223,30 @@ def parse_suggested_queries(text: str) -> list[str]:
 
 
 async def _demand(
-    keyword_stats: _KeywordStats, queries: list[str], limit: float
+    keyword_stats: _KeywordStats, queries: list[str], limit: float, recorder: StepRecorder
 ) -> dict[str, KeywordStat] | None:
-    """Wordstat's frequency per query it answered for; `None` when it answered for none."""
+    """Wordstat's frequency per query it answered for; `None` when it answered for none. The
+    real requests behind it (not `KeywordStats` cache hits) go to `recorder` (ADR-0015)."""
     if not queries:
         return {}
+    started = time.monotonic()
     try:
-        stats = await asyncio.wait_for(keyword_stats.keyword_stats(list(queries)), limit)
+        usage = await asyncio.wait_for(keyword_stats.keyword_stats_with_usage(list(queries)), limit)
     except Exception:
+        # ponytail: a timed-out batch records nothing, though some of its requests were sent.
         logger.warning("Wordstat check of suggested Направления failed", exc_info=True)
         return None
-    return stats or None
+    if usage.requests:
+        recorder.add(
+            wordstat_step(
+                "wordstat/topRequests",
+                ", ".join(queries),
+                {"phrases": list(queries)},
+                latency_ms=int((time.monotonic() - started) * 1000),
+                quantity=usage.requests,
+            )
+        )
+    return usage.stats or None
 
 
 def make_suggest_directions_handler(
@@ -241,8 +256,8 @@ def make_suggest_directions_handler(
     *,
     wordstat_timeout: float = WORDSTAT_TIMEOUT,
 ) -> JobHandler:
-    async def handle(payload: dict[str, Any]) -> dict[str, Any]:
-        current = await settings.read()
+    async def handle(workspace_id: WorkspaceId, payload: dict[str, Any]) -> dict[str, Any]:
+        current = await settings.read(workspace_id)
         exclude = [str(item) for item in payload.get("exclude") or []][:MAX_EXCLUDED]
         excluded = {query_key(item) for item in exclude}
         messages = build_suggestion_messages(current.niche, current.audience, exclude)
@@ -266,7 +281,7 @@ def make_suggest_directions_handler(
             if query_key(query) not in excluded
         ][:MAX_SUGGESTIONS]
 
-        stats = await _demand(keyword_stats, candidates, wordstat_timeout)
+        stats = await _demand(keyword_stats, candidates, wordstat_timeout, recorder)
         if stats is None:
             kept = [{"query": query, "frequency": None} for query in candidates]
             dropped: list[str] = []

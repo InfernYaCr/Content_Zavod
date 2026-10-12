@@ -32,6 +32,7 @@ from .service import (
     SETTING_STORE_KEYS,
     SettingsReader,
     SettingsService,
+    WorkspaceSettingsReader,
     directions_mismatch,
     parse_directions,
 )
@@ -61,6 +62,7 @@ __all__ = [
     "Project",
     "SettingsReader",
     "SettingsService",
+    "WorkspaceSettingsReader",
     "audience_detail_text",
     "audience_screen_text",
     "custom_persona_label",

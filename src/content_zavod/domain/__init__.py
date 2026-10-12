@@ -11,7 +11,7 @@ from .errors import (
     PlanNotFound,
 )
 from .export import build_export_document, build_export_filename
-from .generation_steps import GenerationSteps, GenerationStepView, JobCostSummary
+from .generation_steps import GenerationSteps, GenerationStepView, JobCostSummary, UnitUsage
 from .plan import Plan, PlanItemDetail
 from .research import (
     Evidence,
@@ -93,6 +93,7 @@ __all__ = [
     "TopicDraft",
     "TopicResearch",
     "TopicResearchStore",
+    "UnitUsage",
     "build_export_document",
     "build_export_filename",
     "topic_fingerprint",

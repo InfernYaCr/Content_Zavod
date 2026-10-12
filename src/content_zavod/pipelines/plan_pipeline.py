@@ -23,6 +23,7 @@ are exactly what they were before the setting existed.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -30,6 +31,7 @@ from typing import Any, Protocol
 from ..domain import PlanItemDetail, PlanItemId, TopicDraft
 from ..job_queue import JobHandler
 from ..settings import SettingsReader
+from ..workspaces import WorkspaceId
 from ..yandex import (
     DEFAULT_TEMPERATURE,
     Completion,
@@ -38,7 +40,7 @@ from ..yandex import (
     Message,
     TextGenerator,
 )
-from .provenance import StepRecord, StepRecorder
+from .provenance import StepRecord, StepRecorder, wordstat_step
 
 __all__ = [
     "make_generate_plan_handler",
@@ -88,18 +90,18 @@ def _topic_prompt_system(niche: str) -> str:
 def make_generate_plan_handler(
     keyword_stats: KeywordStats,
     text_generator: TextGenerator,
-    recent_topic_titles: Callable[[datetime], Awaitable[list[str]]],
+    recent_topic_titles: Callable[[WorkspaceId, datetime], Awaitable[list[str]]],
     settings: SettingsReader,
     *,
     seed_keywords: Sequence[str] | None = None,
     topics_per_plan: int = TOPICS_PER_PLAN,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> JobHandler:
-    async def handle(payload: dict[str, Any]) -> dict[str, Any]:
+    async def handle(workspace_id: WorkspaceId, payload: dict[str, Any]) -> dict[str, Any]:
         week_label = payload["week_label"]
         current_time = now()
         from_date, to_date = _dynamics_window(current_time)
-        owner_settings = await settings.read()
+        owner_settings = await settings.read(workspace_id)
         niche = owner_settings.niche
         audience = owner_settings.audience
         directions = seed_keywords if seed_keywords is not None else owner_settings.directions
@@ -108,6 +110,7 @@ def make_generate_plan_handler(
         growing: list[tuple[float, str]] = []
         errors: list[Exception] = []
         for keyword in directions:
+            started = time.monotonic()
             try:
                 points = await keyword_stats.keyword_dynamics(
                     keyword, period="PERIOD_MONTHLY", from_date=from_date, to_date=to_date
@@ -115,20 +118,31 @@ def make_generate_plan_handler(
             except Exception as exc:
                 errors.append(exc)
                 continue
+            finally:
+                # Every request sent counts in the Учёт расхода, answered or not (ADR-0015).
+                recorder.add(
+                    wordstat_step(
+                        "wordstat/dynamics",
+                        keyword,
+                        {"phrase": keyword, "from_date": from_date, "to_date": to_date},
+                        latency_ms=int((time.monotonic() - started) * 1000),
+                    )
+                )
             growth = _growth_ratio(points)
             if growth is not None and growth > 1.0:
                 growing.append((growth, keyword))
         if errors and len(errors) == len(directions):
             # #84: not one Направление answered - an outage, not "nothing grows". Failing the
             # Job gets it retried and, once exhausted, an error with "Повторить".
-            raise RuntimeError(
+            outage = RuntimeError(
                 f"Wordstat недоступен: все запросы по Направлениям ({len(errors)}) "
                 f"завершились ошибкой: {errors[-1]}"
-            ) from errors[-1]
+            )
+            raise recorder.fail(outage) from errors[-1]
         growing.sort(key=lambda pair: pair[0], reverse=True)
 
         since = current_time - timedelta(days=RECENT_HISTORY_DAYS)
-        used_titles = {title.lower() for title in await recent_topic_titles(since)}
+        used_titles = {title.lower() for title in await recent_topic_titles(workspace_id, since)}
 
         topics: list[dict[str, Any]] = []
         try:
@@ -159,7 +173,9 @@ def make_generate_plan_handler(
 
 
 class PlanItemReader(Protocol):
-    async def get_item(self, plan_item_id: PlanItemId) -> PlanItemDetail: ...
+    async def get_item(
+        self, workspace_id: WorkspaceId, plan_item_id: PlanItemId
+    ) -> PlanItemDetail: ...
 
 
 def _regenerate_prompt_system(niche: str) -> str:
@@ -178,11 +194,12 @@ def make_regenerate_topic_handler(
     text_generator: TextGenerator,
     settings: SettingsReader,
 ) -> JobHandler:
-    async def handle(payload: dict[str, Any]) -> dict[str, Any]:
+    async def handle(workspace_id: WorkspaceId, payload: dict[str, Any]) -> dict[str, Any]:
         plan_item_id = PlanItemId(payload["plan_item_id"])
         comment = payload.get("comment")
-        current = await item_reader.get_item(plan_item_id)
-        owner_settings = await settings.read()
+        # The Job's Workspace: a payload naming another's Тема finds nothing (ADR-0015).
+        current = await item_reader.get_item(workspace_id, plan_item_id)
+        owner_settings = await settings.read(workspace_id)
         recorder = StepRecorder()
         try:
             draft = await _redraft_topic(

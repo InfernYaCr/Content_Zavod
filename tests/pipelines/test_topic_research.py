@@ -16,6 +16,7 @@ from content_zavod.pipelines.topic_research import (
     verified_facts,
 )
 from content_zavod.yandex import Message
+from tests.tenancy import WS_A
 
 from .research_fakes import FakePageFetcher, FakeSearch, InMemoryResearchCache, page
 
@@ -74,7 +75,9 @@ async def test_research_keeps_only_facts_quoted_verbatim_from_the_page() -> None
         ]
     )
 
-    research = await _researcher(search, pages).prepare(_BRIEF, plan_item_id=None, steps=steps)
+    research = await _researcher(search, pages).prepare(
+        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+    )
 
     bundle = research.bundle
     assert bundle.status == "ok"
@@ -99,7 +102,9 @@ async def test_page_text_is_delimited_input_data_with_an_untrusted_data_rule() -
     pages = {_PAGE_A: page(_PAGE_A, f"{_TEXT_A}\n{attack}")}
     steps = ScriptedSteps(["[]", "аутлайн"])
 
-    await _researcher(FakeSearch([_PAGE_A]), pages).prepare(_BRIEF, plan_item_id=None, steps=steps)
+    await _researcher(FakeSearch([_PAGE_A]), pages).prepare(
+        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+    )
 
     system, user = steps.calls[0][1]
     assert attack not in system.text
@@ -114,7 +119,7 @@ async def test_without_verified_facts_the_bundle_has_no_evidence() -> None:
     steps = ScriptedSteps(["не JSON вовсе", "аутлайн"])
 
     research = await _researcher(FakeSearch([_PAGE_A]), pages).prepare(
-        _BRIEF, plan_item_id=None, steps=steps
+        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
     )
 
     assert research.bundle.status == "no_evidence"
@@ -130,7 +135,7 @@ async def test_failed_search_degrades_to_search_unavailable_and_is_not_cached() 
     steps = ScriptedSteps(["аутлайн"])
 
     research = await _researcher(FakeSearch(error=RuntimeError("403")), cache=cache).prepare(
-        _BRIEF, plan_item_id=PlanItemId("item-1"), steps=steps
+        _BRIEF, workspace_id=WS_A, plan_item_id=PlanItemId("item-1"), steps=steps
     )
 
     assert research.bundle.status == "search_unavailable"
@@ -142,7 +147,9 @@ async def test_failed_search_degrades_to_search_unavailable_and_is_not_cached() 
 async def test_no_search_provider_means_search_unavailable() -> None:
     steps = ScriptedSteps(["аутлайн"])
 
-    research = await _researcher(None).prepare(_BRIEF, plan_item_id=None, steps=steps)
+    research = await _researcher(None).prepare(
+        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+    )
 
     assert research.bundle.status == "search_unavailable"
     assert [name for name, _ in steps.calls] == ["outline"]
@@ -155,9 +162,13 @@ async def test_research_is_cached_per_topic_and_reused() -> None:
     researcher = _researcher(search, {_PAGE_A: page(_PAGE_A, _TEXT_A)}, cache)
     first_steps = ScriptedSteps([_facts(("42% компаний", _TEXT_A)), "аутлайн"])
 
-    first = await researcher.prepare(_BRIEF, plan_item_id=PlanItemId("item-1"), steps=first_steps)
+    first = await researcher.prepare(
+        _BRIEF, workspace_id=WS_A, plan_item_id=PlanItemId("item-1"), steps=first_steps
+    )
     second_steps = ScriptedSteps([])
-    second = await researcher.prepare(_BRIEF, plan_item_id=PlanItemId("item-1"), steps=second_steps)
+    second = await researcher.prepare(
+        _BRIEF, workspace_id=WS_A, plan_item_id=PlanItemId("item-1"), steps=second_steps
+    )
 
     assert second == first
     assert second_steps.calls == []
@@ -170,9 +181,13 @@ async def test_an_edited_topic_is_researched_again() -> None:
     search = FakeSearch([])
     researcher = _researcher(search, cache=cache)
 
-    await researcher.prepare(_BRIEF, plan_item_id=PlanItemId("i"), steps=ScriptedSteps(["a"]))
+    await researcher.prepare(
+        _BRIEF, workspace_id=WS_A, plan_item_id=PlanItemId("i"), steps=ScriptedSteps(["a"])
+    )
     edited = TopicBrief(title="Как выбрать CRM в 2027", summary="", keywords=())
-    await researcher.prepare(edited, plan_item_id=PlanItemId("i"), steps=ScriptedSteps(["b"]))
+    await researcher.prepare(
+        edited, workspace_id=WS_A, plan_item_id=PlanItemId("i"), steps=ScriptedSteps(["b"])
+    )
 
     assert len(search.queries) == 2
 
@@ -185,7 +200,7 @@ async def test_extraction_failure_on_one_page_skips_only_that_page() -> None:
     )
 
     research = await _researcher(FakeSearch([_PAGE_A, _PAGE_B]), pages).prepare(
-        _BRIEF, plan_item_id=None, steps=steps
+        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
     )
 
     assert [s.url for s in research.bundle.sources] == [_PAGE_B]
@@ -203,7 +218,7 @@ async def test_tiny_stale_and_unfetchable_pages_are_skipped() -> None:
     steps = ScriptedSteps(["аутлайн"])
 
     research = await _researcher(FakeSearch([tiny, stale, missing]), pages).prepare(
-        _BRIEF, plan_item_id=None, steps=steps
+        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
     )
 
     assert research.bundle.status == "no_evidence"
@@ -286,7 +301,9 @@ async def test_stale_page_is_recognised_by_a_russian_date_too() -> None:
         [_facts(("Внедрение CRM занимает от двух до шести недель", _TEXT_B)), "аутлайн"]
     )
 
-    research = await _researcher(search, pages).prepare(_BRIEF, plan_item_id=None, steps=steps)
+    research = await _researcher(search, pages).prepare(
+        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+    )
 
     assert [source.url for source in research.bundle.sources] == [_PAGE_B]
 
@@ -303,7 +320,9 @@ async def test_a_hanging_search_is_cut_off_and_degrades_to_search_unavailable(
     monkeypatch.setattr(topic_research, "SEARCH_TIMEOUT_SECONDS", 0.05)
     steps = ScriptedSteps(["аутлайн"])
 
-    research = await _researcher(_HangingSearch()).prepare(_BRIEF, plan_item_id=None, steps=steps)
+    research = await _researcher(_HangingSearch()).prepare(
+        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+    )
 
     assert research.bundle.status == "search_unavailable"
 
@@ -335,7 +354,9 @@ async def test_facts_are_extracted_from_the_pages_in_parallel_keeping_page_order
         ]
     )
 
-    research = await _researcher(search, pages).prepare(_BRIEF, plan_item_id=None, steps=steps)
+    research = await _researcher(search, pages).prepare(
+        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+    )
 
     assert steps.max_running == 2
     assert [(e.id, e.url) for e in research.bundle.evidence] == [("E1", _PAGE_A), ("E2", _PAGE_B)]

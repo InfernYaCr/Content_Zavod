@@ -40,18 +40,20 @@ class FakePageFetcher:
 
 class InMemoryResearchCache:
     def __init__(self) -> None:
-        self.entries: dict[PlanItemId, tuple[str, TopicResearch]] = {}
+        self.entries: dict[tuple[int, PlanItemId], tuple[str, TopicResearch]] = {}
 
-    async def get(self, plan_item_id: PlanItemId, fingerprint: str) -> TopicResearch | None:
-        entry = self.entries.get(plan_item_id)
+    async def get(
+        self, workspace_id: int, plan_item_id: PlanItemId, fingerprint: str
+    ) -> TopicResearch | None:
+        entry = self.entries.get((workspace_id, plan_item_id))
         if entry is None or entry[0] != fingerprint:
             return None
         return entry[1]
 
     async def put(
-        self, plan_item_id: PlanItemId, fingerprint: str, research: TopicResearch
+        self, workspace_id: int, plan_item_id: PlanItemId, fingerprint: str, research: TopicResearch
     ) -> None:
-        self.entries[plan_item_id] = (fingerprint, research)
+        self.entries[(workspace_id, plan_item_id)] = (fingerprint, research)
 
 
 def page(

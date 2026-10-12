@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from content_zavod.entrypoints.worker import _make_on_attempt
 from content_zavod.job_queue import ClaimedJob, JobPartialFailure
-from tests.tenancy import WS_A
+from tests.tenancy import WS_A, WS_B
 
 _CLAIMED = ClaimedJob(
     id=1, workspace_id=WS_A, job_type="generate_article", payload={}, attempts=1, lease_token="t"
@@ -40,6 +40,26 @@ async def test_records_steps_from_successful_output() -> None:
     assert generation_steps.recorded == [
         (WS_A, 1, "generate_article", "a-1", [{"step_name": "outline"}])
     ]
+
+
+async def test_records_steps_under_the_jobs_own_workspace_not_one_from_its_payload() -> None:
+    """ADR-0015: the Учёт расхода row belongs to the claimed Job's Workspace (A), whatever
+    Workspace (B) its payload or output may name."""
+    generation_steps = FakeGenerationSteps()
+    on_attempt = _make_on_attempt(generation_steps)
+    claimed = ClaimedJob(
+        id=1,
+        workspace_id=WS_A,
+        job_type="generate_article",
+        payload={"workspace_id": WS_B},
+        attempts=1,
+        lease_token="t",
+    )
+
+    await on_attempt(claimed, {"workspace_id": WS_B, "steps": [{"step_name": "outline"}]}, None)
+
+    [(workspace_id, *_)] = generation_steps.recorded
+    assert workspace_id == WS_A
 
 
 async def test_records_steps_from_a_job_partial_failure() -> None:
