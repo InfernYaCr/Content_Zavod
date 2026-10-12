@@ -131,6 +131,51 @@ def test_project_is_input_data_with_a_single_cta_rule_in_every_step() -> None:
         input_data = user.text.split("INPUT_DATA", 1)[1]
         assert f'"url": "{_PROJECT.url}"' in input_data
         assert _PROJECT.description in input_data
+        assert '"kind": "telegram"' in input_data
+
+
+def test_project_rule_is_one_organic_closing_sentence_that_replaces_other_ctas() -> None:
+    """#133: the invitation follows from the conclusion and is the only CTA - the
+    PERSONA and PLATFORM_PROFILE CTAs would otherwise add a second one."""
+    persona = PERSONAS["practical_marketer"]
+    profile = platform_profile("zen")
+
+    def system(project: Project | None) -> str:
+        return draft_messages(
+            title="Тема",
+            summary="",
+            outline="аутлайн",
+            bundle=_EMPTY,
+            previous_content=None,
+            comment=None,
+            persona=persona,
+            custom_persona=None,
+            profile=profile,
+            project=project,
+        )[0].text
+
+    without = system(None)
+    assert f"CTA: {persona.cta_style}" in without
+    assert f"CTA: {profile.cta}" in without
+
+    text = system(_PROJECT)
+    assert "одним предложением в последнем абзаце" in text
+    assert "вытекает из вывода статьи" in text
+    assert "голым URL" in text
+    assert "«Подписывайтесь»" in text
+    assert "заменяет CTA из PERSONA и PLATFORM_PROFILE" in text
+    assert persona.cta_style not in text
+    assert profile.cta not in text
+    for rewrite_system, _ in _all_steps(project=_PROJECT):
+        assert "заменяет CTA из PERSONA и PLATFORM_PROFILE" in rewrite_system.text
+        assert profile.cta not in rewrite_system.text
+
+
+def test_site_project_reaches_input_data_as_kind_site() -> None:
+    site = Project(url="https://example.ru")
+    for _system, user in _all_steps(project=site):
+        input_data = user.text.split("INPUT_DATA", 1)[1]
+        assert '"kind": "site"' in input_data
 
 
 _BUNDLE = ResearchBundle(

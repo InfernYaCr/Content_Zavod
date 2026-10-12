@@ -318,7 +318,7 @@ async def test_audience_reaches_draft_and_rewrite_as_input_data_but_not_the_cach
         assert '"audience": "Студенты-маркетологи"' in user.text
     versions = {s["step_name"]: s["prompt_template_version"] for s in first["steps"]}
     assert versions["outline"] == "outline-v4"  # unchanged: the outline takes no Аудитория
-    assert (versions["draft"], versions["rewrite"]) == ("draft-v6", "rewrite-v6")
+    assert (versions["draft"], versions["rewrite"]) == ("draft-v7", "rewrite-v7")
     assert [s["step_name"] for s in second["steps"]] == ["draft", "rewrite"]
 
 
@@ -640,13 +640,18 @@ async def test_generate_article_failure_partway_through_preserves_completed_step
 
 
 _PROJECT_URL = "https://t.me/marketing_daily"
-_PROJECT_CTA = f"Разборы кейсов по маркетингу: {_PROJECT_URL}"
+_PROJECT_CTA = f"Больше по теме — в Telegram-канале автора: {_PROJECT_URL}"
 
 
-async def _generate_with_project(rewrite: str, *, evidence: bool = False) -> tuple[str, list]:
+async def _generate_with_project(
+    rewrite: str,
+    *,
+    evidence: bool = False,
+    project: str = f"{_PROJECT_URL} Разборы кейсов по маркетингу.",
+) -> tuple[str, list]:
     completions = _evidence_completions(rewrite) if evidence else _plain_completions(rewrite)
     text_generator = ScriptedTextGenerator(completions)
-    store = FakeOwnerSettingsStore(project=f"{_PROJECT_URL} Разборы кейсов по маркетингу.")
+    store = FakeOwnerSettingsStore(project=project)
     researcher = _evidence_researcher() if evidence else _no_evidence_researcher()
     handler = make_generate_article_handler(
         text_generator, researcher, WorkspaceSettingsReader(store)
@@ -685,11 +690,41 @@ async def test_project_cta_line_is_appended_when_the_model_drops_the_url() -> No
 
 @pytest.mark.asyncio
 async def test_project_cta_line_is_appended_when_the_model_mangles_the_url() -> None:
+    """A typo'd copy is a different link: it goes like any foreign URL (#133), and the
+    neutral fallback line brings the exact one back."""
     mangled = "Подписывайтесь: https://t.me/marketing_dailyy или https://t.me/marketing_daily/2"
 
     content, _ = await _generate_with_project(f"Текст.\n\n{mangled}")
 
-    assert content == f"Текст.\n\n{mangled}\n\n{_PROJECT_CTA}"
+    assert content == f"Текст.\n\nПодписывайтесь: или\n\n{_PROJECT_CTA}"
+
+
+@pytest.mark.asyncio
+async def test_site_project_without_description_gets_a_neutral_fallback_line() -> None:
+    content, _ = await _generate_with_project("Текст статьи.", project="https://example.ru")
+
+    assert content == "Текст статьи.\n\nБольше по теме — на сайте автора: https://example.ru"
+
+
+@pytest.mark.parametrize(
+    ("project", "lookalike"),
+    [
+        ("https://example.ru", "https://example.ru.evil.com/x"),
+        ("https://example.ru", "https://example.ru/../evil"),
+        (_PROJECT_URL, "https://t.me/marketing_daily_spam"),
+        (_PROJECT_URL, "https://t.me/marketing_daily/../spam"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_foreign_url_that_only_starts_with_the_project_link_is_dropped(
+    project, lookalike
+) -> None:
+    """#133 security: the foreign-URL filter compared with `startswith`, so a lookalike
+    host or channel survived into the Статья."""
+    content, _ = await _generate_with_project(f"Текст.\n\nСм. {lookalike}", project=project)
+
+    assert lookalike not in content
+    assert content.startswith("Текст.\n\nСм.\n\nБольше по теме — ")
 
 
 @pytest.mark.parametrize(
