@@ -81,6 +81,21 @@ async def test_a_repeated_tick_in_the_same_week_requests_nothing_more(
     assert await _plan_jobs(pool) == [(WS_A, f"generate_plan:{WEEK}")]
 
 
+async def test_a_week_already_requested_is_not_written_to_again(
+    pool: asyncpg.Pool, plan: Plan
+) -> None:
+    # Past the deadline, the week's Job done and delivered, no active Plan (#84 or archived):
+    # the tick must not touch `jobs` every minute (the enqueue upsert is a real UPDATE).
+    await _with_niche(pool, WS_A)
+    await weekly_plan_tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+    await pool.execute("UPDATE jobs SET status = 'done', notified_at = now()")
+    row_version = await pool.fetchval("SELECT xmin::text FROM jobs")
+
+    await weekly_plan_tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+
+    assert await pool.fetchval("SELECT xmin::text FROM jobs") == row_version
+
+
 async def test_changing_one_schedule_leaves_the_other_alone(pool: asyncpg.Pool, plan: Plan) -> None:
     await _with_niche(pool, WS_A, WS_B)
     await ScheduleSettings(pool).set(WS_A, "fri", 9, 0)

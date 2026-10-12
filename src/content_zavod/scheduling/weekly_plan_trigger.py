@@ -129,6 +129,18 @@ async def schedulable_workspaces(pool: asyncpg.Pool) -> list[SchedulableWorkspac
     ]
 
 
+async def _week_requested(pool: asyncpg.Pool, workspace_id: WorkspaceId, week_label: str) -> bool:
+    """The week's `generate_plan` Job already exists (its Plan archived, its result empty, #84,
+    or it failed): `request_new` would only return it again, but its upsert is a real UPDATE -
+    every minute until the week ends. A read keeps the tick write-free."""
+    return await pool.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM jobs WHERE workspace_id = $1 AND idempotency_key = $2)",
+        workspace_id,
+        # The key `Plan.request_new` gives the week's scheduled Plan.
+        f"generate_plan:{week_label}",
+    )
+
+
 async def weekly_plan_tick(
     pool: asyncpg.Pool,
     plan: PlanRequester,
@@ -141,7 +153,9 @@ async def weekly_plan_tick(
         if week_label is None:
             continue
         try:
-            if await plan.find_active(workspace.workspace_id, week_label) is None:
+            if await plan.find_active(
+                workspace.workspace_id, week_label
+            ) is None and not await _week_requested(pool, workspace.workspace_id, week_label):
                 await plan.request_new(workspace.workspace_id, week_label)
         except Exception:
             # One Workspace's failure must not starve the ones after it every minute.
