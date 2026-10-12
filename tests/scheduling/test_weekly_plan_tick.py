@@ -3,8 +3,8 @@ asks each one's Plan once a week, in its own time zone (ADR-0015)."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest_asyncio
@@ -14,7 +14,13 @@ from content_zavod.job_queue import JobId, JobQueue
 from content_zavod.owner_settings import WorkspaceSettingsStore
 from content_zavod.scheduling import ScheduleSettings, weekly_plan_tick
 from content_zavod.settings import NICHE_KEY, ONBOARDING_KEY
-from content_zavod.workspaces import WorkspaceId, Workspaces
+from content_zavod.workspaces import (
+    Limits,
+    TrialLimitExhausted,
+    TrialLimits,
+    WorkspaceId,
+    Workspaces,
+)
 from tests.tenancy import WS_A, WS_B
 
 # Monday 2026-10-12 (2026-W42), 03:00 in Moscow = 10:00 in Vladivostok (МСК+7).
@@ -43,6 +49,25 @@ async def plan(pool: asyncpg.Pool) -> Plan:
     return Plan(pool, JobQueue(pool))
 
 
+# Plenty of Лимит: these tests are about the Расписание, not the Лимит.
+PLENTY = TrialLimits(plans=100, articles=100, jobs_per_day=100)
+
+
+async def _nobody_told(workspace_id: WorkspaceId, exc: TrialLimitExhausted) -> None:
+    raise AssertionError(f"unexpected Лимит message to {workspace_id}")
+
+
+async def tick(
+    pool: asyncpg.Pool,
+    plan: object,
+    *,
+    now: Callable[[], datetime],
+    trial: TrialLimits = PLENTY,
+    told: Callable[[WorkspaceId, TrialLimitExhausted], Awaitable[None]] = _nobody_told,
+) -> None:
+    await weekly_plan_tick(pool, plan, Limits(pool, trial), told, now=now)  # type: ignore[arg-type]
+
+
 async def _with_niche(pool: asyncpg.Pool, *workspaces: WorkspaceId) -> None:
     for workspace_id in workspaces:
         await WorkspaceSettingsStore(pool).set(workspace_id, NICHE_KEY, "стоматология")
@@ -62,7 +87,7 @@ async def test_each_workspace_gets_its_plan_in_its_own_time_zone(
     await _with_niche(pool, WS_A, WS_B)
     await Workspaces(pool).set_timezone(WS_B, "Asia/Vladivostok")
 
-    await weekly_plan_tick(pool, plan, now=lambda: MONDAY_0300_MSK)
+    await tick(pool, plan, now=lambda: MONDAY_0300_MSK)
 
     assert await _plan_jobs(pool) == [(WS_B, f"generate_plan:{WEEK}")]
 
@@ -71,12 +96,12 @@ async def test_a_repeated_tick_in_the_same_week_requests_nothing_more(
     pool: asyncpg.Pool, plan: Plan
 ) -> None:
     await _with_niche(pool, WS_A)
-    await weekly_plan_tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
     # The Job ran and came back empty (#84): delivered, no Plan created.
     await pool.execute("UPDATE jobs SET status = 'done', notified_at = now()")
 
-    await weekly_plan_tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
-    await weekly_plan_tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
 
     assert await _plan_jobs(pool) == [(WS_A, f"generate_plan:{WEEK}")]
 
@@ -87,11 +112,11 @@ async def test_a_week_already_requested_is_not_written_to_again(
     # Past the deadline, the week's Job done and delivered, no active Plan (#84 or archived):
     # the tick must not touch `jobs` every minute (the enqueue upsert is a real UPDATE).
     await _with_niche(pool, WS_A)
-    await weekly_plan_tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
     await pool.execute("UPDATE jobs SET status = 'done', notified_at = now()")
     row_version = await pool.fetchval("SELECT xmin::text FROM jobs")
 
-    await weekly_plan_tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
 
     assert await pool.fetchval("SELECT xmin::text FROM jobs") == row_version
 
@@ -100,7 +125,7 @@ async def test_changing_one_schedule_leaves_the_other_alone(pool: asyncpg.Pool, 
     await _with_niche(pool, WS_A, WS_B)
     await ScheduleSettings(pool).set(WS_A, "fri", 9, 0)
 
-    await weekly_plan_tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
 
     assert await _plan_jobs(pool) == [(WS_B, f"generate_plan:{WEEK}")]
 
@@ -110,7 +135,7 @@ async def test_a_fresh_workspace_without_a_niche_gets_no_plan_on_the_startup_cat
 ) -> None:
     # The live bug: first start on an empty base after the deadline, nobody has done the
     # Онбординг yet - the first tick must not build a Plan from the default Ниша.
-    await weekly_plan_tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
 
     assert await _plan_jobs(pool) == []
 
@@ -122,7 +147,7 @@ async def test_a_workspace_in_the_middle_of_onboarding_is_skipped(
     await _with_niche(pool, WS_A)
     await WorkspaceSettingsStore(pool).set(WS_A, ONBOARDING_KEY, "started")
 
-    await weekly_plan_tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
 
     assert await _plan_jobs(pool) == []
 
@@ -131,7 +156,7 @@ async def test_a_workspace_that_blocked_the_bot_is_skipped(pool: asyncpg.Pool, p
     await _with_niche(pool, WS_A)
     await pool.execute("UPDATE workspaces SET bot_blocked_at = now() WHERE id = $1", WS_A)
 
-    await weekly_plan_tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
 
     assert await _plan_jobs(pool) == []
 
@@ -149,7 +174,7 @@ async def test_a_workspace_with_an_unfinished_job_is_skipped(
         "UPDATE jobs SET status = 'done', notified_at = now() WHERE idempotency_key = 'article:1'"
     )
 
-    await weekly_plan_tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
 
     assert await _plan_jobs(pool) == []
 
@@ -160,7 +185,7 @@ async def test_a_workspace_with_this_weeks_plan_is_skipped(pool: asyncpg.Pool, p
         "INSERT INTO plans (id, workspace_id, week_label) VALUES ('p1', $1, $2)", WS_A, WEEK
     )
 
-    await weekly_plan_tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
 
     assert await _plan_jobs(pool) == []
 
@@ -175,10 +200,12 @@ class FailingFor:
     async def find_active(self, workspace_id: WorkspaceId, week_label: str) -> object | None:
         return await self._plan.find_active(workspace_id, week_label)
 
-    async def request_new(self, workspace_id: WorkspaceId, week_label: str) -> JobId:
+    async def request_new(
+        self, workspace_id: WorkspaceId, week_label: str, *, conn: asyncpg.Connection
+    ) -> JobId:
         if workspace_id == self._failing:
             raise RuntimeError("boom")
-        return await self._plan.request_new(workspace_id, week_label)
+        return await self._plan.request_new(workspace_id, week_label, conn=conn)
 
 
 async def test_one_workspaces_failure_does_not_stop_the_others(
@@ -186,6 +213,59 @@ async def test_one_workspaces_failure_does_not_stop_the_others(
 ) -> None:
     await _with_niche(pool, WS_A, WS_B)
 
-    await weekly_plan_tick(pool, FailingFor(plan, WS_A), now=lambda: MONDAY_NOON_MSK)
+    await tick(pool, FailingFor(plan, WS_A), now=lambda: MONDAY_NOON_MSK)
 
     assert await _plan_jobs(pool) == [(WS_B, f"generate_plan:{WEEK}")]
+
+
+async def test_with_the_plan_limit_used_up_the_tick_requests_nothing_and_says_so_once_a_week(
+    pool: asyncpg.Pool, plan: Plan
+) -> None:
+    """ADR-0015: no Plan past the Лимит; the owner hears it once a week, not every minute."""
+    await _with_niche(pool, WS_A)
+    told: list[tuple[WorkspaceId, int]] = []
+
+    async def tell(workspace_id: WorkspaceId, exc: TrialLimitExhausted) -> None:
+        told.append((workspace_id, exc.usage.plan_limit))
+
+    no_plans = TrialLimits(plans=0, articles=8, jobs_per_day=100)
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK, trial=no_plans, told=tell)
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK, trial=no_plans, told=tell)
+    assert await _plan_jobs(pool) == []
+    assert told == [(WS_A, 0)]
+
+    next_week = MONDAY_NOON_MSK + timedelta(days=7)
+    await tick(pool, plan, now=lambda: next_week, trial=no_plans, told=tell)
+    assert told == [(WS_A, 0), (WS_A, 0)]
+
+
+async def test_a_limit_of_one_workspace_does_not_stop_the_other(
+    pool: asyncpg.Pool, plan: Plan
+) -> None:
+    await _with_niche(pool, WS_A, WS_B)
+    await pool.execute("UPDATE workspaces SET plan_limit = 0 WHERE id = $1", WS_A)
+    told: list[WorkspaceId] = []
+
+    async def tell(workspace_id: WorkspaceId, exc: TrialLimitExhausted) -> None:
+        told.append(workspace_id)
+
+    try:
+        await tick(pool, plan, now=lambda: MONDAY_NOON_MSK, told=tell)
+    finally:
+        await pool.execute("UPDATE workspaces SET plan_limit = NULL WHERE id = $1", WS_A)
+
+    assert await _plan_jobs(pool) == [(WS_B, f"generate_plan:{WEEK}")]
+    assert told == [WS_A]
+
+
+async def test_a_week_skipped_for_the_limit_stays_skipped_even_if_the_limit_is_raised(
+    pool: asyncpg.Pool, plan: Plan
+) -> None:
+    """Once told «no Plan this week», the tick leaves the week alone - no lock every minute; a
+    Лимит raised by `/admin limit` mid-week applies from the next week (or «🪄 Составить План»)."""
+    await _with_niche(pool, WS_A)
+    await WorkspaceSettingsStore(pool).set(WS_A, f"schedule_skipped:{WEEK}", "1")
+
+    await tick(pool, plan, now=lambda: MONDAY_NOON_MSK)
+
+    assert await _plan_jobs(pool) == []

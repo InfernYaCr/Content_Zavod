@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Protocol, cast
 
-from ..workspaces import WorkspaceId
+from ..workspaces import LimitRefused, WorkspaceId
 from .pending_inputs import PendingInput
+from .texts import error_alert_text
 
 # A comment goes into the regeneration's prompt, so it is capped (ADR-0015, «Безопасность»).
 COMMENT_MAX_LENGTH = 1000
@@ -24,6 +25,11 @@ class CommentPrompt[Id](Protocol):
     async def withdraw(self, chat_id: int, pending: PendingInput) -> None:
         """The wait closed without a regeneration (Отмена, superseded, another action):
         remove its message, so no dead prompt is left in the chat."""
+        ...
+
+    async def refuse(self, chat_id: int, pending: PendingInput, text: str) -> None:
+        """The wait resolved, but the Лимит refused the regeneration (ADR-0015): say why on the
+        prompt message instead of «⏳ Генерирую...»."""
         ...
 
     async def reject_too_long(self, chat_id: int) -> None:
@@ -88,8 +94,7 @@ class CommentGatedRegeneration[Id: str]:
             workspace_id, chat_id, user_id, self._kind, target_id=id_
         )
         if pending is not None:
-            await self._regenerate(workspace_id, id_, None)
-            await self._prompt.mark_generating(chat_id, pending)
+            await self._run(workspace_id, chat_id, pending, id_, None)
             return
         prompt_message_id = await self._prompt.prompt_for_comment(chat_id, id_)
         replaced = await self._pending.put(
@@ -113,9 +118,24 @@ class CommentGatedRegeneration[Id: str]:
         pending = await self._pending.take(workspace_id, chat_id, user_id, self._kind)
         if pending is None:
             return False
-        await self._regenerate(workspace_id, cast(Id, pending.target_id), comment)
-        await self._prompt.mark_generating(chat_id, pending)
+        await self._run(workspace_id, chat_id, pending, cast(Id, pending.target_id), comment)
         return True
+
+    async def _run(
+        self,
+        workspace_id: WorkspaceId,
+        chat_id: int,
+        pending: PendingInput,
+        id_: Id,
+        comment: str | None,
+    ) -> None:
+        try:
+            await self._regenerate(workspace_id, id_, comment)
+        except LimitRefused as exc:
+            # Nothing was enqueued; the wait is closed all the same - the prompt says why.
+            await self._prompt.refuse(chat_id, pending, error_alert_text(exc))
+            return
+        await self._prompt.mark_generating(chat_id, pending)
 
     async def cancel(
         self, workspace_id: WorkspaceId, chat_id: int, user_id: int, id_: Id | None = None

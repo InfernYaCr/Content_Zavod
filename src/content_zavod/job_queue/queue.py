@@ -74,13 +74,19 @@ class JobQueue:
         job_type: str,
         payload: dict[str, Any],
         idempotency_key: str,
+        *,
+        conn: asyncpg.Connection | None = None,
     ) -> JobId:
-        row = await self._pool.fetchrow(
+        """`conn` - the caller's transaction, the one `Limits.reserve` checked (ADR-0015). An
+        existing Job with the key is returned as is: `DO NOTHING` never locks its row, so a
+        caller holding the Workspace row lock can't deadlock with `claim_next`, which locks a
+        Job row first and the Workspace row second."""
+        db = conn or self._pool
+        row = await db.fetchrow(
             """
             INSERT INTO jobs (workspace_id, job_type, payload, idempotency_key)
             VALUES ($1, $2, $3::jsonb, $4)
-            ON CONFLICT (workspace_id, idempotency_key)
-            DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+            ON CONFLICT (workspace_id, idempotency_key) DO NOTHING
             RETURNING id
             """,
             workspace_id,
@@ -89,13 +95,21 @@ class JobQueue:
             idempotency_key,
         )
         if row is None:
+            row = await db.fetchrow(
+                "SELECT id FROM jobs WHERE workspace_id = $1 AND idempotency_key = $2",
+                workspace_id,
+                idempotency_key,
+            )
+        if row is None:
             raise JobQueueError(
                 f"enqueue failed to return an id for idempotency_key={idempotency_key!r}"
             )
         return JobId(row["id"])
 
-    async def get_status(self, workspace_id: WorkspaceId, job_id: JobId) -> JobStatus:
-        row = await self._pool.fetchrow(
+    async def get_status(
+        self, workspace_id: WorkspaceId, job_id: JobId, *, conn: asyncpg.Connection | None = None
+    ) -> JobStatus:
+        row = await (conn or self._pool).fetchrow(
             "SELECT status FROM jobs WHERE id = $1 AND workspace_id = $2", job_id, workspace_id
         )
         if row is None:
@@ -239,14 +253,17 @@ class JobQueue:
             )
         return result == "UPDATE 1"
 
-    async def retry(self, workspace_id: WorkspaceId, job_id: JobId) -> bool:
+    async def retry(
+        self, workspace_id: WorkspaceId, job_id: JobId, *, conn: asyncpg.Connection | None = None
+    ) -> bool:
         """Reset a failed job back to queued, for a user-triggered "Повторить" retry.
 
         Also clears `notified_at` so the eventual re-completion (done or
         failed again) is notified once more - otherwise `claim_notification`
-        would skip it as already-notified from the original failure.
+        would skip it as already-notified from the original failure. `conn` - as in `enqueue`.
         """
-        result = await self._pool.execute(
+        db = conn or self._pool
+        result = await db.execute(
             """
             UPDATE jobs
             SET status = 'queued', attempts = 0, error = NULL, run_at = now(),
@@ -258,7 +275,7 @@ class JobQueue:
         )
         if result == "UPDATE 1":
             return True
-        exists = await self._pool.fetchval(
+        exists = await db.fetchval(
             "SELECT EXISTS(SELECT 1 FROM jobs WHERE id = $1 AND workspace_id = $2)",
             job_id,
             workspace_id,

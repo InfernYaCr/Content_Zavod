@@ -45,6 +45,7 @@ from ..config import Settings, load_settings
 from ..domain import (
     Article,
     GeneratedVersion,
+    GenerationSteps,
     Plan,
     PlanId,
     PlanItemId,
@@ -76,6 +77,7 @@ from ..telegram import (
     sync_admin_commands,
     unpack_callback_query,
 )
+from ..telegram.admin_command import AdminRegistry, SpendSource, handle_admin_command
 from ..telegram.article_card import ArticlePagePublisher, send_article_card
 from ..telegram.asset_photos import AssetPhotos
 from ..telegram.gateway import SentPhoto, format_week_range
@@ -90,7 +92,6 @@ from ..telegram.style_samples import (
     StyleSamples,
 )
 from ..telegram.texts import (
-    ADMIN_PENDING_TEXT,
     BOT_DESCRIPTION,
     BOT_SHORT_DESCRIPTION,
     GROUP_START_TEXT,
@@ -103,9 +104,11 @@ from ..telegram.texts import (
     TOPIC_PROPOSE_HINT,
     UNKNOWN_MESSAGE_TEXT,
     job_failure_text,
+    schedule_skipped_text,
 )
 from ..telegraph import HttpxTelegraphClient, TelegraphPublisher, project_footer
-from ..workspaces import Workspace, WorkspaceId, Workspaces
+from ..workspaces import Limits, TrialLimitExhausted, Workspace, WorkspaceId, Workspaces
+from ..workspaces.admin import WorkspaceAdmin
 from ._process import register_shutdown
 
 logger = logging.getLogger(__name__)
@@ -291,6 +294,31 @@ async def answer_text(
         )
 
 
+class _ConnRegenerateOp[Id](Protocol):
+    async def __call__(
+        self,
+        workspace_id: WorkspaceId,
+        id_: Id,
+        comment: str | None,
+        *,
+        conn: asyncpg.Connection | None = None,
+    ) -> None: ...
+
+
+def reserved[Id](
+    limits: Limits, regenerate: _ConnRegenerateOp[Id], job_type: str
+) -> Callable[[WorkspaceId, Id, str | None], Awaitable[None]]:
+    """A comment-gated regeneration (`Plan.regenerate_item`, `Article.request_regeneration`)
+    enqueued in a `Limits.reserve` transaction (ADR-0015): «✏️ Доработать» costs a Статья, a
+    Тема costs nothing of the Лимит but counts toward the daily cap of such Jobs."""
+
+    async def run(workspace_id: WorkspaceId, id_: Id, comment: str | None) -> None:
+        async with limits.reserve(workspace_id, job_type) as reservation:
+            await regenerate(workspace_id, id_, comment, conn=reservation.conn)
+
+    return run
+
+
 def _private_chat_button(bot_username: str | None) -> InlineKeyboardMarkup | None:
     if not bot_username:
         return None
@@ -317,6 +345,9 @@ def _build_router(
     publisher: ArticlePagePublisher | None = None,
     bot_username: str | None = None,
     start_guard: StartGuard | None = None,
+    limits: Limits,
+    admin: AdminRegistry,
+    spend: SpendSource,
     style_samples: StyleSamples | None = None,
 ) -> Router:
     router = Router()
@@ -401,7 +432,7 @@ def _build_router(
         # A Пространство that isn't set up yet gets the wizard's intro instead (#96).
         if await onboarding.offer(workspace, chat_id):
             return
-        await main_menu.send(chat_id, welcome=True)
+        await main_menu.send(workspace, chat_id, welcome=True)
 
     async def is_global_admin(message: Message) -> bool:
         return (
@@ -411,14 +442,17 @@ def _build_router(
         )
 
     @router.message(Command("admin"), is_global_admin)
-    async def on_admin(message: Message) -> None:
+    async def on_admin(message: Message, command: CommandObject) -> None:
         # Anyone else's /admin falls through to `on_message`: an unknown command (ADR-0015).
-        await gateway.send_notice(message.chat.id, ADMIN_PENDING_TEXT)
+        assert message.from_user is not None
+        await handle_admin_command(
+            admin, spend, gateway, message.chat.id, message.from_user.id, command.args or ""
+        )
 
     @router.message(Command("menu"))
     @in_workspace
     async def on_menu(message: Message, workspace: Workspace) -> None:
-        await main_menu.send(message.chat.id)
+        await main_menu.send(workspace, message.chat.id)
 
     @router.message(Command("help"))
     @in_workspace
@@ -497,6 +531,7 @@ def _build_router(
         prompts,
         onboarding,
         guide=guide,
+        limits=limits,
         publisher=publisher,
         style_samples=style_samples,
     )
@@ -709,7 +744,10 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> list
                     text=_empty_plan_text(output["week_label"], output.get("empty_reason"))
                 )
             ]
-        plan_id = await plan.add_topics(ws, output["week_label"], topics)
+        # Charged against the Лимит in the same transaction, once per Job (ADR-0015).
+        plan_id = await plan.add_topics(
+            ws, output["week_label"], topics, source_job_id=result.job_id
+        )
         return [_PlanDelivery(plan_id=plan_id)]
     if result.job_type == "regenerate_topic":
         plan_item_id = PlanItemId(output["plan_item_id"])
@@ -866,14 +904,20 @@ async def main(settings: Settings | None = None) -> None:
         bot_state = BotStateStore(pool)
         plan = Plan(pool, queue, covers_enabled=settings.covers_enabled)
         article = Article(pool, queue)
+        limits = Limits(pool, settings.trial_limits)
 
         bot = Bot(token=settings.telegram_bot_token)
         bot_client = _AiogramBotClient(bot)
         gateway = TelegramGateway(bot_client, covers=settings.covers_enabled)
         pending_inputs = PendingInputs(pool)
-        plan_review = PlanReview(plan, TelegramCommentPrompt(bot_client), pending_inputs)
+        plan_review = PlanReview(
+            plan,
+            TelegramCommentPrompt(bot_client),
+            pending_inputs,
+            regenerate=reserved(limits, plan.regenerate_item, "regenerate_topic"),
+        )
         article_regeneration = CommentGatedRegeneration[ArticleId](
-            article.request_regeneration,
+            reserved(limits, article.request_regeneration, "regenerate_article"),
             TelegramCommentPrompt(bot_client, action="regenerate_article"),
             pending_inputs,
             kind="article_comment",
@@ -886,7 +930,13 @@ async def main(settings: Settings | None = None) -> None:
 
         # Its first run, right away, also catches up a deadline missed while the bot was down.
         scheduler = AsyncIOScheduler()
-        schedule_weekly_plan_tick(scheduler, pool, plan)
+
+        async def tell_schedule_skipped(workspace_id: WorkspaceId, exc: TrialLimitExhausted):
+            workspace = await workspaces.get(workspace_id)
+            if workspace is not None and workspace.owner_telegram_id > 0:
+                await gateway.send_notice(workspace.owner_telegram_id, schedule_skipped_text(exc))
+
+        schedule_weekly_plan_tick(scheduler, pool, plan, limits, tell_schedule_skipped)
         scheduler.start()
 
         settings_screen = SettingsScreen(
@@ -902,6 +952,7 @@ async def main(settings: Settings | None = None) -> None:
             prompts,
             settings=settings_service,
             onboarding=onboarding_state,
+            limits=limits,
             photos=photos,
         )
         # Everyone's list (#95); a Глобальный администратор's own chat also lists /admin.
@@ -916,7 +967,14 @@ async def main(settings: Settings | None = None) -> None:
             return buffer.getvalue() if buffer is not None else b""
 
         style_samples = StyleSamples(
-            queue, settings_service, pending_inputs, prompts, bot_client, download, onboarding_state
+            queue,
+            settings_service,
+            pending_inputs,
+            prompts,
+            bot_client,
+            download,
+            onboarding_state,
+            limits,
         )
         onboarding = Onboarding(
             onboarding_state,
@@ -955,6 +1013,9 @@ async def main(settings: Settings | None = None) -> None:
                 guide,
                 publisher=publisher,
                 bot_username=bot_username,
+                limits=limits,
+                admin=WorkspaceAdmin(pool, settings.trial_limits),
+                spend=GenerationSteps(pool),
                 style_samples=style_samples,
             )
         )

@@ -42,6 +42,7 @@ import re
 import time
 import zipfile
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field, replace
 from io import BytesIO
 from typing import Any, Protocol
@@ -59,7 +60,7 @@ from ..settings import (
     style_profile_text,
 )
 from ..settings.style_profile import CORRECTIONS_MAX_LENGTH
-from ..workspaces import Workspace, WorkspaceId
+from ..workspaces import LimitRefused, Workspace, WorkspaceId
 from .callback_codec import Action, SimpleAction, encode_callback_data
 from .comment_gated_regeneration import PendingInputStore
 from .gateway import BotClient, MessageGone
@@ -106,6 +107,7 @@ from .texts import (
     STYLE_WARN_UNSUPPORTED,
     STYLE_WORKING,
     TO_MENU_BUTTON,
+    error_alert_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -179,6 +181,8 @@ class StyleJobs(Protocol):
         job_type: str,
         payload: dict[str, Any],
         idempotency_key: str,
+        *,
+        conn: Any = None,
     ) -> JobId: ...
 
     async def get_job(self, workspace_id: WorkspaceId, job_id: JobId) -> JobSnapshot | None: ...
@@ -186,6 +190,19 @@ class StyleJobs(Protocol):
     async def drop_payload_keys(
         self, workspace_id: WorkspaceId, job_id: JobId, keys: list[str]
     ) -> None: ...
+
+
+class _Reservation(Protocol):
+    conn: Any
+
+
+class StyleLimits(Protocol):
+    """`Limits.reserve` (ADR-0015): `analyze_style` is one unfinished Job at a time and
+    counts toward the daily cap of free Jobs; it costs no trial Лимит."""
+
+    def reserve(
+        self, workspace_id: WorkspaceId, job_type: str | None = None, count: int = 1
+    ) -> AbstractAsyncContextManager[_Reservation]: ...
 
 
 class OnboardingNeed(Protocol):
@@ -358,7 +375,9 @@ class StyleSamples:
         bot: BotClient,
         download: Download,
         onboarding: OnboardingNeed,
+        limits: StyleLimits,
     ) -> None:
+        self._limits = limits
         self._jobs = jobs
         self._settings = settings
         self._pending = pending
@@ -456,19 +475,26 @@ class StyleSamples:
                 reply_markup=_collect_keyboard(ref, presets=True),
             )
             return None
+        payload = {
+            "samples": collected.texts,
+            "links": collected.links,
+            "source": "posts" if ref.mode == STYLE_POSTS else "articles",
+            "mode": ref.encode(),
+            "message_id": message_id,
+        }
         try:
-            await self._jobs.enqueue(
-                workspace.id,
-                ANALYZE_STYLE_JOB,
-                {
-                    "samples": collected.texts,
-                    "links": collected.links,
-                    "source": "posts" if ref.mode == STYLE_POSTS else "articles",
-                    "mode": ref.encode(),
-                    "message_id": message_id,
-                },
-                idempotency_key=f"{ANALYZE_STYLE_JOB}:{chat_id}:{message_id}",
-            )
+            async with self._limits.reserve(workspace.id, ANALYZE_STYLE_JOB) as reservation:
+                await self._jobs.enqueue(
+                    workspace.id,
+                    ANALYZE_STYLE_JOB,
+                    payload,
+                    f"{ANALYZE_STYLE_JOB}:{chat_id}:{message_id}",
+                    conn=reservation.conn,
+                )
+        except LimitRefused as exc:
+            # «Дождитесь…» / the daily cap: the Образцы and the wait stay for later.
+            await self._pending.put(workspace.id, chat_id, user_id, pending)
+            return error_alert_text(exc)
         except Exception:
             # Nothing is lost: the Образцы and the wait stay for another «Готово».
             await self._pending.put(workspace.id, chat_id, user_id, pending)

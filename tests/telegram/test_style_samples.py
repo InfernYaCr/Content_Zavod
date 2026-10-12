@@ -39,11 +39,19 @@ from content_zavod.telegram.texts import (
     STYLE_WARN_LINKS,
     STYLE_WARN_TELEGRAM_LINK,
     STYLE_WORKING,
+    error_alert_text,
 )
-from content_zavod.workspaces import Workspace
+from content_zavod.workspaces import DailyFreeJobLimitReached, GenerationBusy, Workspace
 from tests.tenancy import WS_A, WS_B
 
-from .fakes import FakeJobs, FakePendingInputs, RecordingBot, button_data, button_texts
+from .fakes import (
+    FakeJobs,
+    FakeLimits,
+    FakePendingInputs,
+    RecordingBot,
+    button_data,
+    button_texts,
+)
 
 CHAT = USER = 42
 PART = ("Я пишу коротко и по делу, без воды и канцелярита. " * 12).strip()  # 599 chars
@@ -91,7 +99,7 @@ class CountingPending(FakePendingInputs):
 
 
 class BrokenJobs(FakeJobs):
-    async def enqueue(self, workspace_id, job_type, payload, idempotency_key):
+    async def enqueue(self, workspace_id, job_type, payload, idempotency_key, *, conn=None):
         raise RuntimeError("database is down")
 
 
@@ -105,6 +113,7 @@ class Env:
         self.files: dict[str, bytes] = {}
         self.downloaded: list[str] = []
         self.onboarding = Onboarding()
+        self.limits = FakeLimits()
         self.style = self.new_style()
         self.a = Workspace(WS_A, USER, None, "Europe/Moscow", None, None)
         self.b = Workspace(WS_B, USER, None, "Europe/Moscow", None, None)
@@ -119,6 +128,7 @@ class Env:
             self.bot,
             self.download,
             self.onboarding,
+            self.limits,
         )
 
     async def download(self, file_id: str) -> bytes:
@@ -515,3 +525,46 @@ def test_settings_show_the_owners_corrections() -> None:
 
     assert persona.detail is not None
     assert persona.detail(current) == "по вашим текстам\nВы пишете.\nВаши поправки: на «ты»"
+
+
+# --- the Лимит (ADR-0015) ---
+
+
+async def test_the_analysis_is_reserved_as_one_free_job(env: Env) -> None:
+    await env.style.start(env.a, CHAT, USER, "a:s")
+    await env.send(PART * 3)
+
+    await env.done()
+
+    assert env.limits.reserved == [(ANALYZE_STYLE_JOB, 1)]
+    assert len(env.jobs.jobs) == 1
+
+
+@pytest.mark.parametrize("refusal", [GenerationBusy(), DailyFreeJobLimitReached()])
+async def test_a_refused_analysis_keeps_the_samples_and_the_wait(
+    env: Env, refusal: Exception
+) -> None:
+    await env.style.start(env.a, CHAT, USER, "a:s")
+    await env.send(PART * 3)
+    env.limits.refusal = refusal  # type: ignore[assignment]
+
+    alert = await env.done()
+
+    assert alert == error_alert_text(refusal)
+    assert env.jobs.jobs == {}
+    assert env.pending.rows[(CHAT, USER)].kind == STYLE_SAMPLES_KIND
+    assert STYLE_WORKING not in [text for _, _, text, _ in env.bot.edited]
+
+    env.limits.refusal = None
+    assert await env.done() is None
+    assert next(iter(env.jobs.jobs.values())).payload["samples"] == [PART * 3]
+
+
+async def test_a_refusal_after_typed_done_is_said_in_the_chat(env: Env) -> None:
+    await env.style.start(env.a, CHAT, USER, "a:s")
+    await env.send(PART * 3)
+    env.limits.refusal = GenerationBusy()
+
+    assert await env.send("готово")
+
+    assert env.bot.sent[-1][1] == error_alert_text(GenerationBusy())

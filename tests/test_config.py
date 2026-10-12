@@ -159,3 +159,32 @@ def test_signup_daily_limit_defaults_to_50_and_is_configurable() -> None:
     for bad in ("-1", "many", "1.5"):
         with pytest.raises(ConfigError):
             load_settings({**_BASE_ENV, "SIGNUP_DAILY_LIMIT": bad})
+
+
+def test_the_trial_limit_defaults_to_one_plan_and_eight_statyi() -> None:
+    """The owner's decision in #118; `LIMIT_CONTACT` is optional."""
+    trial = load_settings(_BASE_ENV).trial_limits
+    assert (trial.plans, trial.articles, trial.contact) == (1, 8, None)
+    assert (trial.jobs_per_day, trial.free_jobs_per_day, trial.plan_jobs_per_day) == (30, 10, 5)
+
+
+def test_the_trial_limit_is_configurable() -> None:
+    env = {
+        **_BASE_ENV,
+        "TRIAL_PLAN_LIMIT": "2",
+        "TRIAL_ARTICLE_LIMIT": "12",
+        "JOBS_PER_DAY_LIMIT": "20",
+        "FREE_JOBS_PER_DAY_LIMIT": "4",
+        "LIMIT_CONTACT": " @owner ",
+    }
+    trial = load_settings(env).trial_limits
+    assert (trial.plans, trial.articles, trial.contact) == (2, 12, "@owner")
+    assert (trial.jobs_per_day, trial.free_jobs_per_day) == (20, 4)
+    for name in (
+        "TRIAL_PLAN_LIMIT",
+        "TRIAL_ARTICLE_LIMIT",
+        "JOBS_PER_DAY_LIMIT",
+        "FREE_JOBS_PER_DAY_LIMIT",
+    ):
+        with pytest.raises(ConfigError):
+            load_settings({**_BASE_ENV, name: "-1"})

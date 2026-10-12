@@ -8,7 +8,8 @@ rather than overwriting; `get`/`list_for_plan` serve the latest one. `mark_expor
 idempotent on their target state so a retried Telegram callback is a no-op.
 
 Every method takes the Пространство's `workspace_id` first (ADR-0015): another Workspace's
-Статья is "not found", exactly like a missing one.
+Статья is "not found", exactly like a missing one. The ones that enqueue a generation take an
+optional `conn`, the caller's `Limits.reserve` transaction (see `domain/plan.py`).
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ import asyncpg
 
 from ..job_queue import JobQueue
 from ..workspaces import WorkspaceId
+from ..workspaces.limits import charge
+from ._transaction import transaction
 from .errors import ArticleNotFound, ArticleNotReady, ArticleNotRegenerable, ArticleVersionNotFound
 from .types import (
     ArticleId,
@@ -60,10 +63,13 @@ class Article:
         plan_item_id: PlanItemId,
         title: str,
         platform: str,
+        *,
+        conn: asyncpg.Connection | None = None,
     ) -> ArticleId:
         """Idempotent on (plan_item_id, platform): a second call for the same pair reuses the
         existing Статья's id instead of inserting a duplicate row (#14)."""
-        row = await self._pool.fetchrow(
+        db = conn or self._pool
+        row = await db.fetchrow(
             """
             INSERT INTO articles (id, workspace_id, plan_id, plan_item_id, title, platform)
             VALUES ($1, $2, $3, $4, $5, $6)
@@ -79,7 +85,7 @@ class Article:
         )
         if row is not None:
             return ArticleId(row["id"])
-        existing = await self._pool.fetchrow(
+        existing = await db.fetchrow(
             "SELECT id FROM articles WHERE workspace_id = $1 AND plan_item_id = $2 "
             "AND platform = $3",
             workspace_id,
@@ -267,7 +273,8 @@ class Article:
         ``already_applied`` without appending another Version. A result from a job
         superseded by a newer generation returns ``stale`` and cannot overwrite it.
         Versions created by older callers without ``source_job_id`` retain the legacy
-        append behavior.
+        append behavior. An applied result of a Job is charged against the Лимит as one Статья
+        in the same transaction (ADR-0015); a stale one is not.
         """
         async with self._pool.acquire() as conn:
             async with conn.transaction():
@@ -315,6 +322,8 @@ class Article:
                     article_id,
                     workspace_id,
                 )
+                if version.source_job_id is not None:
+                    await charge(conn, workspace_id, version.source_job_id, "article")
         return "applied"
 
     async def mark_generation_failed(
@@ -342,13 +351,17 @@ class Article:
         summary: str,
         keywords: Sequence[str],
         platform: str,
+        *,
+        conn: asyncpg.Connection | None = None,
     ) -> ArticleId:
         """Create (or reuse) the Статья for one (Тема, Площадка) pair and enqueue its `generate_article`
         Job. Fully idempotent: `create` reuses the existing row on a (plan_item_id, platform)
         conflict, and the Job enqueue is keyed on the resulting article_id - so replaying this for
         an already-processed pair (a retried `approve_all` callback, or a crash between approving
         the Plan and enqueueing) creates neither a duplicate Статья nor a duplicate Job (#14)."""
-        article_id = await self.create(workspace_id, plan_id, plan_item_id, title, platform)
+        article_id = await self.create(
+            workspace_id, plan_id, plan_item_id, title, platform, conn=conn
+        )
         job_id = await self._queue.enqueue(
             workspace_id,
             "generate_article",
@@ -361,8 +374,9 @@ class Article:
                 "keywords": list(keywords),
             },
             idempotency_key=f"generate_article:{article_id}",
+            conn=conn,
         )
-        await self._pool.execute(
+        await (conn or self._pool).execute(
             """
             UPDATE articles
             SET active_generation_job_id = $2, updated_at = now()
@@ -375,9 +389,14 @@ class Article:
         return article_id
 
     async def request_regeneration(
-        self, workspace_id: WorkspaceId, article_id: ArticleId, comment: str | None
+        self,
+        workspace_id: WorkspaceId,
+        article_id: ArticleId,
+        comment: str | None,
+        *,
+        conn: asyncpg.Connection | None = None,
     ) -> None:
-        row = await self._pool.fetchrow(
+        row = await (conn or self._pool).fetchrow(
             "SELECT status, updated_at FROM articles WHERE id = $1 AND workspace_id = $2",
             article_id,
             workspace_id,
@@ -388,26 +407,26 @@ class Article:
             return
         if row["status"] not in _REGENERABLE_STATUSES:
             raise ArticleNotRegenerable(article_id, row["status"])
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                job_id = await self._queue.enqueue(
-                    workspace_id,
-                    "regenerate_article",
-                    {"article_id": article_id, "comment": comment},
-                    # Keyed on the pre-update updated_at so two racing calls collapse
-                    # into the same job instead of enqueuing a duplicate.
-                    idempotency_key=f"regenerate_article:{article_id}:{row['updated_at'].isoformat()}",
-                )
-                await conn.execute(
-                    """
-                    UPDATE articles
-                    SET status = 'regenerating', active_generation_job_id = $2, updated_at = now()
-                    WHERE id = $1 AND workspace_id = $3
-                    """,
-                    article_id,
-                    job_id,
-                    workspace_id,
-                )
+        async with transaction(self._pool, conn) as tx:
+            job_id = await self._queue.enqueue(
+                workspace_id,
+                "regenerate_article",
+                {"article_id": article_id, "comment": comment},
+                # Keyed on the pre-update updated_at so two racing calls collapse
+                # into the same job instead of enqueuing a duplicate.
+                idempotency_key=f"regenerate_article:{article_id}:{row['updated_at'].isoformat()}",
+                conn=tx,
+            )
+            await tx.execute(
+                """
+                UPDATE articles
+                SET status = 'regenerating', active_generation_job_id = $2, updated_at = now()
+                WHERE id = $1 AND workspace_id = $3
+                """,
+                article_id,
+                job_id,
+                workspace_id,
+            )
 
     async def mark_exported(self, workspace_id: WorkspaceId, article_id: ArticleId) -> None:
         """The transition is conditional in SQL, so a regeneration requested between a status

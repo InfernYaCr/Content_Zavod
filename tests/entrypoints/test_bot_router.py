@@ -37,15 +37,18 @@ from content_zavod.telegram.settings_screen import SETTING_INPUT_KIND, SettingsS
 from content_zavod.telegram.start_guard import START_INTERVAL_SECONDS, StartGuard
 from content_zavod.telegram.style_samples import StyleSamples
 from content_zavod.telegram.texts import (
-    ADMIN_PENDING_TEXT,
+    ADMIN_HINT,
+    ADMIN_LIMIT_DEFAULT,
+    ADMIN_LIMIT_SET,
     GROUP_START_TEXT,
     NO_WORKSPACE_TEXT,
     SIGNUP_CLOSED_TEXT,
     STALE_BUTTON,
     UNKNOWN_MESSAGE_TEXT,
 )
-from content_zavod.workspaces import Workspace, WorkspaceId
-from tests.telegram.fakes import FakeJobs, FakePendingInputs, RecordingBot
+from content_zavod.workspaces import Usage, Workspace, WorkspaceId
+from content_zavod.workspaces.admin import WorkspaceOverview
+from tests.telegram.fakes import FakeJobs, FakeLimits, FakePendingInputs, RecordingBot
 from tests.tenancy import WS_A, WS_B
 
 ADMIN = 7001
@@ -117,6 +120,29 @@ class Unused:
         raise AssertionError(f"unexpected call: {name}")
 
 
+class FakeAdmin:
+    def __init__(self) -> None:
+        self.limits_set: list[tuple[int, int, int, int]] = []
+
+    async def overview(self, *, limit: int) -> tuple[list[WorkspaceOverview], int]:
+        usage = Usage(plans_used=1, plan_limit=1, articles_used=6, article_limit=8)
+        workspace = WorkspaceOverview(
+            WorkspaceId(12), "anna", datetime(2026, 10, 12, tzinfo=UTC), None, usage, False
+        )
+        return [workspace], 1
+
+    async def set_limits(
+        self, admin_telegram_id: int, workspace_id: int, plans: int | None, articles: int | None
+    ) -> bool:
+        self.limits_set.append((admin_telegram_id, workspace_id, plans, articles))
+        return True
+
+
+class NoSpend:
+    async def usage_for(self, workspace_id: int, since: datetime) -> list:
+        return []
+
+
 class NoPlanOps:
     async def delete_item(self, *args: object) -> None:
         raise AssertionError("unexpected call")
@@ -149,7 +175,9 @@ class Bot_:
             prompts,
             settings=settings,
             onboarding=OnboardingState(self.store),
+            limits=FakeLimits(),
         )
+        self.admin = FakeAdmin()
         self.flows = dict(
             plan_review=PlanReview(NoPlanOps(), TelegramCommentPrompt(self.bot), self.pending),
             article_regeneration=CommentGatedRegeneration[ArticleId](
@@ -175,6 +203,7 @@ class Bot_:
                 self.bot,
                 self.download,
                 OnboardingState(self.store),
+                FakeLimits(),
             ),
         )
         self.files: dict[str, bytes] = {}
@@ -205,6 +234,9 @@ class Bot_:
                 cast(Any, Unused()),
                 bot_username="zavod_bot",
                 start_guard=StartGuard(clock=lambda: self.clock),
+                limits=cast(Any, FakeLimits()),
+                admin=self.admin,
+                spend=NoSpend(),
                 style_samples=self.flows["style_samples"],
             )
         )
@@ -304,8 +336,25 @@ async def test_admin_from_a_global_admin_is_answered(bot: Bot_) -> None:
     bot.bot.sent.clear()
 
     await bot.message("/admin", user=ADMIN)
+    await bot.message("/admin limit 12 2 12", user=ADMIN)
 
-    assert bot.texts(ADMIN) == [ADMIN_PENDING_TEXT]
+    overview, limit_set = bot.texts(ADMIN)
+    assert "#12 @anna" in overview and "Планы 1/1 · Статьи 6/8" in overview
+    assert "30 дней: расхода нет" in overview
+    assert limit_set == ADMIN_LIMIT_SET.format(id=12, plans=2, articles=12)
+    assert bot.admin.limits_set == [(ADMIN, 12, 2, 12)]
+
+
+async def test_admin_limit_default_and_out_of_range_numbers(bot: Bot_) -> None:
+    await bot.message("/start", user=ADMIN)
+    bot.bot.sent.clear()
+
+    await bot.message("/admin limit 12 default", user=ADMIN)
+    for bad in ("12 1000001 1", "9223372036854775808 1 1", "12 1", "12 x 1"):
+        await bot.message(f"/admin limit {bad}", user=ADMIN)
+
+    assert bot.texts(ADMIN) == [ADMIN_LIMIT_DEFAULT.format(id=12)] + [ADMIN_HINT] * 4
+    assert bot.admin.limits_set == [(ADMIN, 12, None, None)]
 
 
 async def test_start_creates_one_workspace_per_person_and_opens_the_wizard(bot: Bot_) -> None:

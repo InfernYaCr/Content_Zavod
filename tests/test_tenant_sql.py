@@ -43,6 +43,8 @@ CROSS_WORKSPACE = {
     "JobQueue.reschedule_notification": "the claimed notification, by Job id",
     # The Расписание tick (ADR-0015): the one place that picks due Workspaces among all.
     "schedulable_workspaces": "the Расписание tick picks due Workspaces across all of them",
+    # The Глобальный администратор (ADR-0015): metadata and charges of every Workspace.
+    "WorkspaceAdmin.overview": "/admin lists every Workspace with its Лимит and activity",
 }
 
 _STATEMENT = re.compile(r"\b(SELECT|UPDATE|DELETE|INSERT)\b")

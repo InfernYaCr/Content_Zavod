@@ -70,7 +70,7 @@ class FakeMenu:
         self.generated: list[tuple[int, int]] = []
         self.announced: list[bool] = []
 
-    async def show(self, chat_id: int, message_id: int) -> None:
+    async def show(self, workspace: Workspace, chat_id: int, message_id: int) -> None:
         self.shown.append((chat_id, message_id))
 
     async def generate_plan(
