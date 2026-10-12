@@ -132,13 +132,15 @@ class Plan:
         if plan_row is None:
             raise PlanNotFound(plan_id)
         item_rows = await self._pool.fetch(
-            "SELECT id, title, status FROM plan_items WHERE plan_id = $1 AND workspace_id = $2 "
-            "ORDER BY position",
+            "SELECT id, title, status, why FROM plan_items "
+            "WHERE plan_id = $1 AND workspace_id = $2 ORDER BY position",
             plan_id,
             workspace_id,
         )
         items = [
-            PlanItemView(id=PlanItemId(row["id"]), title=row["title"], status=row["status"])
+            PlanItemView(
+                id=PlanItemId(row["id"]), title=row["title"], status=row["status"], why=row["why"]
+            )
             for row in item_rows
         ]
         return PlanView(id=PlanId(plan_row["id"]), week_label=plan_row["week_label"], items=items)
@@ -443,8 +445,8 @@ class Plan:
                     await conn.execute(
                         """
                         INSERT INTO plan_items
-                            (id, workspace_id, plan_id, position, title, summary, keywords)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+                            (id, workspace_id, plan_id, position, title, summary, keywords, why)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
                         """,
                         self._new_id(),
                         workspace_id,
@@ -453,6 +455,7 @@ class Plan:
                         topic.title,
                         topic.summary,
                         _keywords_json(topic.keywords),
+                        topic.why,
                     )
                     next_position += 1
                 if source_job_id is not None:
@@ -671,7 +674,7 @@ class Plan:
         result = await self._pool.execute(
             """
             UPDATE plan_items
-            SET title = $2, summary = $3, keywords = $4::jsonb, updated_at = now()
+            SET title = $2, summary = $3, keywords = $4::jsonb, why = '', updated_at = now()
             WHERE id = $1 AND workspace_id = $5 AND status = 'pending_review'
             """,
             plan_item_id,
@@ -794,10 +797,11 @@ class Plan:
         )
 
     async def recent_topic_titles(self, workspace_id: WorkspaceId, since: datetime) -> list[str]:
-        """This Workspace's recent Тема titles, for the repeat check - another Workspace's
-        Темы must never reach this one's prompt (ADR-0015)."""
+        """This Workspace's recent Тема titles, newest first, for the repeat check - another
+        Workspace's Темы must never reach this one's prompt (ADR-0015)."""
         rows = await self._pool.fetch(
-            "SELECT DISTINCT title FROM plan_items WHERE workspace_id = $1 AND created_at >= $2",
+            "SELECT title FROM plan_items WHERE workspace_id = $1 AND created_at >= $2 "
+            "GROUP BY title ORDER BY max(created_at) DESC",
             workspace_id,
             since,
         )

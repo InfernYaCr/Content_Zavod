@@ -31,7 +31,8 @@ async def test_0013_drops_roles_and_the_team_note_and_blocks_the_team_workspace(
         """
     )
 
-    assert await run_migrations(isolated_pool) == ["0013_drop_roles"]
+    shutil.copy(SQL_DIR / "0013_drop_roles.sql", tmp_path)
+    assert await run_migrations(isolated_pool, tmp_path) == ["0013_drop_roles"]
 
     for table in ("members", "join_requests", "join_request_broadcasts"):
         assert await isolated_pool.fetchval("SELECT to_regclass($1)", table) is None, table
@@ -69,7 +70,8 @@ async def test_0013_keeps_a_team_workspace_on_a_private_chat_as_its_owners(
         """.replace("$1", str(workspace_id))
     )
 
-    assert await run_migrations(isolated_pool) == ["0013_drop_roles"]
+    shutil.copy(SQL_DIR / "0013_drop_roles.sql", tmp_path)
+    assert await run_migrations(isolated_pool, tmp_path) == ["0013_drop_roles"]
 
     blocked = await isolated_pool.fetchval(
         "SELECT bot_blocked_at FROM workspaces WHERE id = $1", workspace_id

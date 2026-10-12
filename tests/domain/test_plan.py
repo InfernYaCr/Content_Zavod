@@ -285,6 +285,45 @@ async def test_recent_topic_titles_excludes_titles_older_than_since(plan: Plan) 
     assert "Old Topic" not in titles
 
 
+async def test_recent_topic_titles_come_newest_first(plan: Plan) -> None:
+    """#128: the Plan editor's prompt takes the newest ones."""
+    before = datetime.now(UTC) - timedelta(minutes=1)
+    await plan.add_topics(WS_A, "Week 1", [TopicDraft(title="Older")])
+    await plan.add_topics(WS_A, "Week 2", [TopicDraft(title="Newer")])
+
+    assert (await plan.recent_topic_titles(WS_A, since=before))[:2] == ["Newer", "Older"]
+
+
+async def test_a_temas_why_is_stored_and_shown_with_it(plan: Plan) -> None:
+    """#128: the «почему сейчас» line is written once and read back with the Plan."""
+    plan_id = await plan.add_topics(
+        WS_A,
+        "Week 1",
+        [
+            TopicDraft(title="Растёт", why="📈 Спрос растёт: +38 % за 4 недели"),
+            TopicDraft(title="Своя"),
+        ],
+    )
+
+    view = await plan.get(WS_A, plan_id)
+
+    assert [(item.title, item.why) for item in view.items] == [
+        ("Растёт", "📈 Спрос растёт: +38 % за 4 недели"),
+        ("Своя", ""),
+    ]
+
+
+async def test_a_regenerated_tema_loses_its_why(plan: Plan) -> None:
+    """#140 review: the replacement Тема was not chosen for that reason."""
+    plan_id = await plan.add_topics(WS_A, "Week 1", [TopicDraft(title="Растёт", why="📈 w")])
+    (item,) = (await plan.get(WS_A, plan_id)).items
+
+    await plan.apply_regeneration(WS_A, item.id, TopicDraft(title="Другая", summary="s"))
+
+    (item,) = (await plan.get(WS_A, plan_id)).items
+    assert (item.title, item.why) == ("Другая", "")
+
+
 async def test_add_topics_appends_to_the_existing_draft_for_a_repeated_week_label(
     plan: Plan,
 ) -> None:

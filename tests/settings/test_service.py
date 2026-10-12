@@ -37,14 +37,8 @@ async def test_read_applies_defaults_when_nothing_was_ever_set() -> None:
     current = await settings.read(WS_A)
 
     assert current.niche == "маркетинг"
-    # #128: no default Направления - a Plan without any is drafted from the Ниша.
-    assert current.directions == ()
-
-
-async def test_stored_directions_are_still_read_until_the_niche_map_lands() -> None:
-    settings = SettingsService(InMemoryStore({"directions": "  a ,, b ,a,"}))
-
-    assert (await settings.read(WS_A)).directions == ("a", "b", "a")
+    # #128: Направления are gone - the Карта Ниши is built from the Ниша.
+    assert not hasattr(current, "directions")
 
 
 async def test_set_niche_then_read_returns_the_new_value() -> None:
