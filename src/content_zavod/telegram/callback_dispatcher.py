@@ -64,6 +64,7 @@ from .plan_review import PlanReview
 from .settings_screen import BACK_TO_MENU, SettingsScreen
 from .texts import (
     COVER_REQUESTED,
+    COVERS_OFF,
     DIRECTIONS_STALE,
     HUB_ALERT_NO_COVER,
     HUB_ALERT_NOTHING_TO_RETRY,
@@ -529,6 +530,10 @@ class CallbackDispatcher:
                 )
             case SimpleAction(action="request_cover", id_=id_):
                 if not await self._authorized("request_cover", role, deny_text, answer):
+                    return
+                # A card sent while covers were on, pressed after `YANDEX_COVERS=off` (#123).
+                if not self._plan.covers_enabled:
+                    await answer(COVERS_OFF)
                     return
                 await answer(COVER_REQUESTED)
                 # By hand, from a Статья card: the result comes back here as a photo (#91).

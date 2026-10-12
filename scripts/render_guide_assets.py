@@ -224,7 +224,9 @@ async def _slide_mockup(slide: Slide) -> Mockup:
             ).encode(),
             research_status="no_evidence",
         )
-        keyboard = build_article_keyboard("a", "1", read_url="https://telegra.ph/example")
+        keyboard = build_article_keyboard(
+            "a", "1", read_url="https://telegra.ph/example", covers=False
+        )
         bubbles = [
             Bubble("Готовая Статья приходит карточкой", service=True),
             Bubble(render_article_card_text(article), _buttons(keyboard)),
@@ -264,13 +266,13 @@ def _sample_hub() -> PlanHubView:
         status="approved",
         topics=[
             HubTopic(
-                "1", 1, "Как посчитать окупаемость рекламы", "ready", True, cells("ready", "ready")
+                "1", 1, "Как посчитать окупаемость рекламы", None, False, cells("ready", "ready")
             ),
             HubTopic(
                 "2",
                 2,
                 "CRM за выходные: с чего начать",
-                "pending",
+                None,
                 False,
                 cells("ready", "pending"),
             ),

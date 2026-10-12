@@ -145,6 +145,7 @@ class FakeMembership:
 
 class FakePlan:
     def __init__(self) -> None:
+        self.covers_enabled = True
         self.cover_requests: list[PlanItemId] = []
         self.manual_cover_requests: list[PlanItemId] = []
         self.replacement_requests: list[PlanId] = []
@@ -867,6 +868,16 @@ async def test_request_cover_requests_the_cover(f: Fixtures) -> None:
     assert answer.calls == [("Генерирую обложку — пришлю её сюда.", None)]
     # By hand from a Статья card: its result is sent back as a photo (#91).
     assert f.plan.manual_cover_requests == [PlanItemId("item-1")]
+
+
+async def test_request_cover_with_covers_off_says_so_and_requests_nothing(f: Fixtures) -> None:
+    """#123: «🖼 Обложка» on a card sent before `YANDEX_COVERS=off`."""
+    f.plan.covers_enabled = False
+
+    answer = await dispatch(f, SimpleAction("request_cover", "item-1"))
+
+    assert answer.calls == [("Обложки сейчас выключены.", None)]
+    assert f.plan.manual_cover_requests == []
 
 
 async def test_export_article_sends_the_document(f: Fixtures) -> None:

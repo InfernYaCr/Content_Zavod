@@ -1,4 +1,4 @@
-"""generate_cover Job Handler: one YandexART cover image per Тема.
+"""generate_cover Job Handler: one Alice AI ART cover image per Тема.
 
 Follows the same shape as every other pipeline handler here: it computes a
 JSON-serializable output and never touches Postgres directly. The
@@ -13,8 +13,6 @@ from typing import Any
 from ..job_queue import JobHandler
 from ..yandex import ImageGenerator
 from .provenance import StepRecord, StepRecorder, prompt_hash
-
-_MIME_TYPE = "image/jpeg"
 
 # Bumped whenever `_build_prompt` changes shape (#74).
 _COVER_PROMPT_VERSION = "cover-v1"
@@ -48,7 +46,7 @@ def make_generate_cover_handler(image_generator: ImageGenerator) -> JobHandler:
         return {
             "plan_item_id": plan_item_id,
             "image": base64.b64encode(generated.image).decode("ascii"),
-            "mime_type": _MIME_TYPE,
+            "mime_type": generated.mime_type,
             "steps": recorder.as_output(),
         }
 

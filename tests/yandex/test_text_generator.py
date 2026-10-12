@@ -48,6 +48,31 @@ async def test_complete_returns_text_on_success() -> None:
 
 
 @pytest.mark.asyncio
+async def test_requests_an_explicit_model_uri_on_the_ai_host() -> None:
+    transport = FakeHttpTransport()
+    transport.queue_post(COMPLETION_URL, _success_response("hi"))
+    generator = _make_generator(transport)
+
+    await generator.complete([Message(role="user", text="hi")])
+
+    url, _, body = transport.post_calls[0]
+    assert url == "https://ai.api.cloud.yandex.net/foundationModels/v1/completion"
+    assert body["modelUri"] == "gpt://folder-1/yandexgpt-5.1"
+
+
+@pytest.mark.asyncio
+async def test_model_is_configurable() -> None:
+    transport = FakeHttpTransport()
+    transport.queue_post(COMPLETION_URL, _success_response("hi"))
+    generator = _make_generator(transport, model="yandexgpt-5-lite")
+
+    completion = await generator.complete_with_usage([Message(role="user", text="hi")])
+
+    assert transport.post_calls[0][2]["modelUri"] == "gpt://folder-1/yandexgpt-5-lite"
+    assert completion.model == "yandexgpt-5-lite"
+
+
+@pytest.mark.asyncio
 async def test_max_tokens_is_configurable() -> None:
     transport = FakeHttpTransport()
     transport.queue_post(COMPLETION_URL, _success_response("hi"))
@@ -169,7 +194,7 @@ async def test_complete_with_usage_returns_text_model_and_tokens() -> None:
                 "result": {
                     "alternatives": [{"message": {"role": "assistant", "text": "hello there"}}],
                     "usage": {"totalTokens": "42"},
-                    "modelVersion": "yandexgpt/latest",
+                    "modelVersion": "23.10.2025",
                 }
             },
         ),
@@ -180,7 +205,7 @@ async def test_complete_with_usage_returns_text_model_and_tokens() -> None:
 
     assert completion.text == "hello there"
     assert completion.tokens == 42
-    assert completion.model == "yandexgpt/latest"
+    assert completion.model == "yandexgpt-5.1 (23.10.2025)"
 
 
 @pytest.mark.asyncio
@@ -193,7 +218,7 @@ async def test_complete_with_usage_defaults_tokens_and_model_when_absent() -> No
 
     assert completion.text == "no usage field"
     assert completion.tokens == 0
-    assert completion.model == ""
+    assert completion.model == "yandexgpt-5.1"
     assert completion.usage_missing is True
     assert completion.cost is None
 
@@ -209,7 +234,7 @@ async def test_complete_with_usage_flags_usage_present_when_reported() -> None:
                 "result": {
                     "alternatives": [{"message": {"role": "assistant", "text": "hello there"}}],
                     "usage": {"totalTokens": "42"},
-                    "modelVersion": "yandexgpt/latest",
+                    "modelVersion": "23.10.2025",
                 }
             },
         ),

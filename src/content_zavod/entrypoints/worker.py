@@ -102,12 +102,14 @@ async def main(settings: Settings | None = None) -> None:
             TextGenerator.with_service_account_key,
             TextGenerator.with_oauth_token,
             cost_per_1k_tokens=settings.yandex_pricing.text_cost_per_1k_tokens,
+            model=settings.yandex_models.text,
         )
         image_generator = _build_yandex_client(
             settings.yandex,
             ImageGenerator.with_service_account_key,
             ImageGenerator.with_oauth_token,
             cost_per_generation=settings.yandex_pricing.image_cost_per_generation,
+            model=settings.yandex_models.image,
         )
         keyword_stats = _build_yandex_client(
             settings.yandex, KeywordStats.with_service_account_key, KeywordStats.with_oauth_token

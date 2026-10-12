@@ -26,7 +26,7 @@ from content_zavod.telegram.plan_hub import (
 def _topic(
     number: int,
     *,
-    cover: HubCellState = "ready",
+    cover: HubCellState | None = "ready",
     zen: HubCellState = "ready",
     vc: HubCellState = "ready",
     title: str | None = None,
@@ -118,6 +118,22 @@ def test_done_with_failures_offers_retry() -> None:
         "🔁 Повторить неудавшееся",
         SimpleAction("hub_retry", "plan-1"),
     )
+
+
+def test_with_covers_off_the_hub_has_no_cover_cell_line_or_button() -> None:
+    """#123: `YANDEX_COVERS=off` - a Тема is done once its Статьи are."""
+    topic = _topic(1, cover=None)
+    hub = _hub(topic, _topic(2, cover=None, vc="pending"))
+
+    text = render_hub_text(hub)
+
+    assert "1. Тема 1\nДзен ✅ · VC.ru ✅" in text
+    assert "готово 3 из 4" in text
+    assert "🖼" not in text
+    assert "✅ Всё готово" in render_hub_text(_hub(topic))
+    card = render_hub_topic_text(_hub(topic, open_item_id="item-1"), topic)
+    assert "Обложка" not in card
+    assert all("Обложка" not in text for text, _ in _buttons(build_hub_topic_keyboard(hub, topic)))
 
 
 def test_topic_card_lists_cells_and_offers_cover_articles_retry_and_back() -> None:

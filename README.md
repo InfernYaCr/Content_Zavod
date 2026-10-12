@@ -9,7 +9,7 @@
 MVP в разработке. Реализовано:
 
 - **Job Queue** (`src/content_zavod/job_queue/`) — очередь задач на Postgres: идемпотентный `enqueue`, атомарный захват задачи воркером, ретраи с бэкоффом, уведомления о результате.
-- **Yandex API клиенты** (`src/content_zavod/yandex/`) — `TextGenerator` (YandexGPT), `ImageGenerator` (YandexART), `KeywordStats` (Wordstat через Yandex Search API).
+- **Yandex API клиенты** (`src/content_zavod/yandex/`) — `TextGenerator` (YandexGPT), `ImageGenerator` (Alice AI ART через Images API; включается `YANDEX_COVERS=on`), `KeywordStats` (Wordstat через Yandex Search API).
 - **Доменный слой** (`src/content_zavod/domain/`) — `Plan`/`Article` и их жизненный цикл.
 - **Job Handlers** (`src/content_zavod/pipelines/`) — `generate_plan`/`generate_article`/`regenerate_article`/`generate_cover`/`regenerate_topic`.
 - **Telegram-слой** (`src/content_zavod/telegram/`) — `TelegramGateway`, `PlanReview` (согласование плана кнопками), `/topic` (ручное предложение Темы).

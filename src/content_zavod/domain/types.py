@@ -117,18 +117,20 @@ class HubArticleCell:
 @dataclass(frozen=True)
 class HubTopic:
     """One approved Тема as the Хаб shows it: its cover and one cell per Площадка.
-    `number` is the Тема's 1-based position among the Хаб's Темы."""
+    `number` is the Тема's 1-based position among the Хаб's Темы. `cover` is `None` while
+    covers are switched off (`YANDEX_COVERS=off`, #123): no cell, nothing to wait for."""
 
     id: PlanItemId
     number: int
     title: str
-    cover: HubCellState
+    cover: HubCellState | None
     has_cover: bool
     articles: Sequence[HubArticleCell]
 
     @property
     def cells(self) -> list[HubCellState]:
-        return [self.cover, *(cell.state for cell in self.articles)]
+        cover = [] if self.cover is None else [self.cover]
+        return [*cover, *(cell.state for cell in self.articles)]
 
     @property
     def finished(self) -> bool:

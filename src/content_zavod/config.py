@@ -23,6 +23,9 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
+from .yandex.image_generator import DEFAULT_IMAGE_MODEL
+from .yandex.text_generator import DEFAULT_TEXT_MODEL
+
 DEFAULT_TIMEZONE = "Europe/Moscow"
 
 
@@ -35,6 +38,15 @@ class YandexCredentials:
     folder_id: str
     api_key: str | None
     oauth_token: str | None
+
+
+@dataclass(frozen=True)
+class YandexModels:
+    """Model names inside the folder's URI (`gpt://<folder>/<text>`, `art://<folder>/<image>`),
+    #123: explicit names, so a model's end of support is a one-line env change."""
+
+    text: str = DEFAULT_TEXT_MODEL
+    image: str = DEFAULT_IMAGE_MODEL
 
 
 @dataclass(frozen=True)
@@ -61,6 +73,10 @@ class Settings:
     # #94: `YANDEX_WEB_SEARCH=off` runs research in "no evidence" mode without calling the
     # Search API (e.g. while the service account lacks the web search role).
     web_search_enabled: bool = True
+    # #123: `YANDEX_COVERS=off` (the default) generates no covers - no `generate_cover` Job, and
+    # the Хаб and the Статья card show no cover at all.
+    covers_enabled: bool = False
+    yandex_models: YandexModels = YandexModels()
     # Optional (#92): without it the bot creates a Telegraph account on first use and keeps
     # its token in owner_settings.
     telegraph_access_token: str | None = None
@@ -106,6 +122,11 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         timezone=timezone,
         web_search_enabled=_flag(env, "YANDEX_WEB_SEARCH", default=True),
         telegraph_access_token=env.get("TELEGRAPH_ACCESS_TOKEN") or None,
+        covers_enabled=_flag(env, "YANDEX_COVERS", default=False),
+        yandex_models=YandexModels(
+            text=env.get("YANDEX_TEXT_MODEL") or DEFAULT_TEXT_MODEL,
+            image=env.get("YANDEX_IMAGE_MODEL") or DEFAULT_IMAGE_MODEL,
+        ),
     )
 
 

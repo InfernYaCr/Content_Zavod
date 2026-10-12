@@ -132,3 +132,19 @@ def test_telegraph_access_token_is_optional() -> None:
     assert load_settings(_BASE_ENV).telegraph_access_token is None
     env = {**_BASE_ENV, "TELEGRAPH_ACCESS_TOKEN": "tg-token"}
     assert load_settings(env).telegraph_access_token == "tg-token"
+
+
+def test_covers_are_off_by_default_and_switch_on() -> None:
+    assert load_settings(_BASE_ENV).covers_enabled is False
+    assert load_settings({**_BASE_ENV, "YANDEX_COVERS": "on"}).covers_enabled is True
+    with pytest.raises(ConfigError):
+        load_settings({**_BASE_ENV, "YANDEX_COVERS": "maybe"})
+
+
+def test_yandex_models_default_to_explicit_names_and_are_configurable() -> None:
+    models = load_settings(_BASE_ENV).yandex_models
+    assert (models.text, models.image) == ("yandexgpt-5.1", "aliceai-image-art-3.0")
+
+    env = {**_BASE_ENV, "YANDEX_TEXT_MODEL": "yandexgpt-5-lite", "YANDEX_IMAGE_MODEL": "art-x"}
+    models = load_settings(env).yandex_models
+    assert (models.text, models.image) == ("yandexgpt-5-lite", "art-x")

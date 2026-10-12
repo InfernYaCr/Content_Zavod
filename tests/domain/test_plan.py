@@ -670,6 +670,21 @@ async def test_get_hub_right_after_fan_out_is_all_pending(plan: Plan, article: A
     assert hub.open_item_id is None
 
 
+async def test_with_covers_off_the_fan_out_requests_no_cover_and_the_hub_has_no_cover_cell(
+    pool: asyncpg.Pool, queue: JobQueue, article: Article
+) -> None:
+    """#123: `YANDEX_COVERS=off` - no `generate_cover` Job, and only the Статьи count."""
+    plan = Plan(pool, queue, covers_enabled=False)
+    plan_id, _ = await _approved_with_fan_out(plan, article)
+
+    hub = await plan.get_hub(plan_id)
+
+    covers = await pool.fetchval("SELECT count(*) FROM jobs WHERE job_type = 'generate_cover'")
+    assert covers == 0
+    assert all(t.cover is None for t in hub.topics)
+    assert len(hub.cells) == 2 * len(PLATFORMS)
+
+
 async def test_get_hub_leaves_out_rejected_topics_and_renumbers(
     plan: Plan, article: Article
 ) -> None:

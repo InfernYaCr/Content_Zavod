@@ -18,7 +18,10 @@ from .credentials import CredentialProvider, IamTokenProvider, StaticApiKeyProvi
 from .errors import ContentPolicyError, TruncatedCompletion, YandexError
 from .http import HttpResponse, HttpTransport, HttpxTransport
 
-COMPLETION_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+COMPLETION_URL = "https://ai.api.cloud.yandex.net/foundationModels/v1/completion"
+# An explicit model URI (YandexGPT Pro 5.1): aliases like `yandexgpt` answer 400 once their
+# model's support ends (#123).
+DEFAULT_TEXT_MODEL = "yandexgpt-5.1"
 
 # The single source of truth for `complete`/`complete_with_usage`'s default `temperature` -
 # callers that record provenance (see `pipelines.provenance`) import this instead of
@@ -59,7 +62,7 @@ class TextGenerator:
         credentials: CredentialProvider,
         *,
         folder_id: str,
-        model: str = "yandexgpt",
+        model: str = DEFAULT_TEXT_MODEL,
         max_retries: int = 3,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         url: str = COMPLETION_URL,
@@ -151,7 +154,10 @@ class TextGenerator:
             tokens = int(usage.get("totalTokens", 0))
         except (TypeError, ValueError):
             tokens = 0
-        model = str(result.get("modelVersion", ""))
+        # The model actually asked for (#74's provenance), with the API's own `modelVersion`
+        # (a release date) when it reports one.
+        version = result.get("modelVersion")
+        model = f"{self._model} ({version})" if version else self._model
         cost = None
         if not usage_missing and self._cost_per_1k_tokens is not None:
             cost = tokens * self._cost_per_1k_tokens / 1000

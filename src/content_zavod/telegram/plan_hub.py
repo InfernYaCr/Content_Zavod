@@ -57,7 +57,7 @@ def _shorten(text: str, limit: int) -> str:
 
 
 def _topic_checklist_line(topic: HubTopic) -> str:
-    cells = [f"{HUB_COVER_SHORT} {hub_mark(topic.cover)}"]
+    cells = [] if topic.cover is None else [f"{HUB_COVER_SHORT} {hub_mark(topic.cover)}"]
     cells += [f"{platform_name(c.platform)} {hub_mark(c.state)}" for c in topic.articles]
     return " · ".join(cells)
 
@@ -115,8 +115,13 @@ def render_hub_topic_text(hub: PlanHubView, topic: HubTopic) -> str:
         HUB_TOPIC_HEADER.format(number=topic.number, total=len(hub.topics)),
         f"«{_shorten(topic.title, _TITLE_LIMIT)}»",
         "",
-        HUB_TOPIC_COVER_LINE.format(mark=hub_mark(topic.cover), state=hub_cover_state(topic.cover)),
     ]
+    if topic.cover is not None:
+        lines.append(
+            HUB_TOPIC_COVER_LINE.format(
+                mark=hub_mark(topic.cover), state=hub_cover_state(topic.cover)
+            )
+        )
     for cell in topic.articles:
         lines.append(
             HUB_TOPIC_ARTICLE_LINE.format(
@@ -136,7 +141,7 @@ def render_hub_topic_text(hub: PlanHubView, topic: HubTopic) -> str:
 
 def build_hub_topic_keyboard(hub: PlanHubView, topic: HubTopic) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    if topic.has_cover:
+    if topic.has_cover and topic.cover is not None:
         rows.append(
             [
                 InlineKeyboardButton(
