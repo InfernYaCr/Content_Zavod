@@ -30,26 +30,28 @@ MAX_VOICE_EXAMPLES = 3
 VOICE_EXAMPLE_MAX_LENGTH = 400
 SUMMARY_MAX_LENGTH = 400
 CORRECTIONS_MAX_LENGTH = 500
-_TRAIT_MAX_LENGTH = 200
+# Every trait fits: 13 of them at this cap render within `STYLE_PROFILE_MAX_LENGTH`.
+_TRAIT_MAX_LENGTH = 100
 
 CONFIDENCE_LEVELS = ("low", "medium", "high")
 SOURCES = ("articles", "posts")
 
-# (key, label) in the order they are asked for, shown and put into prompts.
+# (key, label) in the order they are asked for, shown and put into prompts - what the author
+# avoids comes early, as the most useful to a prompt.
 STYLE_TRAITS: Mapping[str, str] = {
     "address": "Обращение к читателю",
     "person": "От какого лица",
     "tone": "Тон",
+    "avoids": "Чего избегает",
+    "not_like": "Так не пишет",
     "formality": "Формальность",
     "humor": "Юмор",
     "sentences": "Предложения и абзацы",
     "devices": "Приёмы",
     "lexicon": "Характерные слова",
-    "avoids": "Чего избегает",
     "emoji": "Эмодзи",
     "openings": "Как начинает",
     "endings": "Как заканчивает",
-    "not_like": "Так не пишет",
 }
 
 
@@ -86,8 +88,9 @@ def style_profile_text(profile: StyleProfile) -> str:
 
 
 def style_profile_from_dict(data: object) -> StyleProfile | None:
-    """A profile from its JSON form (stored, or a Job's output); `None` when it describes
-    nothing. Every field is re-cleaned and capped, whoever wrote it."""
+    """A profile from its JSON form (stored, or a Job's output); `None` when it has no trait -
+    a summary alone would leave the prompts an empty `author_style` in place of the Персона.
+    Every field is re-cleaned and capped, whoever wrote it."""
     if not isinstance(data, dict):
         return None
     raw_traits = data.get("traits")
@@ -98,7 +101,7 @@ def style_profile_from_dict(data: object) -> StyleProfile | None:
         if (value := _clean(traits_data.get(key), _TRAIT_MAX_LENGTH))
     )
     summary = _clean(data.get("summary"), SUMMARY_MAX_LENGTH)
-    if not traits and not summary:
+    if not traits:
         return None
     examples = data.get("voice_examples")
     voice_examples = tuple(

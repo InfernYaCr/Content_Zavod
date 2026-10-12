@@ -44,12 +44,14 @@ def test_round_trip_through_the_dict_form() -> None:
 def test_unreadable_or_empty_profiles_are_none() -> None:
     assert style_profile_from_dict(None) is None
     assert style_profile_from_dict({"traits": {"tone": "  "}, "summary": ""}) is None
-    assert style_profile_from_dict({"summary": "Вы пишете."}) is not None
+    # A summary alone is no profile: it would put an empty author_style in the Персона's place.
+    assert style_profile_from_dict({"summary": "Вы пишете."}) is None
+    assert style_profile_from_dict({"traits": {"tone": "сухой"}}) is not None
 
 
 def test_unknown_confidence_and_source_fall_back() -> None:
     profile = style_profile_from_dict(
-        {"summary": "Вы пишете.", "confidence": "100%", "source": "evil"}
+        {"traits": {"tone": "т"}, "confidence": "100%", "source": "evil"}
     )
 
     assert profile is not None and (profile.confidence, profile.source) == ("medium", "articles")
@@ -64,6 +66,9 @@ def test_rendered_traits_never_exceed_the_cap() -> None:
     text = style_profile_text(profile)
     assert 0 < len(text) <= STYLE_PROFILE_MAX_LENGTH
     assert text.startswith("Обращение к читателю: ")
+    # Every trait still fits at its cap; what the author avoids comes early.
+    assert text.count("\n") == len(STYLE_TRAITS) - 1
+    assert text.index("Так не пишет") < text.index("Эмодзи")
 
 
 async def test_a_saved_profile_is_read_back_only_in_its_own_workspace() -> None:
