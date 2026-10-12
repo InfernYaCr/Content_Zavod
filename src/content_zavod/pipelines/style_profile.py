@@ -29,8 +29,10 @@ call: the output carries only the profile, how much text there was and which lin
 
 from __future__ import annotations
 
+import html as html_lib
 import json
 import re
+import unicodedata
 from collections.abc import Sequence
 from html.parser import HTMLParser
 from typing import Any, Protocol
@@ -74,15 +76,27 @@ _STEP_NAME = "style_profile"
 _CHANNEL_RE = re.compile(
     r"https://(?:www\.)?(?:t|telegram)\.me/(?:s/)?([A-Za-z][A-Za-z0-9_]{4,31})(?:/\d+)?/?"
 )
-_LD_JSON_RE = re.compile(
-    r"<script[^>]*type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>", re.S | re.I
-)
 _TAG_RE = re.compile(r"<[^>]+>")
+_BREAK_RE = re.compile(r"</p\s*>|<br\s*/?>", re.I)
+# JSON-LD nests @graph in @graph rarely more than twice; deeper is not an article page.
+_LD_MAX_DEPTH = 8
 _ARTICLE_TYPES = ("Article", "BlogPosting")
-# Where a sign-in wall redirects to: the page read is the login form, not the article.
-_LOGIN_MARKERS = ("passport.", "sso.", "/login", "/auth", "/signin")
-_QUOTE_CHARS = "\"'«»“”„ "
 _TELEGRAM_HOSTS = frozenset({"t.me", "www.t.me", "telegram.me", "www.telegram.me"})
+# Where a sign-in wall redirects to (Дзен: sso.passport.yandex.ru): the page read is the login
+# form, not the article. Whole host labels and path segments only - `/author/ivan` is no wall.
+_LOGIN_HOST_LABELS = frozenset({"sso", "passport", "login", "auth"})
+_LOGIN_PATH_SEGMENTS = frozenset({"login", "auth", "signin", "sign-in", "sso"})
+# A voice snippet shorter than this proves nothing about the author's voice.
+MIN_VOICE_EXAMPLE_CHARS = 30
+_INVISIBLE = dict.fromkeys(map(ord, "\u00ad\u200b\u200c\u200d\u2060\ufeff"))
+_UNIFY = str.maketrans(
+    {
+        **dict.fromkeys(map(ord, "«»“”„‟″"), '"'),
+        **dict.fromkeys(map(ord, "‘’‚‛′"), "'"),
+        **dict.fromkeys(map(ord, "‐‑‒–—―−"), "-"),
+    }
+)
+_SNIPPET_EDGES = "\"' .…"
 _VOID_TAGS = frozenset({"br", "img", "wbr", "hr", "input", "meta", "link", "source"})
 
 _TRAIT_LINES = "\n".join(f"{key} — {label.lower()};" for key, label in STYLE_TRAITS.items())
@@ -177,21 +191,48 @@ def parse_channel_posts(html: str) -> tuple[list[str], int | None]:
     return parser.posts, min(parser.ids) if parser.ids else None
 
 
-def _ld_items(data: object) -> list[dict[str, Any]]:
+def _ld_items(data: object, depth: int = 0) -> list[dict[str, Any]]:
+    if depth > _LD_MAX_DEPTH:
+        return []
     if isinstance(data, list):
-        return [item for entry in data for item in _ld_items(entry)]
+        return [item for entry in data for item in _ld_items(entry, depth + 1)]
     if not isinstance(data, dict):
         return []
-    return [data, *_ld_items(data.get("@graph"))]
+    return [data, *_ld_items(data.get("@graph"), depth + 1)]
+
+
+def _ld_json_blocks(html: str) -> list[str]:
+    """The contents of every `<script type="application/ld+json">`, in one linear pass: a
+    script with no closing tag ends the scan (a regex with `.*?` went quadratic on a page of
+    unclosed ones, stalling the worker for every Пространство)."""
+    lower = html.lower()
+    blocks: list[str] = []
+    position = 0
+    while (start := lower.find("<script", position)) >= 0:
+        tag_end = lower.find(">", start)
+        close = lower.find("</script", tag_end) if tag_end >= 0 else -1
+        if close < 0:
+            break
+        if "application/ld+json" in lower[start:tag_end]:
+            blocks.append(html[tag_end + 1 : close])
+        position = close + len("</script")
+    return blocks
+
+
+def _plain(body: str) -> str:
+    """HTML that sometimes hides in an articleBody, as plain text with its paragraphs."""
+    text = html_lib.unescape(_TAG_RE.sub(" ", _BREAK_RE.sub("\n", body)))
+    lines = (" ".join(line.split()) for line in text.splitlines())
+    return "\n".join(line for line in lines if line)
 
 
 def parse_ld_article(html: str) -> str:
     """The longest article body in the page's schema.org JSON-LD, or `""`."""
     bodies: list[str] = []
-    for block in _LD_JSON_RE.findall(html):
+    for block in _ld_json_blocks(html):
         try:
             data = json.loads(block)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
         for item in _ld_items(data):
             kind = item.get("@type")
@@ -200,14 +241,15 @@ def parse_ld_article(html: str) -> str:
                 continue
             body = item.get("articleBody") or item.get("text")
             if isinstance(body, str):
-                bodies.append(_TAG_RE.sub(" ", body).strip())
+                bodies.append(_plain(body))
     return max(bodies, key=len, default="")
 
 
 def _is_login(url: str) -> bool:
     parts = urlsplit(url)
-    where = f"{parts.hostname or ''}{parts.path}".lower()
-    return any(marker in where for marker in _LOGIN_MARKERS)
+    labels = set((parts.hostname or "").lower().split("."))
+    segments = set(parts.path.lower().split("/"))
+    return bool(labels & _LOGIN_HOST_LABELS or segments & _LOGIN_PATH_SEGMENTS)
 
 
 async def _read_channel(fetcher: HtmlFetcher, channel: str) -> str | None:
@@ -273,7 +315,9 @@ def build_style_messages(samples: Sequence[str], source: str) -> list[Message]:
     ]
 
 
-def _flat(text: str) -> str:
+def _normalized(text: str) -> str:
+    """For the verbatim check only: one form of quotes, dashes and spaces, no invisibles."""
+    text = unicodedata.normalize("NFKC", text).translate(_INVISIBLE).translate(_UNIFY)
     return " ".join(text.split())
 
 
@@ -291,18 +335,21 @@ def parse_style_answer(
         return None
     if not isinstance(data, dict):
         return None
-    corpus = _flat("\n".join(samples))
+    corpus = _normalized("\n".join(samples))
     raw_examples = data.get("voice_examples")
     examples = [
         snippet
         for item in (raw_examples if isinstance(raw_examples, list) else [])
-        if isinstance(item, str) and (snippet := _flat(item).strip(_QUOTE_CHARS))
-        if snippet in corpus
+        if isinstance(item, str) and (snippet := _normalized(item).strip(_SNIPPET_EDGES))
+        if len(snippet) >= MIN_VOICE_EXAMPLE_CHARS and snippet in corpus
     ]
+    # The traits at the top level, as asked - or nested under `traits`, as models also answer.
+    nested = data.get("traits")
+    traits = nested if isinstance(nested, dict) else data
     confidence = "low" if chars < LOW_CONFIDENCE_CHARS else data.get("confidence")
     return style_profile_from_dict(
         {
-            "traits": {key: data.get(key) for key in STYLE_TRAITS},
+            "traits": {key: traits.get(key) for key in STYLE_TRAITS},
             "summary": data.get("summary"),
             "voice_examples": examples,
             "confidence": confidence,
@@ -337,7 +384,9 @@ def make_analyze_style_handler(text_generator: _TextGenerator, fetcher: HtmlFetc
                 messages, temperature=_TEMPERATURE
             )
         except Exception as exc:
-            raise recorder.fail(exc) from exc
+            # The type only: a provider error may quote the request - the Образцы - and the
+            # message lands in the log and `jobs.error`.
+            raise recorder.fail(RuntimeError(type(exc).__name__)) from None
         recorder.add(
             StepRecord.from_completion(
                 completion,

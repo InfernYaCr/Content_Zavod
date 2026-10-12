@@ -287,12 +287,14 @@ async def test_generate_plan_appends_topics_and_sends_the_plan() -> None:
             status="done",
             output={
                 "week_label": "Week 1",
-                "topics": [{"title": "T1", "summary": "s", "keywords": ["k"]}],
+                "topics": [{"title": "T1", "summary": "s", "keywords": ["k"], "why": "📈 w"}],
             },
         )
     )
 
-    assert plan.added_topics == [("Week 1", [TopicDraft(title="T1", summary="s", keywords=["k"])])]
+    assert plan.added_topics == [
+        ("Week 1", [TopicDraft(title="T1", summary="s", keywords=["k"], why="📈 w")])
+    ]
     assert len(gateway.sent_plans) == 1
     assert gateway.sent_plans[0][0] == 42
 

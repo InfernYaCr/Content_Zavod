@@ -64,6 +64,7 @@ async def test_search_decodes_xml_results_into_hits() -> None:
     assert body["groupSpec"]["groupsOnPage"] == "5"
     assert body["region"] == "225"
     assert body["l10n"] == "LOCALIZATION_RU"
+    assert "period" not in body
 
 
 @pytest.mark.asyncio
@@ -144,3 +145,16 @@ async def test_connection_errors_are_retried() -> None:
 
     assert len(results.hits) == 2
     assert transport.attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_freshness_goes_as_period_the_field_the_api_honours() -> None:
+    """#128 live check: `period` filters, a misnamed field (`resultsWithin`) is silently ignored."""
+    transport = FakeHttpTransport()
+    transport.queue_post(WEB_SEARCH_URL, _ok(_XML))
+
+    await _client(transport).search("кофейни новости", limit=5, period="PERIOD_2_WEEKS")
+
+    _url, _headers, body = transport.post_calls[0]
+    assert body["period"] == "PERIOD_2_WEEKS"
+    assert "resultsWithin" not in body and "sortSpec" not in body

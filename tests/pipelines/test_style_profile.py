@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -38,7 +39,7 @@ def _answer(**overrides: object) -> str:
         "sentences": "короткие предложения, абзацы по 2–3 строки",
         "summary": "Вы пишете коротко и прямо, без разгона.",
         "voice_examples": [
-            "давайте сразу к делу",
+            "я не люблю длинные вступления, давайте сразу к делу",
             "это я придумал, такого в текстах нет",
         ],
         "confidence": "high",
@@ -106,7 +107,7 @@ def test_a_valid_answer_in_a_fence_with_a_preamble_becomes_a_profile() -> None:
     assert profile.summary == "Вы пишете коротко и прямо, без разгона."
     assert profile.confidence == "high"
     # A snippet the model didn't quote verbatim is dropped.
-    assert profile.voice_examples == ("давайте сразу к делу",)
+    assert profile.voice_examples == ("я не люблю длинные вступления, давайте сразу к делу",)
 
 
 @pytest.mark.parametrize(
@@ -199,7 +200,9 @@ async def test_a_profile_is_built_from_texts_and_links_and_carries_no_raw_sample
     assert _SECRET not in json.dumps(output, ensure_ascii=False)
     assert set(output) == {"status", "profile", "chars", "unread", "source", "steps"}
     profile = style_profile_from_dict(output["profile"])
-    assert profile is not None and profile.voice_examples == ("давайте сразу к делу",)
+    assert profile is not None and profile.voice_examples == (
+        "я не люблю длинные вступления, давайте сразу к делу",
+    )
     assert text_generator.temperatures == [0.3]
     (step,) = output["steps"]
     assert step["step_name"] == "style_profile" and step["prompt_template_version"]
@@ -328,3 +331,104 @@ def test_ld_article_takes_the_longest_article_body_and_drops_tags() -> None:
     )
 
     assert parse_ld_article(html) == "Тело статьи"
+
+
+# --- review fixes (#139) ---
+
+
+def test_unclosed_ld_json_scripts_are_parsed_in_linear_time() -> None:
+    """A page of unclosed ld+json scripts once took seconds per 100 KB (regex `.*?`)."""
+    page = '<script type="application/ld+json">{"a": 1' * 6000  # ~240 KB
+
+    started = time.monotonic()
+    assert parse_ld_article(page) == ""
+    assert time.monotonic() - started < 0.5
+
+
+def test_deeply_nested_ld_json_is_skipped_not_crashed() -> None:
+    deep = "[" * 100_000 + "]" * 100_000
+    graph = {"@type": "Article", "text": "x"}
+    for _ in range(50):
+        graph = {"@graph": graph}
+    page = (
+        f'<script type="application/ld+json">{deep}</script>'
+        f'<script type="application/ld+json">{json.dumps(graph)}</script>'
+    )
+
+    assert parse_ld_article(page) == ""
+
+
+def test_ld_article_unescapes_entities_and_keeps_paragraphs() -> None:
+    body = "<p>Первый &laquo;абзац&raquo;.</p><p>Второй&nbsp;абзац.<br>Строка</p>"
+    page = (
+        '<script type="application/ld+json">'
+        + json.dumps({"@type": "Article", "articleBody": body}, ensure_ascii=False)
+        + "</script>"
+    )
+
+    assert parse_ld_article(page) == "Первый «абзац».\nВторой абзац.\nСтрока"
+
+
+@pytest.mark.parametrize(
+    ("url", "login"),
+    [
+        ("https://sso.passport.yandex.ru/push?retpath=x", True),
+        ("https://example.ru/login?next=/a", True),
+        ("https://example.ru/auth/", True),
+        ("https://example.ru/author/ivan", False),
+        ("https://example.ru/authoring-tips", False),
+        ("https://example.ru/authors/ivan", False),
+        ("https://vc.ru/u/1-post", False),
+    ],
+)
+async def test_only_a_real_sign_in_page_reads_as_nothing(url: str, login: bool) -> None:
+    body = "<html><body><article>" + f"<p>{_SENTENCE}</p>" * 30 + "</article></body></html>"
+    fetcher = FakeHtmlFetcher({"https://site.example/a": (url, body)})
+
+    text = await read_link(fetcher, "https://site.example/a")
+
+    assert (text is None) is login
+
+
+def test_voice_snippets_survive_typography_but_short_ones_are_dropped() -> None:
+    sample = "Скажу прямо: «реклама без расчёта» — это лотерея, и вы в ней про­играете. " + _article(
+        4000
+    )
+    answer = _answer(
+        voice_examples=[
+            '«Скажу прямо: "реклама без расчёта" - это лотерея, и вы в ней проиграете…»',
+            "реклама без расчёта",
+        ]
+    )
+
+    profile = parse_style_answer(answer, [sample], chars=5000, source="articles")
+
+    assert profile is not None
+    assert profile.voice_examples == (
+        'Скажу прямо: "реклама без расчёта" - это лотерея, и вы в ней проиграете',
+    )
+
+
+def test_traits_nested_under_traits_are_accepted() -> None:
+    nested = json.dumps({"traits": {"tone": "сухой"}, "summary": "Вы пишете сухо."})
+
+    profile = parse_style_answer(nested, [_article(5000)], chars=5000, source="articles")
+
+    assert profile is not None and dict(profile.traits) == {"tone": "сухой"}
+
+
+def test_a_summary_without_traits_is_no_profile() -> None:
+    answer = json.dumps({"summary": "Вы пишете хорошо."})
+
+    assert parse_style_answer(answer, [_article(5000)], chars=5000, source="articles") is None
+
+
+async def test_a_model_error_fails_the_job_without_quoting_the_samples() -> None:
+    error = RuntimeError(f"bad response: {_SECRET}")
+    handler = make_analyze_style_handler(FakeTextGenerator(error), FakeHtmlFetcher())
+
+    with pytest.raises(JobPartialFailure) as failure:
+        await handler(WS_A, {"samples": [_article(5000) + _SECRET]})
+
+    assert str(failure.value) == "RuntimeError"
+    assert failure.value.__cause__ is None and failure.value.__suppress_context__

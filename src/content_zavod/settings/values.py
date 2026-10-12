@@ -12,7 +12,6 @@ from .style_profile import StyleProfile
 @dataclass(frozen=True, slots=True)
 class OwnerSettings:
     niche: str
-    directions: tuple[str, ...]
     persona: Persona | None
     custom_persona: CustomPersona | None
     # Optional (#98): `None` means Статьи carry no project CTA, exactly as before.
