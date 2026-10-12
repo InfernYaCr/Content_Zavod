@@ -14,13 +14,20 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 import asyncpg
 
 from ..config import Settings, YandexCredentials, load_settings
 from ..domain import Article, GenerationSteps, Plan, TopicResearchStore
-from ..job_queue import ClaimedJob, JobHandler, JobPartialFailure, JobQueue, run_worker
+from ..job_queue import (
+    ClaimedJob,
+    JobHandler,
+    JobId,
+    JobPartialFailure,
+    JobQueue,
+    run_worker,
+)
 from ..migrations import run_migrations
 from ..owner_settings import WorkspaceSettingsStore
 from ..pipelines import (
@@ -35,6 +42,7 @@ from ..pipelines import (
     make_regenerate_topic_handler,
 )
 from ..settings import SettingsService
+from ..workspaces import WorkspaceId
 from ..yandex import ImageGenerator, KeywordStats, TextGenerator, WebSearch
 from ._process import register_shutdown
 
@@ -55,15 +63,33 @@ def _build_yandex_client[T](
     return with_oauth_token(yandex.oauth_token, folder_id=yandex.folder_id, **extra)
 
 
-def _make_on_attempt(generation_steps: GenerationSteps) -> Callable[..., Any]:
+class _PayloadDropper(Protocol):
+    async def drop_payload_keys(
+        self, workspace_id: WorkspaceId, job_id: JobId, keys: list[str]
+    ) -> None: ...
+
+
+# What must not outlive a settled Job: the Образцы of a Профиль стиля (#134).
+_RAW_PAYLOAD_KEYS = {ANALYZE_STYLE_JOB: ["samples", "links"]}
+
+
+def _make_on_attempt(
+    generation_steps: GenerationSteps, *, queue: _PayloadDropper | None = None
+) -> Callable[..., Any]:
     """Persists every attempt's provenance/cost (#74) right after `run_worker` settles
     it - `output`/`error` on success/failure alike carry a `steps` list built by the
     pipeline's `StepRecorder`, so a Job's cost reflects every attempt including ones
-    that failed and got retried, not only the last one that happened to succeed."""
+    that failed and got retried, not only the last one that happened to succeed. Drops
+    the raw input of a Job that has settled (`_RAW_PAYLOAD_KEYS`) at once - the bot drops
+    it again on delivery; a Job queued for another attempt keeps it (`drop_payload_keys`
+    only touches done/failed Jobs)."""
 
     async def on_attempt(
         claimed: ClaimedJob, output: dict[str, Any] | None, error: BaseException | None
     ) -> None:
+        keys = _RAW_PAYLOAD_KEYS.get(claimed.job_type)
+        if keys and queue is not None:
+            await queue.drop_payload_keys(claimed.workspace_id, claimed.id, keys)
         if output is not None:
             steps = output.get("steps") or []
             article_id = output.get("article_id")
@@ -161,7 +187,10 @@ async def main(settings: Settings | None = None) -> None:
         logger.info("worker started")
         try:
             await run_worker(
-                queue, handlers, stop=stop, on_attempt=_make_on_attempt(generation_steps)
+                queue,
+                handlers,
+                stop=stop,
+                on_attempt=_make_on_attempt(generation_steps, queue=queue),
             )
         finally:
             await page_fetcher.aclose()

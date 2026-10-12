@@ -68,9 +68,14 @@ class StyleProfile:
 
 
 def _clean(value: object, limit: int) -> str:
+    """One line within `limit`; a longer one is cut after a whole word, with «…»."""
     if not isinstance(value, str):
         return ""
-    return " ".join(value.split())[:limit].strip()
+    text = " ".join(value.split())
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1].rsplit(" ", 1)[0] if " " in text[: limit - 1] else text[: limit - 1]
+    return cut.rstrip(" ,;:.-—") + "…"
 
 
 def style_profile_text(profile: StyleProfile) -> str:
