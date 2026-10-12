@@ -227,6 +227,8 @@ async def test_regenerate_item_retried_before_any_state_change_does_not_duplicat
 
     first_claim = await queue.claim_next()
     assert first_claim is not None
+    # The worker finishes it first: it never runs two Jobs of one Workspace at once.
+    assert await queue.complete(first_claim.id, {}, first_claim.lease_token)
     second_claim = await queue.claim_next()
     assert second_claim is None
 
@@ -340,6 +342,8 @@ async def test_request_new_retried_for_the_same_week_does_not_duplicate_the_job(
 
     first_claim = await queue.claim_next()
     assert first_claim is not None
+    # The worker finishes it first: it never runs two Jobs of one Workspace at once.
+    assert await queue.complete(first_claim.id, {}, first_claim.lease_token)
     second_claim = await queue.claim_next()
     assert second_claim is None
 
@@ -351,6 +355,8 @@ async def test_request_replacement_enqueues_a_distinct_job_and_archives_source(
     await plan.request_new(WS_A, "Week 1")
     original = await queue.claim_next()
     assert original is not None
+    # The worker finishes it first: it never runs two Jobs of one Workspace at once.
+    assert await queue.complete(original.id, {}, original.lease_token)
 
     replacement_id = await plan.request_replacement(WS_A, plan_id)
 
@@ -373,6 +379,8 @@ async def test_request_replacement_callback_retry_reuses_the_same_job(
     assert second_id == first_id
     first = await queue.claim_next()
     assert first is not None
+    # The worker finishes it first: it never runs two Jobs of one Workspace at once.
+    assert await queue.complete(first.id, {}, first.lease_token)
     assert await queue.claim_next() is None
 
 
@@ -425,6 +433,8 @@ async def test_request_cover_retried_before_any_state_change_does_not_duplicate_
 
     first_claim = await queue.claim_next()
     assert first_claim is not None
+    # The worker finishes it first: it never runs two Jobs of one Workspace at once.
+    assert await queue.complete(first_claim.id, {}, first_claim.lease_token)
     second_claim = await queue.claim_next()
     assert second_claim is None
 
@@ -445,6 +455,8 @@ async def test_request_cover_after_apply_cover_enqueues_a_fresh_job(
     await plan.request_cover(WS_A, item_id)
     first_claim = await queue.claim_next()
     assert first_claim is not None
+    # The worker finishes it first: it never runs two Jobs of one Workspace at once.
+    assert await queue.complete(first_claim.id, {}, first_claim.lease_token)
     await plan.apply_cover(WS_A, item_id, b"fake-image-bytes", "image/jpeg")
 
     await plan.request_cover(WS_A, item_id)
@@ -806,6 +818,8 @@ async def test_request_cover_manual_is_recorded_on_the_job(plan: Plan, queue: Jo
     await plan.request_cover(WS_A, view.items[0].id, manual=True)
     manual = await queue.claim_next()
     assert manual is not None
+    # The worker finishes it first: it never runs two Jobs of one Workspace at once.
+    assert await queue.complete(manual.id, {}, manual.lease_token)
     await plan.apply_cover(WS_A, view.items[0].id, b"img", "image/png")
     await plan.request_cover(WS_A, view.items[0].id)
     automatic = await queue.claim_next()

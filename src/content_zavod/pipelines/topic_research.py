@@ -37,6 +37,7 @@ from ..domain import (
     TopicResearch,
     topic_fingerprint,
 )
+from ..workspaces import WorkspaceId
 from ..yandex import Message, SearchResults
 from .article_prompts import PAGE_TEXT_LIMIT, outline_messages, research_extract_messages
 from .page_fetcher import FetchedPage, PageFetcher
@@ -110,10 +111,16 @@ class SearchProvider(Protocol):
 
 
 class ResearchCache(Protocol):
-    async def get(self, plan_item_id: PlanItemId, fingerprint: str) -> TopicResearch | None: ...
+    async def get(
+        self, workspace_id: WorkspaceId, plan_item_id: PlanItemId, fingerprint: str
+    ) -> TopicResearch | None: ...
 
     async def put(
-        self, plan_item_id: PlanItemId, fingerprint: str, research: TopicResearch
+        self,
+        workspace_id: WorkspaceId,
+        plan_item_id: PlanItemId,
+        fingerprint: str,
+        research: TopicResearch,
     ) -> None: ...
 
 
@@ -152,13 +159,18 @@ class TopicResearcher:
         self._now = now
 
     async def prepare(
-        self, brief: TopicBrief, *, plan_item_id: PlanItemId | None, steps: StepRunner
+        self,
+        brief: TopicBrief,
+        *,
+        workspace_id: WorkspaceId,
+        plan_item_id: PlanItemId | None,
+        steps: StepRunner,
     ) -> TopicResearch:
         """The Тема's Исследование and shared outline - from the cache when this Тема (with
         this exact brief) was already researched, otherwise built and cached now."""
         fingerprint = topic_fingerprint(brief.title, brief.summary, brief.keywords)
         if self._cache is not None and plan_item_id is not None:
-            cached = await self._cache.get(plan_item_id, fingerprint)
+            cached = await self._cache.get(workspace_id, plan_item_id, fingerprint)
             if cached is not None:
                 return cached
         bundle = await self._research(brief, steps)
@@ -174,7 +186,7 @@ class TopicResearcher:
             and plan_item_id is not None
             and bundle.status != "search_unavailable"
         ):
-            await self._cache.put(plan_item_id, fingerprint, research)
+            await self._cache.put(workspace_id, plan_item_id, fingerprint, research)
         return research
 
     async def _research(self, brief: TopicBrief, steps: StepRunner) -> ResearchBundle:
@@ -201,6 +213,8 @@ class TopicResearcher:
                 usage_missing=False,
                 latency_ms=results.latency_ms,
                 cost=results.cost,
+                unit="search_request",
+                quantity=1,
             )
         )
         pages = await self._fetch_pages([hit.url for hit in results.hits])

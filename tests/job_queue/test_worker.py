@@ -9,7 +9,7 @@ import pytest
 
 from content_zavod.domain import GenerationSteps
 from content_zavod.job_queue import ClaimedJob, JobPartialFailure, JobQueue, run_worker
-from tests.tenancy import WS_A
+from tests.tenancy import WS_A, WS_B
 
 
 async def test_claim_next_returns_none_when_queue_is_empty(queue: JobQueue) -> None:
@@ -139,7 +139,7 @@ async def test_worker_heartbeats_while_handler_is_running(queue: JobQueue) -> No
 
     queue.heartbeat = recording_heartbeat  # type: ignore[method-assign]
 
-    async def handler(payload: dict) -> dict:
+    async def handler(workspace_id: int, payload: dict) -> dict:
         await finish_handler.wait()
         stop.set()
         return {}
@@ -177,7 +177,7 @@ async def test_run_worker_recovers_stuck_jobs_periodically_even_when_continuousl
     processed = 0
     stop = asyncio.Event()
 
-    async def handler(payload: dict) -> dict:
+    async def handler(workspace_id: int, payload: dict) -> dict:
         nonlocal processed
         processed += 1
         if processed >= 5:
@@ -211,13 +211,13 @@ async def test_run_worker_recovers_stuck_jobs_periodically_even_when_continuousl
 async def test_run_worker_executes_the_matching_handler(queue: JobQueue) -> None:
     job_id = await queue.enqueue(WS_A, "generate_plan", {"week": 1}, idempotency_key="plan-1")
 
-    async def handler(payload: dict) -> dict:
+    async def handler(workspace_id: int, payload: dict) -> dict:
         return {"weeks_done": payload["week"]}
 
     stop = asyncio.Event()
 
-    async def handle_and_stop(payload: dict) -> dict:
-        result = await handler(payload)
+    async def handle_and_stop(workspace_id: int, payload: dict) -> dict:
+        result = await handler(workspace_id, payload)
         stop.set()
         return result
 
@@ -229,6 +229,24 @@ async def test_run_worker_executes_the_matching_handler(queue: JobQueue) -> None
     assert await queue.get_status(WS_A, job_id) == "done"
 
 
+async def test_run_worker_hands_the_handler_its_jobs_own_workspace(queue: JobQueue) -> None:
+    """ADR-0015: the handler's workspace_id is the claimed Job's, never one in its payload."""
+    await queue.enqueue(WS_B, "generate_plan", {"workspace_id": WS_A}, idempotency_key="plan-1")
+    seen: list[int] = []
+    stop = asyncio.Event()
+
+    async def handler(workspace_id: int, payload: dict) -> dict:
+        seen.append(workspace_id)
+        stop.set()
+        return {}
+
+    await asyncio.wait_for(
+        run_worker(queue, {"generate_plan": handler}, poll_interval=0.01, stop=stop), timeout=5
+    )
+
+    assert seen == [WS_B]
+
+
 async def test_run_worker_retries_a_failing_handler_and_eventually_marks_it_failed(
     pool: asyncpg.Pool,
 ) -> None:
@@ -238,7 +256,7 @@ async def test_run_worker_retries_a_failing_handler_and_eventually_marks_it_fail
 
     call_count = 0
 
-    async def failing_handler(payload: dict) -> dict:
+    async def failing_handler(workspace_id: int, payload: dict) -> dict:
         nonlocal call_count
         call_count += 1
         raise RuntimeError("boom")
@@ -269,7 +287,7 @@ async def test_run_worker_calls_on_attempt_with_output_on_success(queue: JobQueu
     seen: list[tuple[ClaimedJob, dict | None, BaseException | None]] = []
     stop = asyncio.Event()
 
-    async def handler(payload: dict) -> dict:
+    async def handler(workspace_id: int, payload: dict) -> dict:
         return {"steps": [{"step_name": "outline"}]}
 
     async def on_attempt(claimed: ClaimedJob, output: dict | None, error) -> None:
@@ -301,7 +319,7 @@ async def test_run_worker_calls_on_attempt_with_error_on_failure(pool: asyncpg.P
     seen: list[BaseException | None] = []
     stop = asyncio.Event()
 
-    async def failing_handler(payload: dict) -> dict:
+    async def failing_handler(workspace_id: int, payload: dict) -> dict:
         raise JobPartialFailure("boom", {"steps": [{"step_name": "outline"}]})
 
     async def on_attempt(claimed: ClaimedJob, output: dict | None, error) -> None:
@@ -345,11 +363,13 @@ async def test_job_cost_sums_every_attempt_end_to_end_through_a_retry(pool: asyn
             "usage_missing": False,
             "latency_ms": 5,
             "cost": cost,
+            "unit": "tokens",
+            "quantity": 10,
         }
 
     call_count = 0
 
-    async def handler(payload: dict) -> dict:
+    async def handler(workspace_id: int, payload: dict) -> dict:
         nonlocal call_count
         call_count += 1
         if call_count == 1:

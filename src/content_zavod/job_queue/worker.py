@@ -51,7 +51,7 @@ async def run_worker(
             )
             continue
 
-        handler_task = asyncio.create_task(handler(claimed.payload))
+        handler_task = asyncio.create_task(handler(claimed.workspace_id, claimed.payload))
         heartbeat_task = asyncio.create_task(
             _heartbeat_while_running(
                 queue,

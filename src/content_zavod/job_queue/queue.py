@@ -121,19 +121,33 @@ class JobQueue:
         )
 
     async def claim_next(self) -> ClaimedJob | None:
+        """The next due Job of a Workspace with no `running` one, Workspaces taken in turn -
+        the one served longest ago (or never) first (ADR-0015). So six Статьи of one Workspace
+        don't make every other wait until all six are written. Soft: two worker processes can
+        for a moment each claim a Job of the same Workspace - fairness, not an invariant."""
         lease_token = uuid.uuid4().hex
         row = await self._pool.fetchrow(
             """
+            WITH next AS (
+                SELECT jobs.id, jobs.workspace_id
+                FROM jobs JOIN workspaces ON workspaces.id = jobs.workspace_id
+                WHERE jobs.status = 'queued' AND jobs.run_at <= now()
+                    AND NOT EXISTS (
+                        SELECT 1 FROM jobs AS running
+                        WHERE running.workspace_id = jobs.workspace_id
+                            AND running.status = 'running'
+                    )
+                ORDER BY workspaces.last_job_claimed_at NULLS FIRST, jobs.run_at
+                FOR UPDATE OF jobs SKIP LOCKED
+                LIMIT 1
+            ), served AS (
+                UPDATE workspaces SET last_job_claimed_at = now()
+                WHERE id = (SELECT workspace_id FROM next)
+            )
             UPDATE jobs
             SET status = 'running', attempts = attempts + 1, locked_at = now(),
                 lease_token = $1, updated_at = now()
-            WHERE id = (
-                SELECT id FROM jobs
-                WHERE status = 'queued' AND run_at <= now()
-                ORDER BY run_at
-                FOR UPDATE SKIP LOCKED
-                LIMIT 1
-            )
+            WHERE id = (SELECT id FROM next)
             RETURNING id, workspace_id, job_type, payload, attempts, lease_token
             """,
             lease_token,

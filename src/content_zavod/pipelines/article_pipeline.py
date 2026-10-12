@@ -46,6 +46,7 @@ from ..domain import ArticleId, ArticleView, PlanItemId, ResearchBundle
 from ..job_queue import JobHandler
 from ..personas import platform_profile
 from ..settings import Project, SettingsReader
+from ..workspaces import WorkspaceId
 from ..yandex import DEFAULT_TEMPERATURE, Completion, Message, TextGenerator
 from .article_prompts import draft_messages, rewrite_messages
 from .plan_pipeline import PlanItemReader
@@ -83,7 +84,7 @@ SOURCES_HEADING = "Источники:"
 
 
 class ArticleReader(Protocol):
-    async def get(self, article_id: ArticleId) -> ArticleView: ...
+    async def get(self, workspace_id: WorkspaceId, article_id: ArticleId) -> ArticleView: ...
 
 
 def make_generate_article_handler(
@@ -91,7 +92,7 @@ def make_generate_article_handler(
     researcher: TopicResearcher,
     settings: SettingsReader,
 ) -> JobHandler:
-    async def handle(payload: dict[str, Any]) -> dict[str, Any]:
+    async def handle(workspace_id: WorkspaceId, payload: dict[str, Any]) -> dict[str, Any]:
         plan_item_id = payload.get("plan_item_id")
         brief = TopicBrief(
             title=payload["title"],
@@ -102,6 +103,7 @@ def make_generate_article_handler(
             text_generator,
             researcher,
             settings,
+            workspace_id=workspace_id,
             article_id=ArticleId(payload["article_id"]),
             # Jobs enqueued before #94 carry no plan_item_id: researched, just not cached.
             plan_item_id=PlanItemId(plan_item_id) if plan_item_id else None,
@@ -120,15 +122,17 @@ def make_regenerate_article_handler(
     researcher: TopicResearcher,
     settings: SettingsReader,
 ) -> JobHandler:
-    async def handle(payload: dict[str, Any]) -> dict[str, Any]:
+    async def handle(workspace_id: WorkspaceId, payload: dict[str, Any]) -> dict[str, Any]:
         article_id = ArticleId(payload["article_id"])
-        view = await article_reader.get(article_id)
-        item = await item_reader.get_item(view.plan_item_id)
+        # The Job's Workspace: a payload naming another's Статья finds nothing (ADR-0015).
+        view = await article_reader.get(workspace_id, article_id)
+        item = await item_reader.get_item(workspace_id, view.plan_item_id)
         brief = TopicBrief(title=item.title, summary=item.summary, keywords=tuple(item.keywords))
         return await _run_pipeline(
             text_generator,
             researcher,
             settings,
+            workspace_id=workspace_id,
             article_id=article_id,
             plan_item_id=view.plan_item_id,
             brief=brief,
@@ -176,6 +180,7 @@ async def _run_pipeline(
     researcher: TopicResearcher,
     settings: SettingsReader,
     *,
+    workspace_id: WorkspaceId,
     article_id: ArticleId,
     plan_item_id: PlanItemId | None,
     brief: TopicBrief,
@@ -186,12 +191,14 @@ async def _run_pipeline(
 ) -> dict[str, Any]:
     steps = _Steps(text_generator)
     try:
-        owner_settings = await settings.read()
+        owner_settings = await settings.read(workspace_id)
         persona, custom_persona = owner_settings.persona, owner_settings.custom_persona
         project = owner_settings.project
         audience = owner_settings.audience
         profile = platform_profile(platform)
-        research = await researcher.prepare(brief, plan_item_id=plan_item_id, steps=steps)
+        research = await researcher.prepare(
+            brief, workspace_id=workspace_id, plan_item_id=plan_item_id, steps=steps
+        )
         draft = await steps.llm(
             "draft",
             draft_messages(
