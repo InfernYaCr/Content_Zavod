@@ -1,5 +1,4 @@
 from .callback_codec import (
-    ACTION_ROLE,
     Action,
     CallbackPayload,
     ExportArticle,
@@ -12,14 +11,12 @@ from .callback_codec import (
     encode_callback_data,
 )
 from .callback_dispatcher import (
-    ACCESS_DENIED_TEXT,
-    OWNER_ONLY_TEXT,
     CallbackAnswerer,
     CallbackDispatcher,
     CallbackInput,
     unpack_callback_query,
 )
-from .commands import MENU_COMMANDS, resync_member_commands, sync_commands
+from .commands import ADMIN_COMMANDS, MENU_COMMANDS, sync_admin_commands
 from .comment_gated_regeneration import CommentGatedRegeneration, CommentPrompt
 from .gateway import (
     BotClient,
@@ -28,10 +25,7 @@ from .gateway import (
     TelegramGateway,
     build_article_keyboard,
     build_confirm_keyboard,
-    build_join_request_keyboard,
-    build_members_keyboard,
     build_plan_keyboard,
-    build_request_access_keyboard,
     build_retry_keyboard,
     build_skip_keyboard,
     render_plan_text,
@@ -51,9 +45,7 @@ from .history_command import (
     handle_history_week,
 )
 from .input_prompt import InputPrompt
-from .join_request_flow import JoinRequestFlow
-from .main_menu import MainMenu, build_open_menu_keyboard, render_help_text
-from .members_command import handle_members_command
+from .main_menu import MainMenu, build_open_menu_keyboard
 from .plan_delivery import PlanHubSource, PlanMessageRefs, deliver_plan_hub, deliver_plan_message
 from .plan_review import PlanOperations, PlanReview
 from .settings_screen import SETTING_FIELDS, SettingField, SettingsScreen
@@ -74,10 +66,8 @@ from .types import (
 )
 
 __all__ = [
-    "ACCESS_DENIED_TEXT",
-    "ACTION_ROLE",
+    "ADMIN_COMMANDS",
     "MENU_COMMANDS",
-    "OWNER_ONLY_TEXT",
     "SETTING_FIELDS",
     "Action",
     "ArticleFormat",
@@ -100,7 +90,6 @@ __all__ = [
     "HistoryVersions",
     "HistoryWeek",
     "InputPrompt",
-    "JoinRequestFlow",
     "MainMenu",
     "MessageGone",
     "Page",
@@ -122,11 +111,8 @@ __all__ = [
     "TelegramGateway",
     "build_article_keyboard",
     "build_confirm_keyboard",
-    "build_join_request_keyboard",
-    "build_members_keyboard",
     "build_open_menu_keyboard",
     "build_plan_keyboard",
-    "build_request_access_keyboard",
     "build_retry_keyboard",
     "build_skip_keyboard",
     "decode_callback_data",
@@ -141,11 +127,8 @@ __all__ = [
     "handle_history_version",
     "handle_history_versions",
     "handle_history_week",
-    "handle_members_command",
     "handle_topic_command",
-    "render_help_text",
     "render_plan_text",
-    "resync_member_commands",
-    "sync_commands",
+    "sync_admin_commands",
     "unpack_callback_query",
 ]

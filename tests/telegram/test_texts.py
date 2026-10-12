@@ -62,23 +62,49 @@ def test_steps_count_text_agrees_with_the_number() -> None:
     assert steps_count_text(22) == "22 коротких шага"
 
 
-def test_plan_size_promised_to_newcomers_matches_the_pipeline() -> None:
-    """A Plan has at most `TOPICS_PER_PLAN` Темы (and may have fewer) - never «2–4»."""
-    from content_zavod.pipelines.plan_pipeline import TOPICS_PER_PLAN
-    from content_zavod.telegram.texts import (
-        BOT_DESCRIPTION,
-        CONTENT_MANAGER_WELCOME,
-        ONBOARDING_INTRO,
+def test_newcomer_texts_stay_neutral_until_the_niche_map_lands() -> None:
+    """Until #128's pipeline, nothing promises a number of Темы or Wordstat growth, and
+    nothing speaks of a team, Роли or access requests (ADR-0015)."""
+    from content_zavod.telegram import guide_texts, texts
+
+    newcomer = [texts.BOT_DESCRIPTION, texts.BOT_SHORT_DESCRIPTION, texts.ONBOARDING_INTRO]
+    newcomer += [
+        value
+        for module in (texts, guide_texts)
+        for name, value in vars(module).items()
+        if name.isupper() and isinstance(value, str)
+    ]
+    for text in newcomer:
+        for banned in (
+            "до трёх Тем",
+            "растут в Wordstat",
+            "чат команды",
+            "чате команды",
+            "для команды",
+            "вашей команды",
+            "Контент-менеджер",
+            "Направлени",
+            "Запросить доступ",
+        ):
+            assert banned not in text, (banned, text)
+
+
+def test_a_button_of_another_workspace_reads_like_a_stale_one() -> None:
+    """ADR-0015: «not yours» and «gone» must not be told apart."""
+    from content_zavod.domain.errors import (
+        ArticleNotFound,
+        ArticleVersionNotFound,
+        PlanItemNotFound,
+        PlanNotFound,
     )
+    from content_zavod.job_queue import JobNotFound
+    from content_zavod.telegram.texts import STALE_BUTTON, error_alert_text
 
-    assert TOPICS_PER_PLAN == 3
-    for text in (BOT_DESCRIPTION, CONTENT_MANAGER_WELCOME, ONBOARDING_INTRO):
-        assert "до трёх Тем" in text
-        assert "2–4" not in text
-
-
-def test_content_manager_welcome_says_how_to_reach_the_team_chat() -> None:
-    from content_zavod.telegram.texts import CONTENT_MANAGER_WELCOME
-
-    assert "в чате команды" in CONTENT_MANAGER_WELCOME
-    assert "попросите Владельца добавить" in CONTENT_MANAGER_WELCOME
+    for exc in (
+        PlanNotFound("p"),
+        PlanItemNotFound("i"),
+        ArticleNotFound("a"),
+        ArticleVersionNotFound("a", 1),
+        JobNotFound(1),
+    ):
+        assert error_alert_text(exc) == STALE_BUTTON

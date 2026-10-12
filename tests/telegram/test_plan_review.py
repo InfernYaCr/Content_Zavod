@@ -2,6 +2,7 @@ import pytest
 
 from content_zavod.telegram import PlanItemId, PlanReview
 from content_zavod.telegram.pending_inputs import PendingInput
+from tests.tenancy import WS_A
 
 from .fakes import FakePendingInputs
 
@@ -12,25 +13,28 @@ class FakeOps:
         self.regenerated: list[tuple[PlanItemId, str | None]] = []
         self.approved: list[PlanItemId] = []
 
-    async def delete_item(self, plan_item_id: PlanItemId) -> None:
+    async def delete_item(self, workspace_id: int, plan_item_id: PlanItemId) -> None:
+        assert workspace_id == WS_A
         self.deleted.append(plan_item_id)
 
-    async def regenerate_item(self, plan_item_id: PlanItemId, comment: str | None) -> None:
+    async def regenerate_item(
+        self, workspace_id: int, plan_item_id: PlanItemId, comment: str | None
+    ) -> None:
+        assert workspace_id == WS_A
         self.regenerated.append((plan_item_id, comment))
 
-    async def approve_all(self, plan_item_id: PlanItemId) -> None:
-        self.approved.append(plan_item_id)
+    async def approve_all(self, workspace_id: int, plan_id: str) -> None:
+        assert workspace_id == WS_A
+        self.approved.append(PlanItemId(plan_id))
 
 
 class FakePrompt:
     def __init__(self) -> None:
         self.prompted: list[tuple[int, PlanItemId]] = []
 
-    async def prompt_for_comment(
-        self, chat_id: int, user_id: int, plan_item_id: PlanItemId
-    ) -> tuple[int, int | None]:
+    async def prompt_for_comment(self, chat_id: int, plan_item_id: PlanItemId) -> int:
         self.prompted.append((chat_id, plan_item_id))
-        return 100, 101
+        return 100
 
     async def mark_generating(self, chat_id: int, pending: PendingInput) -> None:
         pass
@@ -56,7 +60,7 @@ def review(ops: FakeOps, prompt: FakePrompt) -> PlanReview:
 
 @pytest.mark.asyncio
 async def test_delete_calls_ops_directly(review: PlanReview, ops: FakeOps) -> None:
-    await review.handle_action(1, 10, PlanItemId("item-1"), "delete")
+    await review.handle_action(WS_A, 1, 10, PlanItemId("item-1"), "delete")
 
     assert ops.deleted == [PlanItemId("item-1")]
     assert ops.regenerated == []
@@ -64,7 +68,7 @@ async def test_delete_calls_ops_directly(review: PlanReview, ops: FakeOps) -> No
 
 @pytest.mark.asyncio
 async def test_approve_all_calls_ops_directly(review: PlanReview, ops: FakeOps) -> None:
-    await review.handle_action(1, 10, PlanItemId("plan-1"), "approve_all")
+    await review.handle_action(WS_A, 1, 10, PlanItemId("plan-1"), "approve_all")
 
     assert ops.approved == [PlanItemId("plan-1")]
 
@@ -73,12 +77,12 @@ async def test_approve_all_calls_ops_directly(review: PlanReview, ops: FakeOps) 
 async def test_regenerate_action_delegates_to_the_comment_gated_flow(
     review: PlanReview, ops: FakeOps, prompt: FakePrompt
 ) -> None:
-    await review.handle_action(1, 10, PlanItemId("item-1"), "regenerate")
+    await review.handle_action(WS_A, 1, 10, PlanItemId("item-1"), "regenerate")
 
     assert prompt.prompted == [(1, PlanItemId("item-1"))]
     assert ops.regenerated == []
 
-    consumed = await review.handle_comment_reply(1, 10, "please make it shorter", None)
+    consumed = await review.handle_comment_reply(WS_A, 1, 10, "please make it shorter")
 
     assert consumed is True
     assert ops.regenerated == [(PlanItemId("item-1"), "please make it shorter")]
@@ -88,11 +92,11 @@ async def test_regenerate_action_delegates_to_the_comment_gated_flow(
 async def test_delete_clears_any_pending_wait_for_same_user(
     review: PlanReview, ops: FakeOps
 ) -> None:
-    await review.handle_action(1, 10, PlanItemId("item-1"), "regenerate")
+    await review.handle_action(WS_A, 1, 10, PlanItemId("item-1"), "regenerate")
 
-    await review.handle_action(1, 10, PlanItemId("item-2"), "delete")
+    await review.handle_action(WS_A, 1, 10, PlanItemId("item-2"), "delete")
 
-    consumed = await review.handle_comment_reply(1, 10, "too late", None)
+    consumed = await review.handle_comment_reply(WS_A, 1, 10, "too late")
     assert consumed is False
     assert ops.deleted == [PlanItemId("item-2")]
 
@@ -101,37 +105,37 @@ async def test_delete_clears_any_pending_wait_for_same_user(
 async def test_approve_all_clears_any_pending_wait_for_same_user(
     review: PlanReview, ops: FakeOps
 ) -> None:
-    await review.handle_action(1, 10, PlanItemId("item-1"), "regenerate")
+    await review.handle_action(WS_A, 1, 10, PlanItemId("item-1"), "regenerate")
 
-    await review.handle_action(1, 10, PlanItemId("plan-1"), "approve_all")
+    await review.handle_action(WS_A, 1, 10, PlanItemId("plan-1"), "approve_all")
 
-    consumed = await review.handle_comment_reply(1, 10, "too late", None)
+    consumed = await review.handle_comment_reply(WS_A, 1, 10, "too late")
     assert consumed is False
     assert ops.approved == [PlanItemId("plan-1")]
 
 
 @pytest.mark.asyncio
 async def test_will_enqueue_regeneration_is_false_before_first_press(review: PlanReview) -> None:
-    assert await review.will_enqueue_regeneration(1, 10, PlanItemId("item-1")) is False
+    assert await review.will_enqueue_regeneration(WS_A, 1, 10, PlanItemId("item-1")) is False
 
 
 @pytest.mark.asyncio
 async def test_will_enqueue_regeneration_is_true_on_matching_second_press(
     review: PlanReview,
 ) -> None:
-    await review.handle_action(1, 10, PlanItemId("item-1"), "regenerate")
+    await review.handle_action(WS_A, 1, 10, PlanItemId("item-1"), "regenerate")
 
-    assert await review.will_enqueue_regeneration(1, 10, PlanItemId("item-1")) is True
+    assert await review.will_enqueue_regeneration(WS_A, 1, 10, PlanItemId("item-1")) is True
 
 
 @pytest.mark.asyncio
 async def test_cancel_comment_drops_the_wait_for_that_item_only(
     review: PlanReview, ops: FakeOps
 ) -> None:
-    await review.handle_action(1, 10, PlanItemId("item-1"), "regenerate")
+    await review.handle_action(WS_A, 1, 10, PlanItemId("item-1"), "regenerate")
 
-    assert await review.cancel_comment(1, 10, PlanItemId("item-2")) is False
-    assert await review.cancel_comment(1, 10, PlanItemId("item-1")) is True
+    assert await review.cancel_comment(WS_A, 1, 10, PlanItemId("item-2")) is False
+    assert await review.cancel_comment(WS_A, 1, 10, PlanItemId("item-1")) is True
 
-    assert await review.handle_comment_reply(1, 10, "too late", None) is False
+    assert await review.handle_comment_reply(WS_A, 1, 10, "too late") is False
     assert ops.regenerated == []

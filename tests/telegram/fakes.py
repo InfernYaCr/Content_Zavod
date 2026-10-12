@@ -9,22 +9,35 @@ from tests.tenancy import WS_A
 
 
 class FakePendingInputs:
-    """In-memory `PendingInputs` (#88): same one-row-per-(chat_id, user_id) and `take`
-    matching rules as the SQL, minus the TTL (covered by tests/telegram/test_pending_inputs.py)."""
+    """In-memory `PendingInputs` (#88): same one-row-per-(workspace_id, chat_id, user_id) and
+    `take` matching rules as the SQL, minus the TTL (covered by
+    tests/telegram/test_pending_inputs.py). `rows` is keyed by (chat_id, user_id) for the
+    default Workspace A; other Workspaces' rows live in `by_workspace`."""
 
     def __init__(self) -> None:
-        self.rows: dict[tuple[int, int], PendingInput] = {}
+        self.by_workspace: dict[int, dict[tuple[int, int], PendingInput]] = {WS_A: {}}
 
-    async def put(self, chat_id: int, user_id: int, pending: PendingInput) -> PendingInput | None:
-        previous = self.rows.get((chat_id, user_id))
-        self.rows[(chat_id, user_id)] = pending
+    @property
+    def rows(self) -> dict[tuple[int, int], PendingInput]:
+        return self.by_workspace[WS_A]
+
+    def _rows(self, workspace_id: int) -> dict[tuple[int, int], PendingInput]:
+        return self.by_workspace.setdefault(workspace_id, {})
+
+    async def put(
+        self, workspace_id: int, chat_id: int, user_id: int, pending: PendingInput
+    ) -> PendingInput | None:
+        rows = self._rows(workspace_id)
+        previous = rows.get((chat_id, user_id))
+        rows[(chat_id, user_id)] = pending
         return previous
 
-    async def get(self, chat_id: int, user_id: int) -> PendingInput | None:
-        return self.rows.get((chat_id, user_id))
+    async def get(self, workspace_id: int, chat_id: int, user_id: int) -> PendingInput | None:
+        return self._rows(workspace_id).get((chat_id, user_id))
 
     async def take(
         self,
+        workspace_id: int,
         chat_id: int,
         user_id: int,
         kind: str,
@@ -32,7 +45,8 @@ class FakePendingInputs:
         target_id: str | None = None,
         reply_to_message_id: int | None = None,
     ) -> PendingInput | None:
-        pending = self.rows.get((chat_id, user_id))
+        rows = self._rows(workspace_id)
+        pending = rows.get((chat_id, user_id))
         if (
             pending is None
             or pending.kind != kind
@@ -44,7 +58,7 @@ class FakePendingInputs:
             )
         ):
             return None
-        return self.rows.pop((chat_id, user_id))
+        return rows.pop((chat_id, user_id))
 
 
 class FakeJobs:
@@ -55,7 +69,9 @@ class FakeJobs:
         self.jobs: dict[int, JobSnapshot] = {}
         self.keys: dict[str, int] = {}
 
-    async def enqueue(self, job_type: str, payload: dict[str, Any], idempotency_key: str) -> int:
+    async def enqueue(
+        self, workspace_id: int, job_type: str, payload: dict[str, Any], idempotency_key: str
+    ) -> int:
         if idempotency_key in self.keys:
             return self.keys[idempotency_key]
         job_id = len(self.jobs) + 1
@@ -63,7 +79,7 @@ class FakeJobs:
         self.keys[idempotency_key] = job_id
         return job_id
 
-    async def get_job(self, job_id: int) -> JobSnapshot | None:
+    async def get_job(self, workspace_id: int, job_id: int) -> JobSnapshot | None:
         return self.jobs.get(job_id)
 
     def finish(self, job_id: int, output: dict[str, Any] | None) -> JobResult:
@@ -89,8 +105,8 @@ class RecordingBot:
         self.fail_pins = False
         self._next_id = 100
 
-    async def send_message(self, chat_id, text, reply_markup=None, parse_mode=None) -> int:
-        self.sent.append((chat_id, text, reply_markup, parse_mode))
+    async def send_message(self, chat_id, text, reply_markup=None) -> int:
+        self.sent.append((chat_id, text, reply_markup, None))
         message_id = self._next_id
         self._next_id += 1
         return message_id

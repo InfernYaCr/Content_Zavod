@@ -49,8 +49,9 @@ async def test_0012_wipes_user_data_and_keeps_bot_state(
     isolated_pool: asyncpg.Pool, tmp_path: Path
 ) -> None:
     await _seed_0011_installation(isolated_pool, tmp_path)
+    shutil.copy(SQL_DIR / "0012_personal_workspaces.sql", tmp_path)
 
-    assert await run_migrations(isolated_pool) == ["0012_personal_workspaces"]
+    assert await run_migrations(isolated_pool, tmp_path) == ["0012_personal_workspaces"]
 
     for table in (
         "plans",

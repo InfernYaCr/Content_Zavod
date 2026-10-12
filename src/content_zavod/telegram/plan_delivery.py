@@ -37,6 +37,13 @@ sends a fresh message and moves the ref to it with
 message. Two deliveries racing after the same deletion therefore both
 send, but only one replacement sticks: the loser deletes its own extra
 message (best effort) and redraws the winner's with its view instead.
+
+Every call names the Пространство (ADR-0015): the Plan is looked up in it, so a delivery can
+never draw another Workspace's Plan. The chat is the Workspace owner's private chat.
+
+`resend_plan_message` is «📋 План недели» with a Plan: a private chat has no link to an earlier
+message, so the Plan (or its Хаб) is sent anew at the bottom of the chat and becomes the
+canonical one, and the old copy is deleted.
 """
 
 from __future__ import annotations
@@ -45,25 +52,36 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
+from ..workspaces import WorkspaceId
 from .gateway import MessageGone, TelegramGateway
-from .types import PlanHubView, PlanId, PlanMessageRef, PlanView
+from .types import PlanHubView, PlanId, PlanMessageRef, PlanSummary, PlanView
 
 logger = logging.getLogger(__name__)
 
 
 class PlanMessageRefs(Protocol):
-    async def get_message_ref(self, plan_id: PlanId) -> PlanMessageRef | None: ...
+    async def get_message_ref(
+        self, workspace_id: WorkspaceId, plan_id: PlanId
+    ) -> PlanMessageRef | None: ...
 
-    async def record_message_ref(self, plan_id: PlanId, chat_id: int, message_id: int) -> None: ...
+    async def record_message_ref(
+        self, workspace_id: WorkspaceId, plan_id: PlanId, chat_id: int, message_id: int
+    ) -> None: ...
 
     async def replace_message_ref(
-        self, plan_id: PlanId, old: PlanMessageRef, chat_id: int, message_id: int
+        self,
+        workspace_id: WorkspaceId,
+        plan_id: PlanId,
+        old: PlanMessageRef,
+        chat_id: int,
+        message_id: int,
     ) -> bool: ...
 
 
 async def _edit_or_replace(
     plan: PlanMessageRefs,
     gateway: TelegramGateway,
+    workspace_id: WorkspaceId,
     plan_id: PlanId,
     chat_id: int,
     ref: PlanMessageRef,
@@ -85,7 +103,7 @@ async def _edit_or_replace(
             ref.chat_id,
         )
     message_id = await send(chat_id)
-    if await plan.replace_message_ref(plan_id, ref, chat_id, message_id):
+    if await plan.replace_message_ref(workspace_id, plan_id, ref, chat_id, message_id):
         return True
     # Another delivery replaced the dead message first: ours is an extra - tidy it up and draw
     # this delivery's state on the winner instead.
@@ -99,24 +117,29 @@ async def _edit_or_replace(
             chat_id,
             exc_info=True,
         )
-    current = await plan.get_message_ref(plan_id)
+    current = await plan.get_message_ref(workspace_id, plan_id)
     if current is not None:
         await edit(current.chat_id, current.message_id)
     return False
 
 
 async def deliver_plan_message(
-    plan: PlanMessageRefs, gateway: TelegramGateway, chat_id: int, view: PlanView
+    plan: PlanMessageRefs,
+    gateway: TelegramGateway,
+    workspace_id: WorkspaceId,
+    chat_id: int,
+    view: PlanView,
 ) -> bool:
     """Returns whether a new message was sent - `False` means an earlier, possibly long
     scrolled-away message was edited in place, which an interactive caller may want to
     point the user at. A recorded message deleted in the chat is replaced by a new one, which
     counts as sent (#106)."""
-    ref = await plan.get_message_ref(view.id)
+    ref = await plan.get_message_ref(workspace_id, view.id)
     if ref is not None:
         return await _edit_or_replace(
             plan,
             gateway,
+            workspace_id,
             view.id,
             chat_id,
             ref,
@@ -124,16 +147,20 @@ async def deliver_plan_message(
             edit=lambda c, m: gateway.edit_plan(c, m, view),
         )
     message_id = await gateway.send_plan(chat_id, view)
-    await plan.record_message_ref(view.id, chat_id, message_id)
+    await plan.record_message_ref(workspace_id, view.id, chat_id, message_id)
     return True
 
 
 class PlanHubSource(PlanMessageRefs, Protocol):
-    async def get_hub(self, plan_id: PlanId) -> PlanHubView: ...
+    async def get_hub(self, workspace_id: WorkspaceId, plan_id: PlanId) -> PlanHubView: ...
 
 
 async def deliver_plan_hub(
-    plan: PlanHubSource, gateway: TelegramGateway, chat_id: int, plan_id: PlanId
+    plan: PlanHubSource,
+    gateway: TelegramGateway,
+    workspace_id: WorkspaceId,
+    chat_id: int,
+    plan_id: PlanId,
 ) -> None:
     """Redraws an approved Plan's canonical message as its Хаб (#91), from statuses read
     right now - so a redelivered or out-of-order notification just redraws the same state.
@@ -141,14 +168,15 @@ async def deliver_plan_hub(
     yet gets one sent and recorded, and a deleted one is replaced (#106). A Plan that is no
     longer `approved` (archived by a replacement) is left alone - its late Job results have
     nowhere meaningful to show."""
-    hub = await plan.get_hub(plan_id)
+    hub = await plan.get_hub(workspace_id, plan_id)
     if hub.status != "approved":
         return
-    ref = await plan.get_message_ref(plan_id)
+    ref = await plan.get_message_ref(workspace_id, plan_id)
     if ref is not None:
         await _edit_or_replace(
             plan,
             gateway,
+            workspace_id,
             plan_id,
             chat_id,
             ref,
@@ -157,4 +185,34 @@ async def deliver_plan_hub(
         )
         return
     message_id = await gateway.send_hub(chat_id, hub)
-    await plan.record_message_ref(plan_id, chat_id, message_id)
+    await plan.record_message_ref(workspace_id, plan_id, chat_id, message_id)
+
+
+class PlanResendSource(PlanHubSource, Protocol):
+    async def get(self, workspace_id: WorkspaceId, plan_id: PlanId) -> PlanView: ...
+
+    async def get_summary(self, workspace_id: WorkspaceId, plan_id: PlanId) -> PlanSummary: ...
+
+
+async def resend_plan_message(
+    plan: PlanResendSource,
+    gateway: TelegramGateway,
+    workspace_id: WorkspaceId,
+    chat_id: int,
+    plan_id: PlanId,
+) -> None:
+    """The Plan (or its Хаб, once approved) as a new message at the bottom of `chat_id`, made
+    the canonical one; the copy it replaces is deleted (best effort - one older than 48 hours
+    stays, its buttons still work)."""
+    if (await plan.get_summary(workspace_id, plan_id)).status == "approved":
+        message_id = await gateway.send_hub(chat_id, await plan.get_hub(workspace_id, plan_id))
+    else:
+        message_id = await gateway.send_plan(chat_id, await plan.get(workspace_id, plan_id))
+    ref = await plan.get_message_ref(workspace_id, plan_id)
+    if ref is None:
+        await plan.record_message_ref(workspace_id, plan_id, chat_id, message_id)
+        return
+    if await plan.replace_message_ref(workspace_id, plan_id, ref, chat_id, message_id):
+        await gateway.delete_message(ref.chat_id, ref.message_id)
+        return
+    await gateway.delete_message(chat_id, message_id)  # a delivery moved it meanwhile

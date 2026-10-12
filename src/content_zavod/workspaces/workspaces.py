@@ -39,16 +39,17 @@ class Workspaces:
     async def get_or_create(
         self, owner_telegram_id: int, *, timezone: str, owner_username: str | None = None
     ) -> Workspace:
-        """The owner's Workspace, created on first call. Race-safe (one upsert): two
+        """`/start`: the owner's Workspace, created on first call. Race-safe (one upsert): two
         concurrent `/start`s get the same row. `timezone` only applies to a new Workspace;
-        a known `owner_username` is refreshed."""
+        a known `owner_username` is refreshed, and a `bot_blocked_at` mark is cleared - whoever
+        presses /start has the bot unblocked again (ADR-0015)."""
         row = await self._pool.fetchrow(
             f"""
             INSERT INTO workspaces (owner_telegram_id, owner_username, timezone)
             VALUES ($1, $2, $3)
             ON CONFLICT (owner_telegram_id) DO UPDATE
             SET owner_username = COALESCE(EXCLUDED.owner_username, workspaces.owner_username),
-                updated_at = now()
+                bot_blocked_at = NULL, updated_at = now()
             RETURNING {_COLUMNS}
             """,
             owner_telegram_id,
@@ -76,6 +77,14 @@ class Workspaces:
             "UPDATE workspaces SET timezone = $2, updated_at = now() WHERE id = $1",
             workspace_id,
             timezone,
+        )
+
+    async def mark_blocked(self, workspace_id: WorkspaceId) -> None:
+        """Telegram answered 403 to a delivery: the owner blocked the bot. The Расписание tick
+        skips the Workspace until its next /start (ADR-0015)."""
+        await self._pool.execute(
+            "UPDATE workspaces SET bot_blocked_at = now(), updated_at = now() WHERE id = $1",
+            workspace_id,
         )
 
 

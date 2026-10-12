@@ -2,6 +2,7 @@ import pytest
 
 from content_zavod.telegram import CommentGatedRegeneration
 from content_zavod.telegram.pending_inputs import PendingInput
+from tests.tenancy import WS_A, WS_B
 
 from .fakes import FakePendingInputs
 
@@ -10,31 +11,30 @@ class FakeRegenerate:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str | None]] = []
 
-    async def __call__(self, id_: str, comment: str | None) -> None:
+    async def __call__(self, workspace_id: int, id_: str, comment: str | None) -> None:
+        assert workspace_id == WS_A
         self.calls.append((id_, comment))
 
 
 class FakePrompt:
-    """Each prompt is two messages: ids 100/101 for the first, 102/103 for the next..."""
+    """Each prompt is one message: id 100 for the first, 101 for the next..."""
 
     def __init__(self) -> None:
         self.prompted: list[tuple[int, str]] = []
         self.generating: list[tuple[int, int]] = []
-        self.withdrawn: list[tuple[int, int, int | None]] = []
+        self.withdrawn: list[tuple[int, int]] = []
         self._next_message_id = 100
 
-    async def prompt_for_comment(
-        self, chat_id: int, user_id: int, id_: str
-    ) -> tuple[int, int | None]:
+    async def prompt_for_comment(self, chat_id: int, id_: str) -> int:
         self.prompted.append((chat_id, id_))
-        self._next_message_id += 2
-        return self._next_message_id - 2, self._next_message_id - 1
+        self._next_message_id += 1
+        return self._next_message_id - 1
 
     async def mark_generating(self, chat_id: int, pending: PendingInput) -> None:
         self.generating.append((chat_id, pending.prompt_message_id))
 
     async def withdraw(self, chat_id: int, pending: PendingInput) -> None:
-        self.withdrawn.append((chat_id, pending.prompt_message_id, pending.force_reply_message_id))
+        self.withdrawn.append((chat_id, pending.prompt_message_id))
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ def flow(
 async def test_first_press_prompts_for_comment_without_regenerating(
     flow: CommentGatedRegeneration[str], regenerate: FakeRegenerate, prompt: FakePrompt
 ) -> None:
-    await flow.request(1, 10, "item-1")
+    await flow.request(WS_A, 1, 10, "item-1")
 
     assert prompt.prompted == [(1, "item-1")]
     assert regenerate.calls == []
@@ -73,9 +73,9 @@ async def test_first_press_prompts_for_comment_without_regenerating(
 async def test_comment_reply_resolves_pending_regenerate(
     flow: CommentGatedRegeneration[str], regenerate: FakeRegenerate, prompt: FakePrompt
 ) -> None:
-    await flow.request(1, 10, "item-1")
+    await flow.request(WS_A, 1, 10, "item-1")
 
-    consumed = await flow.handle_comment_reply(1, 10, "please make it shorter", None)
+    consumed = await flow.handle_comment_reply(WS_A, 1, 10, "please make it shorter")
 
     assert consumed is True
     assert regenerate.calls == [("item-1", "please make it shorter")]
@@ -86,7 +86,7 @@ async def test_comment_reply_resolves_pending_regenerate(
 async def test_comment_reply_without_pending_wait_is_ignored(
     flow: CommentGatedRegeneration[str],
 ) -> None:
-    consumed = await flow.handle_comment_reply(1, 10, "stray text", None)
+    consumed = await flow.handle_comment_reply(WS_A, 1, 10, "stray text")
 
     assert consumed is False
 
@@ -95,8 +95,8 @@ async def test_comment_reply_without_pending_wait_is_ignored(
 async def test_skip_button_repeats_same_target_and_regenerates_without_comment(
     flow: CommentGatedRegeneration[str], regenerate: FakeRegenerate, prompt: FakePrompt
 ) -> None:
-    await flow.request(1, 10, "item-1")
-    await flow.request(1, 10, "item-1")
+    await flow.request(WS_A, 1, 10, "item-1")
+    await flow.request(WS_A, 1, 10, "item-1")
 
     assert regenerate.calls == [("item-1", None)]
     assert prompt.prompted == [(1, "item-1")]  # only prompted once
@@ -108,13 +108,13 @@ async def test_skip_button_repeats_same_target_and_regenerates_without_comment(
 async def test_new_press_on_different_target_silently_cancels_previous_wait(
     flow: CommentGatedRegeneration[str], regenerate: FakeRegenerate, prompt: FakePrompt
 ) -> None:
-    await flow.request(1, 10, "item-1")
-    await flow.request(1, 10, "item-2")
+    await flow.request(WS_A, 1, 10, "item-1")
+    await flow.request(WS_A, 1, 10, "item-2")
 
     assert prompt.prompted == [(1, "item-1"), (1, "item-2")]
     assert regenerate.calls == []
 
-    consumed = await flow.handle_comment_reply(1, 10, "comment for item-2", None)
+    consumed = await flow.handle_comment_reply(WS_A, 1, 10, "comment for item-2")
     assert consumed is True
     assert regenerate.calls == [("item-2", "comment for item-2")]
 
@@ -124,10 +124,10 @@ async def test_a_superseded_wait_has_its_prompt_withdrawn(
     flow: CommentGatedRegeneration[str], prompt: FakePrompt
 ) -> None:
     """The earlier prompt's buttons would be dead - its messages are removed, not left behind."""
-    await flow.request(1, 10, "item-1")  # messages 100/101
-    await flow.request(1, 10, "item-2")  # messages 102/103
+    await flow.request(WS_A, 1, 10, "item-1")  # message 100
+    await flow.request(WS_A, 1, 10, "item-2")  # message 101
 
-    assert prompt.withdrawn == [(1, 100, 101)]
+    assert prompt.withdrawn == [(1, 100)]
     assert prompt.generating == []
 
 
@@ -135,42 +135,17 @@ async def test_a_superseded_wait_has_its_prompt_withdrawn(
 async def test_pending_wait_is_scoped_per_chat_and_user(
     flow: CommentGatedRegeneration[str], regenerate: FakeRegenerate
 ) -> None:
-    await flow.request(1, 10, "item-1")
+    await flow.request(WS_A, 1, 10, "item-1")
 
-    consumed = await flow.handle_comment_reply(1, 99, "wrong user", None)
+    consumed = await flow.handle_comment_reply(WS_A, 1, 99, "wrong user")
     assert consumed is False
 
-    consumed = await flow.handle_comment_reply(2, 10, "wrong chat", None)
+    consumed = await flow.handle_comment_reply(WS_A, 2, 10, "wrong chat")
     assert consumed is False
 
-    consumed = await flow.handle_comment_reply(1, 10, "right one", None)
+    consumed = await flow.handle_comment_reply(WS_A, 1, 10, "right one")
     assert consumed is True
     assert regenerate.calls == [("item-1", "right one")]
-
-
-@pytest.mark.asyncio
-async def test_in_a_group_only_a_reply_to_the_prompt_counts_as_the_comment(
-    flow: CommentGatedRegeneration[str], regenerate: FakeRegenerate
-) -> None:
-    """#88: a reply to some other message (a colleague's, an old prompt) leaves the wait
-    open; a reply to either of the prompt's two messages resolves it."""
-    await flow.request(1, 10, "item-1")  # prompt messages 100 (buttons) and 101 (ForceReply)
-
-    assert await flow.handle_comment_reply(1, 10, "ок, щас гляну", 55) is False
-    assert regenerate.calls == []
-
-    assert await flow.handle_comment_reply(1, 10, "короче", 101) is True
-    assert regenerate.calls == [("item-1", "короче")]
-
-
-@pytest.mark.asyncio
-async def test_a_reply_to_the_buttons_message_also_counts(
-    flow: CommentGatedRegeneration[str], regenerate: FakeRegenerate
-) -> None:
-    await flow.request(1, 10, "item-1")
-
-    assert await flow.handle_comment_reply(1, 10, "короче", 100) is True
-    assert regenerate.calls == [("item-1", "короче")]
 
 
 @pytest.mark.asyncio
@@ -180,10 +155,10 @@ async def test_wait_survives_a_restart_through_the_store(
     """#88: the wait lives in the store, not the flow object - a fresh flow (a restarted bot)
     over the same store still resolves it."""
     before = CommentGatedRegeneration(regenerate, prompt, pending, kind="test_comment")
-    await before.request(1, 10, "item-1")
+    await before.request(WS_A, 1, 10, "item-1")
 
     after = CommentGatedRegeneration(regenerate, prompt, pending, kind="test_comment")
-    consumed = await after.handle_comment_reply(1, 10, "comment", None)
+    consumed = await after.handle_comment_reply(WS_A, 1, 10, "comment")
 
     assert consumed is True
     assert regenerate.calls == [("item-1", "comment")]
@@ -195,10 +170,10 @@ async def test_a_flow_ignores_another_kinds_wait(
 ) -> None:
     plan_flow = CommentGatedRegeneration(regenerate, prompt, pending, kind="plan_item_comment")
     article_flow = CommentGatedRegeneration(regenerate, prompt, pending, kind="article_comment")
-    await article_flow.request(1, 10, "article-1")
+    await article_flow.request(WS_A, 1, 10, "article-1")
 
-    assert await plan_flow.handle_comment_reply(1, 10, "comment", None) is False
-    assert await article_flow.handle_comment_reply(1, 10, "comment", None) is True
+    assert await plan_flow.handle_comment_reply(WS_A, 1, 10, "comment") is False
+    assert await article_flow.handle_comment_reply(WS_A, 1, 10, "comment") is True
     assert regenerate.calls == [("article-1", "comment")]
 
 
@@ -206,31 +181,31 @@ async def test_a_flow_ignores_another_kinds_wait(
 async def test_cancel_clears_pending_wait_and_withdraws_its_prompt(
     flow: CommentGatedRegeneration[str], regenerate: FakeRegenerate, prompt: FakePrompt
 ) -> None:
-    await flow.request(1, 10, "item-1")
+    await flow.request(WS_A, 1, 10, "item-1")
 
-    assert await flow.cancel(1, 10) is True
-    assert prompt.withdrawn == [(1, 100, 101)]
+    assert await flow.cancel(WS_A, 1, 10) is True
+    assert prompt.withdrawn == [(1, 100)]
 
-    consumed = await flow.handle_comment_reply(1, 10, "too late", None)
+    consumed = await flow.handle_comment_reply(WS_A, 1, 10, "too late")
     assert consumed is False
     assert regenerate.calls == []
 
 
 @pytest.mark.asyncio
 async def test_cancel_without_pending_wait_is_a_no_op(flow: CommentGatedRegeneration[str]) -> None:
-    assert await flow.cancel(1, 10) is False
+    assert await flow.cancel(WS_A, 1, 10) is False
 
 
 @pytest.mark.asyncio
 async def test_cancel_for_a_stale_target_keeps_the_newer_wait(
     flow: CommentGatedRegeneration[str], regenerate: FakeRegenerate
 ) -> None:
-    await flow.request(1, 10, "item-1")
-    await flow.request(1, 10, "item-2")
+    await flow.request(WS_A, 1, 10, "item-1")
+    await flow.request(WS_A, 1, 10, "item-2")
 
-    assert await flow.cancel(1, 10, "item-1") is False
+    assert await flow.cancel(WS_A, 1, 10, "item-1") is False
 
-    assert await flow.handle_comment_reply(1, 10, "comment", None) is True
+    assert await flow.handle_comment_reply(WS_A, 1, 10, "comment") is True
     assert regenerate.calls == [("item-2", "comment")]
 
 
@@ -238,22 +213,36 @@ async def test_cancel_for_a_stale_target_keeps_the_newer_wait(
 async def test_has_matching_pending_is_false_with_no_pending_wait(
     flow: CommentGatedRegeneration[str],
 ) -> None:
-    assert await flow.has_matching_pending(1, 10, "item-1") is False
+    assert await flow.has_matching_pending(WS_A, 1, 10, "item-1") is False
 
 
 @pytest.mark.asyncio
 async def test_has_matching_pending_is_true_for_a_matching_second_press(
     flow: CommentGatedRegeneration[str],
 ) -> None:
-    await flow.request(1, 10, "item-1")
+    await flow.request(WS_A, 1, 10, "item-1")
 
-    assert await flow.has_matching_pending(1, 10, "item-1") is True
+    assert await flow.has_matching_pending(WS_A, 1, 10, "item-1") is True
 
 
 @pytest.mark.asyncio
 async def test_has_matching_pending_is_false_for_a_different_target(
     flow: CommentGatedRegeneration[str],
 ) -> None:
-    await flow.request(1, 10, "item-1")
+    await flow.request(WS_A, 1, 10, "item-1")
 
-    assert await flow.has_matching_pending(1, 10, "item-2") is False
+    assert await flow.has_matching_pending(WS_A, 1, 10, "item-2") is False
+
+
+@pytest.mark.asyncio
+async def test_a_text_in_another_workspace_does_not_close_the_wait(
+    flow: CommentGatedRegeneration[str], regenerate: FakeRegenerate
+) -> None:
+    """ADR-0015: the same chat and user ids in Workspace B can't resolve A's wait."""
+    await flow.request(WS_A, 1, 10, "item-1")
+
+    assert await flow.handle_comment_reply(WS_B, 1, 10, "чужой") is False
+    assert await flow.cancel(WS_B, 1, 10) is False
+    assert await flow.has_matching_pending(WS_B, 1, 10, "item-1") is False
+    assert await flow.handle_comment_reply(WS_A, 1, 10, "свой") is True
+    assert regenerate.calls == [("item-1", "свой")]

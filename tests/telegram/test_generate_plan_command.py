@@ -1,20 +1,29 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from zoneinfo import ZoneInfo
 
 import pytest
 
-from content_zavod.domain import PlanId, PlanItemId, PlanItemView, PlanMessageRef, PlanView
+from content_zavod.domain import (
+    PlanId,
+    PlanItemId,
+    PlanItemView,
+    PlanMessageRef,
+    PlanNotFound,
+    PlanSummary,
+    PlanView,
+)
 from content_zavod.telegram import MessageGone
 from content_zavod.telegram.generate_plan_command import (
     handle_cancel_regenerate_plan,
     handle_confirm_regenerate_plan,
     handle_generate_plan_command,
 )
+from content_zavod.workspaces import Workspace
+from tests.tenancy import WS_A
 
-MOSCOW = ZoneInfo("Europe/Moscow")
-FIXED_NOW = datetime(2026, 8, 3, 6, 0, tzinfo=UTC)  # 2026-W32 Monday
+FIXED_NOW = datetime(2026, 8, 3, 6, 0, tzinfo=UTC)  # 2026-W32 Monday, 09:00 in Moscow
+WORKSPACE = Workspace(WS_A, 1, None, "Europe/Moscow", None, None)
 
 
 class FakePlan:
@@ -28,17 +37,19 @@ class FakePlan:
         # idempotency key -> job id, like JobQueue.enqueue: the same key returns the same Job
         self.jobs_by_key: dict[str, int] = {}
 
-    async def find_active(self, week_label: str) -> PlanView | None:
+    async def find_active(self, workspace_id: int, week_label: str) -> PlanView | None:
         return self._active
 
-    async def get(self, plan_id: PlanId) -> PlanView:
+    async def get(self, workspace_id: int, plan_id: PlanId) -> PlanView:
         assert self._active is not None and self._active.id == plan_id
         return self._active
 
-    async def archive(self, plan_id: PlanId) -> None:
+    async def archive(self, workspace_id: int, plan_id: PlanId) -> None:
         self.archived.append(plan_id)
 
-    async def request_new(self, week_label: str, *, generation_id: str | None = None) -> int:
+    async def request_new(
+        self, workspace_id: int, week_label: str, *, generation_id: str | None = None
+    ) -> int:
         if generation_id is None:
             self.requested.append(week_label)
         else:
@@ -46,10 +57,15 @@ class FakePlan:
         key = f"{week_label}:{generation_id}"
         return self.jobs_by_key.setdefault(key, len(self.jobs_by_key) + 1)
 
-    async def get_message_ref(self, plan_id: PlanId) -> PlanMessageRef | None:
+    async def get_message_ref(self, workspace_id: int, plan_id: PlanId) -> PlanMessageRef | None:
         return self.message_refs.get(plan_id)
 
-    async def request_replacement(self, plan_id: PlanId) -> int:
+    async def get_summary(self, workspace_id: int, plan_id: PlanId) -> PlanSummary:
+        if self._active is None or self._active.id != plan_id:
+            raise PlanNotFound(plan_id)
+        return PlanSummary(id=plan_id, week_label="2026-W32", status="pending_review")
+
+    async def request_replacement(self, workspace_id: int, plan_id: PlanId) -> int:
         self.replacements.append(plan_id)
         return 1
 
@@ -61,10 +77,10 @@ class FakeQueue:
         self.statuses = dict(statuses or {})
         self.retried: list[int] = []
 
-    async def get_status(self, job_id: int) -> str:
+    async def get_status(self, workspace_id: int, job_id: int) -> str:
         return self.statuses.get(job_id, "queued")
 
-    async def retry(self, job_id: int) -> bool:
+    async def retry(self, workspace_id: int, job_id: int) -> bool:
         self.retried.append(job_id)
         self.statuses[job_id] = "queued"
         return True
@@ -92,24 +108,20 @@ class FakeGateway:
 
 
 class FailingReplacementPlan(FakePlan):
-    async def request_replacement(self, plan_id: PlanId) -> int:
+    async def request_replacement(self, workspace_id: int, plan_id: PlanId) -> int:
         raise RuntimeError("queue unavailable")
 
 
-TEAM_CHAT_ID = 1
-
-
 async def _run(
-    plan: FakePlan, gateway: FakeGateway, queue: FakeQueue | None = None, *, chat_id: int = 1
+    plan: FakePlan,
+    gateway: FakeGateway,
+    queue: FakeQueue | None = None,
+    *,
+    workspace: Workspace = WORKSPACE,
+    now: datetime = FIXED_NOW,
 ) -> None:
     await handle_generate_plan_command(
-        plan,
-        gateway,
-        chat_id=chat_id,
-        queue=queue or FakeQueue(),
-        team_chat_id=TEAM_CHAT_ID,
-        tz=MOSCOW,
-        now=lambda: FIXED_NOW,
+        plan, gateway, workspace, 1, queue=queue or FakeQueue(), now=lambda: now
     )
 
 
@@ -119,14 +131,7 @@ async def test_unannounced_run_starts_the_generation_without_a_notice() -> None:
     plan, gateway = FakePlan(active=None), FakeGateway()
 
     await handle_generate_plan_command(
-        plan,
-        gateway,
-        chat_id=5,
-        queue=FakeQueue(),
-        team_chat_id=TEAM_CHAT_ID,
-        tz=MOSCOW,
-        now=lambda: FIXED_NOW,
-        announce=False,
+        plan, gateway, WORKSPACE, 5, queue=FakeQueue(), now=lambda: FIXED_NOW, announce=False
     )
 
     assert plan.requested == ["2026-W32"]
@@ -182,15 +187,17 @@ async def test_rerun_chain_continues_past_an_earlier_empty_rerun() -> None:
 
 
 @pytest.mark.asyncio
-async def test_called_outside_the_team_chat_points_to_the_team_chat() -> None:
-    """#82: the Plan itself is delivered to the team chat by the notification handler."""
+async def test_the_week_is_counted_in_the_workspaces_time_zone() -> None:
+    """ADR-0015: Sunday 20:00 UTC is already Monday in Vladivostok - its Расписание's next
+    week, not Moscow's current one."""
     plan, gateway = FakePlan(active=None), FakeGateway()
+    far_east = Workspace(WS_A, 1, None, "Asia/Vladivostok", None, None)
+    sunday_night = datetime(2026, 8, 9, 20, 0, tzinfo=UTC)
 
-    await _run(plan, gateway, chat_id=77)
+    await _run(plan, gateway, workspace=far_east, now=sunday_night)
+    await _run(plan, gateway, now=sunday_night)
 
-    assert gateway.sent_notices == [
-        (77, "Генерирую План на 3–9 августа 2026. Он появится в чате команды.")
-    ]
+    assert plan.requested == ["2026-W33", "2026-W32"]
 
 
 @pytest.mark.asyncio
@@ -231,7 +238,7 @@ async def test_confirm_archives_old_plan_and_requests_a_new_one() -> None:
     plan, gateway = FakePlan(active=active), FakeGateway()
 
     await handle_confirm_regenerate_plan(
-        plan, gateway, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
+        plan, gateway, WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
     )
 
     assert plan.replacements == [PlanId("plan-1")]
@@ -247,7 +254,7 @@ async def test_confirm_re_renders_the_replaced_plans_message() -> None:
     plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=9)
 
     await handle_confirm_regenerate_plan(
-        plan, gateway, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
+        plan, gateway, WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
     )
 
     assert gateway.edited_plans == [(-100, 9, active)]
@@ -267,7 +274,7 @@ async def test_confirm_skips_the_replaced_plans_message_if_it_was_deleted() -> N
     gateway.edit_plan = gone  # type: ignore[method-assign]
 
     await handle_confirm_regenerate_plan(
-        plan, gateway, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
+        plan, gateway, WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
     )
 
     assert plan.replacements == [PlanId("plan-1")]
@@ -284,7 +291,7 @@ async def test_confirm_does_not_report_success_or_archive_through_the_old_api_wh
 
     with pytest.raises(RuntimeError, match="queue unavailable"):
         await handle_confirm_regenerate_plan(
-            plan, gateway, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
+            plan, gateway, WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
         )
 
     assert plan.archived == []
@@ -293,10 +300,25 @@ async def test_confirm_does_not_report_success_or_archive_through_the_old_api_wh
 
 @pytest.mark.asyncio
 async def test_cancel_leaves_the_plan_untouched() -> None:
-    plan, gateway = FakePlan(), FakeGateway()
+    active = PlanView(id=PlanId("plan-1"), week_label="2026-W32", items=[])
+    plan, gateway = FakePlan(active=active), FakeGateway()
 
-    await handle_cancel_regenerate_plan(gateway, chat_id=1, message_id=5)
+    await handle_cancel_regenerate_plan(
+        plan, gateway, WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
+    )
 
     assert plan.archived == []
     assert plan.requested == []
     assert gateway.edited == [(1, 5, "Отменено.")]
+
+
+@pytest.mark.asyncio
+async def test_cancel_for_a_plan_the_workspace_does_not_have_is_stale() -> None:
+    plan, gateway = FakePlan(), FakeGateway()
+
+    with pytest.raises(PlanNotFound):
+        await handle_cancel_regenerate_plan(
+            plan, gateway, WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-b")
+        )
+
+    assert gateway.edited == []

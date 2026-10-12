@@ -27,6 +27,7 @@ from content_zavod.telegram.history_command import (
     handle_history_versions,
     handle_history_week,
 )
+from tests.tenancy import WS_A
 
 
 class FakeBot:
@@ -46,11 +47,13 @@ class FakePlans:
     def __init__(self, plans: list[PlanSummary]) -> None:
         self._plans = plans
 
-    async def list_page(self, *, page: int, page_size: int) -> tuple[list[PlanSummary], int]:
+    async def list_page(
+        self, workspace_id: int, *, page: int, page_size: int
+    ) -> tuple[list[PlanSummary], int]:
         start = page * page_size
         return self._plans[start : start + page_size], len(self._plans)
 
-    async def get_summary(self, plan_id: PlanId) -> PlanSummary:
+    async def get_summary(self, workspace_id: int, plan_id: PlanId) -> PlanSummary:
         for item in self._plans:
             if item.id == plan_id:
                 return item
@@ -71,23 +74,29 @@ class FakeArticles:
         self._versions_by_article = versions_by_article or {}
         self._version_content = version_content or {}
 
-    async def list_summary_for_plan(self, plan_id: PlanId) -> list[ArticleSummary]:
+    async def list_summary_for_plan(
+        self, workspace_id: int, plan_id: PlanId
+    ) -> list[ArticleSummary]:
         return self._by_plan.get(plan_id, [])
 
-    async def get_summary(self, article_id: ArticleId) -> ArticleSummary:
+    async def get_summary(self, workspace_id: int, article_id: ArticleId) -> ArticleSummary:
         for articles in self._by_plan.values():
             for item in articles:
                 if item.id == article_id:
                     return item
         raise AssertionError(f"no such article {article_id!r}")
 
-    async def get_plan_id(self, article_id: ArticleId) -> PlanId:
+    async def get_plan_id(self, workspace_id: int, article_id: ArticleId) -> PlanId:
         return PlanId(self._plan_id_by_article[article_id])
 
-    async def list_versions(self, article_id: ArticleId) -> list[ArticleVersionSummary]:
+    async def list_versions(
+        self, workspace_id: int, article_id: ArticleId
+    ) -> list[ArticleVersionSummary]:
         return self._versions_by_article.get(article_id, [])
 
-    async def get_version(self, article_id: ArticleId, version_id: int) -> ArticleVersionView:
+    async def get_version(
+        self, workspace_id: int, article_id: ArticleId, version_id: int
+    ) -> ArticleVersionView:
         content = self._version_content[(article_id, version_id)]
         (summary,) = [v for v in self._versions_by_article[article_id] if v.id == version_id]
         return ArticleVersionView(
@@ -109,7 +118,7 @@ async def test_history_command_sends_first_page_of_weeks() -> None:
     plans = FakePlans([_plan(1)])
     gateway = TelegramGateway(FakeBot())
 
-    await handle_history_command(plans, gateway, chat_id=1)
+    await handle_history_command(plans, gateway, workspace_id=WS_A, chat_id=1)
 
     assert len(gateway._bot.sent_messages) == 1
     chat_id, text, keyboard = gateway._bot.sent_messages[0]
@@ -123,7 +132,7 @@ async def test_history_command_includes_current_unfinished_week_like_any_other()
     plans = FakePlans([_plan(1, status="pending_review"), _plan(2, status="archived")])
     gateway = TelegramGateway(FakeBot())
 
-    await handle_history_command(plans, gateway, chat_id=1)
+    await handle_history_command(plans, gateway, workspace_id=WS_A, chat_id=1)
 
     _, text, keyboard = gateway._bot.sent_messages[0]
     assert "на согласовании" in text and "в архиве" in text
@@ -135,7 +144,7 @@ async def test_history_command_empty_still_sends_a_message_not_a_notice() -> Non
     plans = FakePlans([])
     gateway = TelegramGateway(FakeBot())
 
-    await handle_history_command(plans, gateway, chat_id=1)
+    await handle_history_command(plans, gateway, workspace_id=WS_A, chat_id=1)
 
     _, text, keyboard = gateway._bot.sent_messages[0]
     assert "Планов пока нет" in text
@@ -148,7 +157,7 @@ async def test_history_page_edits_the_message_with_the_requested_page() -> None:
     plans = FakePlans(all_plans)
     gateway = TelegramGateway(FakeBot())
 
-    await handle_history_page(plans, gateway, chat_id=1, message_id=5, page=1)
+    await handle_history_page(plans, gateway, workspace_id=WS_A, chat_id=1, message_id=5, page=1)
 
     chat_id, message_id, text, keyboard = gateway._bot.edited_messages[0]
     assert (chat_id, message_id) == (1, 5)
@@ -177,7 +186,13 @@ async def test_history_week_edits_the_message_with_that_weeks_articles() -> None
     gateway = TelegramGateway(FakeBot())
 
     await handle_history_week(
-        plans, articles, gateway, chat_id=1, message_id=5, payload=HistoryWeek("plan-1", 0)
+        plans,
+        articles,
+        gateway,
+        workspace_id=WS_A,
+        chat_id=1,
+        message_id=5,
+        payload=HistoryWeek("plan-1", 0),
     )
 
     chat_id, message_id, text, keyboard = gateway._bot.edited_messages[0]
@@ -197,7 +212,13 @@ async def test_history_week_with_no_articles_yet() -> None:
     gateway = TelegramGateway(FakeBot())
 
     await handle_history_week(
-        plans, articles, gateway, chat_id=1, message_id=5, payload=HistoryWeek("plan-1", 0)
+        plans,
+        articles,
+        gateway,
+        workspace_id=WS_A,
+        chat_id=1,
+        message_id=5,
+        payload=HistoryWeek("plan-1", 0),
     )
 
     _, _, text, _ = gateway._bot.edited_messages[0]
@@ -227,7 +248,12 @@ async def test_history_versions_edits_the_message_with_that_articles_versions() 
     gateway = TelegramGateway(FakeBot())
 
     await handle_history_versions(
-        articles, gateway, chat_id=1, message_id=5, payload=HistoryVersions("a-1", 0)
+        articles,
+        gateway,
+        workspace_id=WS_A,
+        chat_id=1,
+        message_id=5,
+        payload=HistoryVersions("a-1", 0),
     )
 
     chat_id, message_id, text, keyboard = gateway._bot.edited_messages[0]
@@ -246,7 +272,12 @@ async def test_history_versions_with_no_versions_yet() -> None:
     gateway = TelegramGateway(FakeBot())
 
     await handle_history_versions(
-        articles, gateway, chat_id=1, message_id=5, payload=HistoryVersions("a-1", 0)
+        articles,
+        gateway,
+        workspace_id=WS_A,
+        chat_id=1,
+        message_id=5,
+        payload=HistoryVersions("a-1", 0),
     )
 
     _, _, text, _ = gateway._bot.edited_messages[0]
@@ -267,7 +298,12 @@ async def test_history_version_edits_the_message_with_that_versions_content() ->
     gateway = TelegramGateway(FakeBot())
 
     await handle_history_version(
-        articles, gateway, chat_id=1, message_id=5, payload=HistoryVersion("a-1", 2, 0)
+        articles,
+        gateway,
+        workspace_id=WS_A,
+        chat_id=1,
+        message_id=5,
+        payload=HistoryVersion("a-1", 2, 0),
     )
 
     chat_id, message_id, text, keyboard = gateway._bot.edited_messages[0]

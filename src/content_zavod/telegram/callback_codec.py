@@ -4,14 +4,13 @@ Payload is a union of six types: five immutable dataclasses for the composite
 Действия that pack more than one field into their id (`Page`, `HistoryWeek`,
 `HistoryVersions`, `HistoryVersion`, `ExportArticle`), plus `SimpleAction` for
 the remaining Действия that carry a single opaque id (the Хаб's six, #91, the
-Главное меню and Экран Настроек ones, #95, the onboarding wizard's, #96, the
-Инструкция's, #114, and the Направления suggestion's, #113, pack whatever they need
-into that id).
+Главное меню and Экран Настроек ones, #95, the onboarding wizard's, #96, and the
+Инструкция's, #114, pack whatever they need into that id).
 
-`ACTION_ROLE` says which of the Действия need "owner" and which accept any
-registered Role - `request_access` (and `guide_slide`, #114) is absent, same reasoning as
-`COMMAND_ROLE` omitting `start` (see ADR-0012). The callback dispatcher (`callback_dispatcher.py`)
-is what actually enforces it.
+There are no Roles any more (ADR-0015): whoever presses a button acts in their own
+Пространство, and the callback dispatcher resolves every id within it. The codes of removed
+Действия (access requests, members, the team note, Направления) are not reused: an old button
+carrying one fails to decode and is answered silently.
 
 `gateway.py` builds every keyboard through `encode_callback_data` here rather
 than packing ids itself (#63); the wire format (Action code + ":" separator +
@@ -24,7 +23,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from ..access import Role
 from .types import ArticleFormat
 
 CALLBACK_DATA_LIMIT = 64
@@ -41,12 +39,6 @@ Action = Literal[
     "confirm_regenerate_plan",
     "cancel_regenerate_plan",
     "retry",
-    "request_access",
-    "approve_join",
-    "decline_join",
-    "remove_member",
-    "confirm_remove_member",
-    "cancel_remove_member",
     "history_page",
     "history_week",
     "history_versions",
@@ -58,7 +50,6 @@ Action = Literal[
     "menu_generate_plan",
     "menu_topic",
     "menu_history",
-    "menu_members",
     "settings",
     "edit_setting",
     "ask_setting",
@@ -81,12 +72,6 @@ Action = Literal[
     "onboarding_launch",
     "guide",
     "guide_slide",
-    "guide_pin",
-    "suggest_directions",
-    "directions_take",
-    "directions_more",
-    "directions_own",
-    "directions_cancel",
 ]
 
 _ACTION_CODES: dict[Action, str] = {
@@ -101,12 +86,6 @@ _ACTION_CODES: dict[Action, str] = {
     "confirm_regenerate_plan": "cy",
     "cancel_regenerate_plan": "cn",
     "retry": "rt",
-    "request_access": "ra",
-    "approve_join": "aj",
-    "decline_join": "dj",
-    "remove_member": "rm",
-    "confirm_remove_member": "rmy",
-    "cancel_remove_member": "rmn",
     "history_page": "hp",
     "history_week": "hw",
     "history_versions": "hv",
@@ -119,7 +98,6 @@ _ACTION_CODES: dict[Action, str] = {
     "menu_generate_plan": "mg",
     "menu_topic": "mt",
     "menu_history": "mh",
-    "menu_members": "mm",
     "settings": "st",
     "edit_setting": "se",
     "ask_setting": "sa",
@@ -144,85 +122,8 @@ _ACTION_CODES: dict[Action, str] = {
     # The Инструкция (#114): "g…".
     "guide": "gd",
     "guide_slide": "gs",
-    "guide_pin": "gp",
-    # Направления suggested from the Ниша (#113): "d…". `ds`/`do`/`dc` carry where the
-    # suggestion was asked from, `dt`/`dm` its Job id - the list itself stays server-side.
-    "suggest_directions": "ds",
-    "directions_take": "dt",
-    "directions_more": "dm",
-    "directions_own": "do",
-    "directions_cancel": "dc",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
-
-# Role required to run each Action's callback branch, mirroring `access.COMMAND_ROLE` for
-# commands (see ADR-0012). `request_access` is deliberately absent - it works for
-# unregistered callers, so the callback dispatcher handles it before resolving a Role at all;
-# `guide_slide` likewise (see below).
-ACTION_ROLE: dict[Action, Role | None] = {
-    "delete": None,
-    "regenerate": None,
-    "approve_all": None,
-    "regenerate_article": None,
-    "request_cover": None,
-    "approve": None,
-    "export_article": None,
-    "page": None,
-    "confirm_regenerate_plan": None,
-    "cancel_regenerate_plan": None,
-    "retry": None,
-    "approve_join": "owner",
-    "decline_join": "owner",
-    "remove_member": "owner",
-    "confirm_remove_member": "owner",
-    "cancel_remove_member": "owner",
-    "history_page": None,
-    "history_week": None,
-    "history_versions": None,
-    "history_version": None,
-    "persona_template": "owner",
-    "cancel_comment": None,
-    "menu": None,
-    "menu_plan": None,
-    "menu_generate_plan": None,
-    "menu_topic": None,
-    "menu_history": None,
-    "menu_members": "owner",
-    "settings": "owner",
-    "edit_setting": "owner",
-    "ask_setting": "owner",
-    "pick_setting": "owner",
-    "schedule": "owner",
-    "schedule_day": "owner",
-    "schedule_time": "owner",
-    "schedule_tz": "owner",
-    "schedule_tz_pick": "owner",
-    # Drops only the presser's own wait (one per chat and user), so any Role may press it.
-    "cancel_input": None,
-    "hub_topic": None,
-    "hub_back": None,
-    "hub_cover": None,
-    "hub_article": None,
-    "hub_retry": None,
-    "hub_retry_topic": None,
-    # The wizard writes Настройки and starts the first Plan: Владелец only, like Настройки.
-    "onboarding_step": "owner",
-    "onboarding_pick": "owner",
-    "onboarding_later": "owner",
-    "onboarding_launch": "owner",
-    # The Инструкция is for everyone (its slides depend on the presser's Role); `guide_slide`
-    # is absent like `request_access`: a newcomer without a Role turns the carousel too
-    # (`/start guide`), so the dispatcher handles it before the gate. Posting the team chat's
-    # pinned note is a Владелец's call, like the rest of the bot's setup.
-    "guide": None,
-    "guide_pin": "owner",
-    # Spends a model call and rewrites Направления: Владелец only, like Настройки.
-    "suggest_directions": "owner",
-    "directions_take": "owner",
-    "directions_more": "owner",
-    "directions_own": "owner",
-    "directions_cancel": "owner",
-}
 
 # The five composite Действия each get their own type below - see them out
 # individually in _ACTION_CODES rather than by iterating, so a typo in one

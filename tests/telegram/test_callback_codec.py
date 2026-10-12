@@ -4,7 +4,6 @@ import pytest
 
 from content_zavod.telegram.callback_codec import (
     _ACTION_CODES,
-    ACTION_ROLE,
     CALLBACK_DATA_LIMIT,
     Action,
     ExportArticle,
@@ -122,8 +121,12 @@ def test_action_codes_are_unique_and_cover_every_action() -> None:
     assert len(set(_ACTION_CODES.values())) == len(_ACTION_CODES)
 
 
-def test_every_action_but_the_ungated_ones_has_a_role() -> None:
-    assert set(ACTION_ROLE) == set(get_args(Action)) - {"request_access", "guide_slide"}
+@pytest.mark.parametrize("data", ["ra:7", "aj:1", "rm:7", "mm:", "gp:", "ds:s:0", "dt:12"])
+def test_buttons_of_removed_actions_no_longer_decode(data: str) -> None:
+    """Access requests, members, the team note and Направления are gone (#118, #128): their
+    old buttons are answered silently, and their codes are never reused."""
+    with pytest.raises(ValueError):
+        decode_callback_data(data)
 
 
 @pytest.mark.parametrize(

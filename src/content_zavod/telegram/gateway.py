@@ -9,7 +9,6 @@ from aiogram.types import (
     BotCommand,
     BotCommandScopeChat,
     BufferedInputFile,
-    ForceReply,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
@@ -78,7 +77,7 @@ def total_pages(item_count: int) -> int:
     return max(1, -(-item_count // ITEMS_PER_PAGE))  # ceil division
 
 
-# A Тема's status as the Контент-менеджер reads it in the Plan message (#81) - the raw
+# A Тема's status as the Владелец reads it in the Plan message (#81) - the raw
 # `plan_items.status` keys never reach the chat.
 def render_plan_text(plan: PlanView, *, page: int = 0) -> str:
     page_count = total_pages(len(plan.items))
@@ -417,81 +416,6 @@ def build_retry_keyboard(job_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def build_request_access_keyboard(telegram_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Запросить доступ",
-                    callback_data=encode_callback_data(
-                        SimpleAction("request_access", str(telegram_id))
-                    ),
-                )
-            ]
-        ]
-    )
-
-
-def build_join_request_keyboard(join_request_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ Одобрить",
-                    callback_data=encode_callback_data(
-                        SimpleAction("approve_join", str(join_request_id))
-                    ),
-                ),
-                InlineKeyboardButton(
-                    text="❌ Отклонить",
-                    callback_data=encode_callback_data(
-                        SimpleAction("decline_join", str(join_request_id))
-                    ),
-                ),
-            ]
-        ]
-    )
-
-
-def build_members_keyboard(
-    members: list[tuple[int, str]], *, confirm_id: int | None = None
-) -> InlineKeyboardMarkup:
-    """One "Удалить" row per (telegram_id, label) member, for the /members command. The
-    `confirm_id` member's row asks «Да, удалить / Отмена» instead (#90)."""
-    rows: list[list[InlineKeyboardButton]] = []
-    for telegram_id, label in members:
-        if telegram_id == confirm_id:
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        text=f"✅ Да, удалить {label}",
-                        callback_data=encode_callback_data(
-                            SimpleAction("confirm_remove_member", str(telegram_id))
-                        ),
-                    ),
-                    InlineKeyboardButton(
-                        text="↩️ Отмена",
-                        callback_data=encode_callback_data(
-                            SimpleAction("cancel_remove_member", str(telegram_id))
-                        ),
-                    ),
-                ]
-            )
-            continue
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=f"❌ Удалить {label}",
-                    callback_data=encode_callback_data(
-                        SimpleAction("remove_member", str(telegram_id))
-                    ),
-                )
-            ]
-        )
-    rows.append([_to_menu_button()])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
 def build_article_keyboard(
     article_id: str,
     plan_item_id: str,
@@ -565,12 +489,9 @@ class BotClient(Protocol):
         self,
         chat_id: int,
         text: str,
-        reply_markup: InlineKeyboardMarkup | ForceReply | None = None,
-        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
     ) -> int:
-        """Returns the sent message's id, so callers that need to address it later
-        (e.g. editing a specific Owner's copy of a join-request broadcast) can.
-        `ForceReply` and `parse_mode` exist for the comment prompt's mention (#88)."""
+        """Returns the sent message's id, so callers that need to address it later can."""
         ...
 
     async def send_document(
@@ -646,7 +567,7 @@ class TelegramGateway:
         self, chat_id: int, text: str, reply_markup: InlineKeyboardMarkup | None = None
     ) -> int:
         """Generic send returning the message id - for flows that need to address
-        this exact message later (e.g. editing a join-request broadcast)."""
+        this exact message later."""
         return await self._bot.send_message(chat_id, text, reply_markup=reply_markup)
 
     async def delete_message(self, chat_id: int, message_id: int) -> None:
@@ -831,45 +752,22 @@ class TelegramCommentPrompt:
     Plan item, `"regenerate_article"` for an Article), otherwise Skip would
     route back into the wrong review flow (see #13 regenerate-misrouting fix).
 
-    In a private chat the request is one message - the question with Пропустить/Отмена - and
-    the user's next text is the comment. In a group it is two (#88): bots there (privacy mode)
-    only see replies to their own messages, and a comment must not be any stray chat line, so a
-    `ForceReply(selective=True)` line mentioning the asking user follows - their client opens a
-    reply to it at once. Telegram allows one reply markup per message, hence the second message;
-    it is transient and deleted as soon as the wait closes. On a regeneration the question is
-    edited to "⏳ Генерирую..." (#80); on Отмена or a superseded wait both are deleted.
+    The request is one message - the question with Пропустить/Отмена - and the user's next
+    text in the private chat is the comment. On a regeneration the question is edited to
+    "⏳ Генерирую..." (#80); on Отмена or a superseded wait it is deleted.
     """
 
     def __init__(self, bot: BotClient, *, action: Action = "regenerate") -> None:
         self._bot = bot
         self._action = action
 
-    async def prompt_for_comment(
-        self, chat_id: int, user_id: int, id_: str
-    ) -> tuple[int, int | None]:
-        # A private chat's id is its user's id; group and channel ids are negative.
-        if chat_id == user_id:
-            prompt_message_id = await self._bot.send_message(
-                chat_id,
-                "Комментарий к перегенерации? Напишите его следующим сообщением "
-                "или нажмите «Пропустить».",
-                reply_markup=build_skip_keyboard(id_, self._action),
-            )
-            return prompt_message_id, None
-        prompt_message_id = await self._bot.send_message(
+    async def prompt_for_comment(self, chat_id: int, id_: str) -> int:
+        return await self._bot.send_message(
             chat_id,
-            "Комментарий к перегенерации? Ответьте одной строкой, или нажмите «Пропустить».",
+            "Комментарий к перегенерации? Напишите его следующим сообщением "
+            "или нажмите «Пропустить».",
             reply_markup=build_skip_keyboard(id_, self._action),
         )
-        force_reply_message_id = await self._bot.send_message(
-            chat_id,
-            f'✏️ <a href="tg://user?id={user_id}">Ваш комментарий</a> — ответом на это сообщение.',
-            reply_markup=ForceReply(
-                selective=True, input_field_placeholder="Комментарий к перегенерации"
-            ),
-            parse_mode="HTML",
-        )
-        return prompt_message_id, force_reply_message_id
 
     async def mark_generating(self, chat_id: int, pending: PendingInput) -> None:
         # Cosmetic: the regeneration is already enqueued, so a prompt the user deleted
@@ -878,10 +776,6 @@ class TelegramCommentPrompt:
             await self._bot.edit_message_text(chat_id, pending.prompt_message_id, "⏳ Генерирую...")
         except Exception:
             logger.warning("could not mark comment prompt as generating", exc_info=True)
-        if pending.force_reply_message_id is not None:
-            await self._bot.delete_message(chat_id, pending.force_reply_message_id)
 
     async def withdraw(self, chat_id: int, pending: PendingInput) -> None:
         await self._bot.delete_message(chat_id, pending.prompt_message_id)
-        if pending.force_reply_message_id is not None:
-            await self._bot.delete_message(chat_id, pending.force_reply_message_id)

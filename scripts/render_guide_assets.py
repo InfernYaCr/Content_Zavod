@@ -51,14 +51,12 @@ from content_zavod.telegram.article_card import render_article_card_text
 from content_zavod.telegram.asset_photos import ASSETS_DIR
 from content_zavod.telegram.gateway import (
     build_article_keyboard,
-    build_join_request_keyboard,
     build_plan_keyboard,
-    build_request_access_keyboard,
     render_plan_text,
 )
 from content_zavod.telegram.guide import BANNERS, GUIDE_SLIDES, Slide, example_of
-from content_zavod.telegram.input_prompt import _question_text, build_cancel_input_keyboard
-from content_zavod.telegram.main_menu import build_main_menu_keyboard
+from content_zavod.telegram.input_prompt import build_cancel_input_keyboard, question_text
+from content_zavod.telegram.main_menu import TOPIC_INPUT_KIND, build_main_menu_keyboard
 from content_zavod.telegram.onboarding import (
     ONBOARDING_INPUT_KIND,
     ONBOARDING_STEPS,
@@ -77,13 +75,14 @@ from content_zavod.telegram.texts import (
     MENU_TEXT,
     PLAN_GENERATE_BUTTON,
     PLAN_MISSING_TEXT,
-    UNREGISTERED_TEXT,
+    TOPIC_QUESTION,
     WELCOME_TEXT,
     format_week_range,
     schedule_text,
     steps_count_text,
 )
 from content_zavod.telegram.types import ArticleView, PlanItemView, PlanView
+from content_zavod.workspaces import Workspace, WorkspaceId
 
 SLIDE_SIZE = (1280, 960)
 BANNER_SIZE = (1280, 640)
@@ -124,35 +123,31 @@ def _buttons(markup: InlineKeyboardMarkup | Sequence[Sequence[object]] | None) -
 
 
 class _MemoryStore:
-    def __init__(self) -> None:
-        self.values: dict[str, str] = {}
+    """Настройки of the one sample Пространство: defaults only."""
 
-    async def get(self, key: str) -> str | None:
-        return self.values.get(key)
+    async def get(self, workspace_id: WorkspaceId, key: str) -> str | None:
+        return None
 
-    async def set(self, key: str, value: str) -> None:
-        self.values[key] = value
+    async def set(self, workspace_id: WorkspaceId, key: str, value: str) -> None:
+        pass
 
-    async def set_if_changed(self, key: str, value: str) -> bool:
-        changed = self.values.get(key) != value
-        self.values[key] = value
-        return changed
+
+_SAMPLE_WORKSPACE = Workspace(WorkspaceId(1), 1, None, "Europe/Moscow", None, None)
 
 
 async def _step_bubble(key: str) -> Bubble:
     """The onboarding question for `key`, exactly as the private chat shows it."""
-    store = _MemoryStore()
     onboarding = Onboarding(
         None,  # type: ignore[arg-type]  # the step screen reads Настройки only
-        SettingsService(store),
+        SettingsService(_MemoryStore()),
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
     )
-    text, rows = await onboarding._step_screen(StepRef(key))
+    text, rows = await onboarding._step_screen(_SAMPLE_WORKSPACE, StepRef(key))
     keyboard = build_cancel_input_keyboard(ONBOARDING_INPUT_KIND, rows)
-    return Bubble(_question_text(text, True), _buttons(keyboard))
+    return Bubble(question_text(text), _buttons(keyboard))
 
 
 def _answer_for(key: str) -> str | None:
@@ -160,35 +155,43 @@ def _answer_for(key: str) -> str | None:
     return example_of(step.question) if step is not None and step.question else None
 
 
+def _sample_plan(status: str) -> PlanView:
+    return PlanView(
+        id="plan",
+        week_label=SAMPLE_WEEK,
+        items=[
+            PlanItemView(
+                id="1",
+                title="Как посчитать окупаемость рекламы",
+                status="approved" if status == "mixed" else status,
+            ),
+            PlanItemView(
+                id="2", title="5 ошибок в воронке продаж малого бизнеса", status="pending_review"
+            ),
+            PlanItemView(id="3", title="CRM за выходные: с чего начать", status="pending_review"),
+        ],
+    )
+
+
 async def _slide_mockup(slide: Slide) -> Mockup:
-    note = "Для Владельца" if slide.owner_only else "Для всей команды"
-    if slide.optional:
-        note += " · необязательно"
+    note = "Необязательно" if slide.optional else "Инструкция"
     if slide.key == "about":
         bubbles = [
             Bubble("Вы нажали /start", service=True),
             Bubble(WELCOME_TEXT),
-            Bubble(MENU_TEXT, _buttons(build_main_menu_keyboard("content_manager"))),
+            Bubble(MENU_TEXT, _buttons(build_main_menu_keyboard())),
+        ]
+    elif slide.key == "sourcing":
+        plan = _sample_plan("pending_review")
+        bubbles = [
+            Bubble("По Расписанию приходит План с Темами по вашей Нише", service=True),
+            Bubble(render_plan_text(plan), _buttons(build_plan_keyboard(plan))),
         ]
     elif slide.key == "week":
-        plan = PlanView(
-            id="plan",
-            week_label=SAMPLE_WEEK,
-            items=[
-                PlanItemView(id="1", title="Как посчитать окупаемость рекламы", status="approved"),
-                PlanItemView(
-                    id="2",
-                    title="5 ошибок в воронке продаж малого бизнеса",
-                    status="pending_review",
-                ),
-                PlanItemView(
-                    id="3", title="CRM за выходные: с чего начать", status="pending_review"
-                ),
-            ],
-        )
+        plan = _sample_plan("mixed")
         hub_text, hub_keyboard = render_hub_screen(_sample_hub())
         bubbles = [
-            Bubble("По Расписанию в чат команды приходит План", service=True),
+            Bubble("По Расписанию сюда приходит План", service=True),
             Bubble(render_plan_text(plan), _buttons(build_plan_keyboard(plan))),
             Bubble("После «✅ Утвердить всё» это же сообщение становится Хабом", service=True),
             Bubble(hub_text, _buttons(hub_keyboard)),
@@ -231,16 +234,13 @@ async def _slide_mockup(slide: Slide) -> Mockup:
             Bubble("Готовая Статья приходит карточкой", service=True),
             Bubble(render_article_card_text(article), _buttons(keyboard)),
         ]
-    elif slide.key == "roles":
+    elif slide.key == "propose":
+        keyboard = build_cancel_input_keyboard(TOPIC_INPUT_KIND)
         bubbles = [
-            Bubble("Новый коллега открывает бота и нажимает /start", service=True),
-            Bubble(UNREGISTERED_TEXT, _buttons(build_request_access_keyboard(1))),
-            Bubble("Владельцу приходит заявка", service=True),
-            Bubble(
-                "Заявка на доступ от @anna_content (id 123456789).",
-                _buttons(build_join_request_keyboard(1)),
-            ),
-            Bubble("Одобрили — коллега стал Контент-менеджером", service=True),
+            Bubble("🏠 Меню → ✍️ Предложить Тему", service=True),
+            Bubble(question_text(TOPIC_QUESTION), _buttons(keyboard)),
+            Bubble(example_of(TOPIC_QUESTION), mine=True),
+            Bubble("Тема добавлена в План — сообщение Плана выше обновлено."),
         ]
     elif slide.key == "faq":
         text = PLAN_MISSING_TEXT.format(
@@ -462,66 +462,19 @@ def _art_onboarding(labels: Sequence[str]) -> str:
     return _svg(body)
 
 
-def _art_team() -> str:
-    people = "".join(
-        f'<circle cx="{cx}" cy="150" r="46" fill="{c}"/>'
-        f'<circle cx="{cx}" cy="138" r="18" fill="#fff" opacity=".9"/>'
-        f'<path d="M{cx - 28} 182 q28 -34 56 0" fill="#fff" opacity=".9"/>'
-        for cx, c in ((170, CORAL), (280, TEAL), (390, MUSTARD))
-    )
-    return _svg(
-        f'<circle cx="280" cy="300" r="250" fill="{CORAL}" opacity=".14"/>'
-        + people
-        + _doc_card(130, 230, 300, 260, TEAL)
-        + _check(400, 250, 34)
-    )
-
-
-def _art_note() -> str:
-    return _svg(
-        f'<circle cx="280" cy="290" r="250" fill="{TEAL}" opacity=".15"/>'
-        f'<rect x="118" y="118" width="330" height="360" rx="26" fill="{INK}" opacity=".12"'
-        f' transform="rotate(-4 283 298)"/>'
-        f'<rect x="110" y="104" width="330" height="360" rx="26" fill="{SAND}" stroke="{MUSTARD}"'
-        f' stroke-width="6" transform="rotate(-4 275 284)"/>'
-        + "".join(
-            f'<g transform="rotate(-4 275 284)">'
-            f'<circle cx="160" cy="{200 + i * 70}" r="16" fill="{TEAL if i < 3 else CORAL}"/>'
-            f'<rect x="190" y="{192 + i * 70}" width="{200 - (i % 2) * 50}" height="16" rx="8"'
-            f' fill="{INK}" opacity=".25"/></g>'
-            for i in range(4)
-        )
-        + f'<circle cx="275" cy="104" r="30" fill="{CORAL}"/>'
-        f'<circle cx="266" cy="95" r="9" fill="#fff" opacity=".6"/>'
-        f'<rect x="270" y="128" width="10" height="40" rx="5" fill="{INK}" opacity=".5"/>'
-    )
-
-
 def banners() -> dict[str, Banner]:
     labels = [setting.label for setting in onboarding_fields()]
     return {
         "welcome": Banner(
             "Контент-завод",
-            "План Тем и Статьи для Дзена и VC.ru — каждую неделю, для всей команды",
+            "План Тем и Статьи для Дзена и VC.ru — каждую неделю, для вашего блога",
             _art_welcome(),
-            ("📈 Wordstat", "📋 План", "✍️ Статьи"),
+            ("🎯 Ниша", "📋 План", "✍️ Статьи"),
         ),
         "onboarding": Banner(
             "Настроим бота за пару минут",
             f"{steps_count_text(len(labels))} — и я составлю первый План",
             _art_onboarding(labels),
-        ),
-        "cm_welcome": Banner(
-            "Добро пожаловать в команду!",
-            "План живёт в чате команды, Статьи — в один тап",
-            _art_team(),
-            ("🔄 заменить", "✅ утвердить", "📖 читать"),
-        ),
-        "team_note": Banner(
-            "Как мы работаем",
-            "План → согласование → Статьи → готово",
-            _art_note(),
-            ("📋 План", "✅ Хаб", "📄 Статьи"),
         ),
     }
 

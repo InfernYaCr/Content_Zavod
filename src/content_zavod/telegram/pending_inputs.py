@@ -4,7 +4,7 @@ One row per (workspace_id, chat_id, user_id) (ADR-0015: every method takes the �
 first, and a wait of one Workspace is invisible to another) - asking a user for something new
 overwrites whatever they were last asked in that chat, of any `kind`. Replaces `CommentGatedRegeneration`'s in-memory
 dict, so a wait survives a bot restart, and is shared by every flow that asks for typed input
-(today the regeneration comment; Настройки/onboarding input later), each under its own `kind`.
+(the regeneration comment, Настройки, the onboarding wizard, a proposed Тема), each under its own `kind`.
 
 A wait older than `PENDING_INPUT_TTL` is treated as gone: `get`/`take` ignore it and the next
 `put` for that (chat_id, user_id) overwrites it, so there is no cleanup job. `put` hands back
@@ -29,7 +29,8 @@ class PendingInput:
     target_id: str
     prompt_message_id: int
     force_reply_message_id: int | None = None
-    """The group-only ForceReply line; `None` in a private chat (one prompt message)."""
+    """Always `None` since the bot left group chats (#118): their ForceReply line is gone. The
+    column stays until a later contract migration drops it (ADR-0015)."""
 
 
 class PendingInputs:

@@ -12,6 +12,8 @@ import base64
 import logging
 
 import pytest
+from aiogram.exceptions import TelegramForbiddenError
+from aiogram.methods import SendMessage
 
 from content_zavod.domain import (
     ArticleSummary,
@@ -27,7 +29,30 @@ from content_zavod.domain import (
 from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.entrypoints.bot import _make_notification_handler
 from content_zavod.job_queue import JobResult
-from tests.tenancy import WS_A
+from content_zavod.settings import PROJECT_KEY
+from content_zavod.telegraph import TelegraphPublisher, project_footer
+from content_zavod.workspaces import Workspace
+from tests.telegraph.test_publisher import (
+    FakePages,
+    FakeSettings,
+    FakeTelegraph,
+    FakeWorkspaceSettings,
+)
+from tests.tenancy import WS_A, WS_B
+
+
+class FakeWorkspaces:
+    """A's owner chats in 42, B's in 43; `blocked` records `mark_blocked`."""
+
+    def __init__(self) -> None:
+        self.blocked: list[int] = []
+
+    async def get(self, workspace_id):
+        owner = {WS_A: 42, WS_B: 43}[workspace_id]
+        return Workspace(workspace_id, owner, None, "Europe/Moscow", None, None)
+
+    async def mark_blocked(self, workspace_id) -> None:
+        self.blocked.append(workspace_id)
 
 
 class FakePlan:
@@ -42,41 +67,47 @@ class FakePlan:
         self.cover_failures_marked: list[int] = []
         self.mark_cover_generation_failed_returns: PlanItemId | None = PlanItemId("item-1")
 
-    async def add_topics(self, week_label: str, topics: list[TopicDraft]) -> PlanId:
+    async def add_topics(self, workspace_id, week_label: str, topics: list[TopicDraft]) -> PlanId:
         self.added_topics.append((week_label, topics))
         return PlanId("plan-1")
 
-    async def get(self, plan_id: PlanId) -> PlanView:
+    async def get(self, workspace_id, plan_id: PlanId) -> PlanView:
         return PlanView(id=plan_id, week_label="Week 1", items=[])
 
-    async def get_item(self, plan_item_id: PlanItemId) -> PlanItemDetail:
+    async def get_item(self, workspace_id, plan_item_id: PlanItemId) -> PlanItemDetail:
         return PlanItemDetail(id=plan_item_id, title="Topic A", summary="s", keywords=[])
 
-    async def apply_regeneration(self, plan_item_id: str, topic: TopicDraft) -> None:
+    async def apply_regeneration(self, workspace_id, plan_item_id: str, topic: TopicDraft) -> None:
         self.applied_regenerations.append((plan_item_id, topic))
 
-    async def apply_cover(self, plan_item_id: str, image: bytes, mime_type: str) -> None:
+    async def apply_cover(
+        self, workspace_id, plan_item_id: str, image: bytes, mime_type: str
+    ) -> None:
         self.applied_covers.append((plan_item_id, image, mime_type))
 
-    async def get_message_ref(self, plan_id: PlanId) -> PlanMessageRef | None:
+    async def get_message_ref(self, workspace_id, plan_id: PlanId) -> PlanMessageRef | None:
         return self.message_refs.get(plan_id)
 
-    async def record_message_ref(self, plan_id: PlanId, chat_id: int, message_id: int) -> None:
+    async def record_message_ref(
+        self, workspace_id, plan_id: PlanId, chat_id: int, message_id: int
+    ) -> None:
         self.message_refs.setdefault(
             plan_id, PlanMessageRef(chat_id=chat_id, message_id=message_id)
         )
 
-    async def get_plan_id_for_item(self, plan_item_id: PlanItemId) -> PlanId:
+    async def get_plan_id_for_item(self, workspace_id, plan_item_id: PlanItemId) -> PlanId:
         return self.plan_id_for_item
 
-    async def mark_cover_generation_failed(self, source_job_id: int) -> PlanItemId | None:
+    async def mark_cover_generation_failed(
+        self, workspace_id, source_job_id: int
+    ) -> PlanItemId | None:
         self.cover_failures_marked.append(source_job_id)
         return self.mark_cover_generation_failed_returns
 
-    async def is_manual_cover_job(self, job_id: int) -> bool:
+    async def is_manual_cover_job(self, workspace_id, job_id: int) -> bool:
         return job_id in self.manual_cover_jobs
 
-    async def get_hub(self, plan_id: PlanId) -> PlanHubView:
+    async def get_hub(self, workspace_id, plan_id: PlanId) -> PlanHubView:
         return PlanHubView(id=plan_id, week_label="2026-W41", status=self.plan_status, topics=[])
 
 
@@ -88,26 +119,26 @@ class FakeArticle:
         self.plan_id_for_article = PlanId("plan-1")
         self.articles_for_plan: list[ArticleView] = []
 
-    async def record_version(self, article_id: str, version: GeneratedVersion) -> str:
+    async def record_version(self, workspace_id, article_id: str, version: GeneratedVersion) -> str:
         self.recorded_versions.append((article_id, version))
         return self.application
 
-    async def mark_generation_failed(self, source_job_id: int) -> str | None:
+    async def mark_generation_failed(self, workspace_id, source_job_id: int) -> str | None:
         self.failed_jobs.append(source_job_id)
         return "article-1"
 
-    async def get(self, article_id: str) -> ArticleView:
+    async def get(self, workspace_id, article_id: str) -> ArticleView:
         return ArticleView(
             id=article_id, plan_item_id="item-1", title="T", platform="P", content=b"c"
         )
 
-    async def get_summary(self, article_id: str) -> ArticleSummary:
+    async def get_summary(self, workspace_id, article_id: str) -> ArticleSummary:
         return ArticleSummary(id=article_id, title="Topic A", platform="vc", status="error")
 
-    async def get_plan_id(self, article_id: str) -> PlanId:
+    async def get_plan_id(self, workspace_id, article_id: str) -> PlanId:
         return self.plan_id_for_article
 
-    async def list_for_plan(self, plan_id: PlanId) -> list[ArticleView]:
+    async def list_for_plan(self, workspace_id, plan_id: PlanId) -> list[ArticleView]:
         return self.articles_for_plan
 
 
@@ -162,7 +193,7 @@ class FakeGateway:
 
 async def test_failed_job_sends_error_with_retry_button() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
         JobResult(
@@ -187,7 +218,7 @@ async def test_failed_job_text_is_russian_and_keeps_job_type_and_error_out_of_ch
     """#89: the chat gets «Не удалось …» by job type, naming the Тема and Площадка where
     known; `job_type`, the Площадка key and the exception text only go to the log."""
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     with caplog.at_level(logging.WARNING):
         await handle(
@@ -206,7 +237,7 @@ async def test_failed_job_text_is_russian_and_keeps_job_type_and_error_out_of_ch
 
 async def test_failed_article_job_marks_article_error_before_notifying() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
         JobResult(
@@ -225,11 +256,11 @@ async def test_failed_article_job_marks_article_error_before_notifying() -> None
 async def test_stale_failed_article_job_is_ignored() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
 
-    async def stale_failure(_source_job_id: int) -> None:
+    async def stale_failure(_workspace_id, _source_job_id: int) -> None:
         return None
 
     article.mark_generation_failed = stale_failure  # type: ignore[method-assign]
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
         JobResult(
@@ -242,7 +273,7 @@ async def test_stale_failed_article_job_is_ignored() -> None:
 
 async def test_generate_plan_appends_topics_and_sends_the_plan() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
         JobResult(
@@ -269,7 +300,7 @@ async def test_redelivered_generate_plan_result_edits_the_canonical_message_inst
     `notified_at` was marked) must not post a second Plan message - it should edit the one
     already recorded for this Plan."""
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
     result = JobResult(
         workspace_id=WS_A,
         job_id=1,
@@ -294,7 +325,7 @@ async def test_empty_generate_plan_result_creates_no_plan_and_explains_why() -> 
     """#84: no Темы came out - no empty Plan (just an "Утвердить всё" that starts nothing),
     but a notice saying what happened and what to do."""
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
         JobResult(
@@ -315,12 +346,12 @@ async def test_empty_generate_plan_result_creates_no_plan_and_explains_why() -> 
     ((chat_id, text),) = gateway.sent_notices
     assert chat_id == 42
     assert "5–11 октября 2026" in text and "не создан" in text
-    assert "/topic" in text and "Направления" in text
+    assert "/topic" in text and "Направлени" not in text
 
 
 async def test_empty_generate_plan_result_of_only_recent_repeats_says_so() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
         JobResult(
@@ -339,7 +370,7 @@ async def test_regenerate_topic_applies_and_redraws_the_plan_message() -> None:
     """#81: the regenerated title appears in the Plan's canonical message, no separate notice."""
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
         JobResult(
@@ -360,7 +391,7 @@ async def test_regenerate_topic_applies_and_redraws_the_plan_message() -> None:
 
 async def test_article_research_status_is_recorded_on_the_version_not_in_its_text() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
         JobResult(
@@ -388,7 +419,7 @@ async def test_article_research_status_is_recorded_on_the_version_not_in_its_tex
 async def test_stale_article_result_is_not_sent() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     article.application = "stale"
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
         JobResult(
@@ -415,7 +446,7 @@ async def test_stale_failed_generate_cover_job_is_ignored() -> None:
     owns (already superseded, e.g. by a later re-request) is dropped silently."""
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     plan.mark_cover_generation_failed_returns = None
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
         JobResult(
@@ -429,7 +460,7 @@ async def test_stale_failed_generate_cover_job_is_ignored() -> None:
 
 async def test_unknown_job_type_is_ignored() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
         JobResult(workspace_id=WS_A, job_id=1, job_type="something_else", status="done", output={})
@@ -448,7 +479,8 @@ class FakePublisher:
         self._urls = urls
         self.published: list[str] = []
 
-    async def publish(self, article: ArticleView) -> str | None:
+    async def publish(self, workspace_id, article: ArticleView) -> str | None:
+        assert workspace_id == WS_A
         self.published.append(article.id)
         return self._urls.get(article.id)
 
@@ -473,7 +505,9 @@ def _article_result(job_type: str = "regenerate_article") -> JobResult:
 async def test_ready_article_card_carries_the_published_read_url() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     publisher = FakePublisher({"article-1": "https://telegra.ph/T-10-07"})
-    handle = _make_notification_handler(plan, article, gateway, 42, publisher=publisher)
+    handle = _make_notification_handler(
+        plan, article, gateway, FakeWorkspaces(), publisher=publisher
+    )
 
     await handle(_article_result())
 
@@ -485,7 +519,9 @@ async def test_ready_article_card_carries_the_published_read_url() -> None:
 async def test_telegraph_failure_still_delivers_the_card_without_read_url() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     publisher = FakePublisher({"article-1": None})
-    handle = _make_notification_handler(plan, article, gateway, 42, publisher=publisher)
+    handle = _make_notification_handler(
+        plan, article, gateway, FakeWorkspaces(), publisher=publisher
+    )
 
     await handle(_article_result())
 
@@ -497,7 +533,7 @@ async def test_generate_article_records_version_and_redraws_the_hub_without_a_ca
     """#91: a fan-out Статья shows up as ✅ in the Хаб (the Plan message) - no card of its own."""
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(_article_result("generate_article"))
 
@@ -518,7 +554,9 @@ async def test_generate_article_publishes_its_reading_page_for_the_hub() -> None
     when the Статья is ready - without sending a card."""
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     publisher = FakePublisher({"article-1": "https://telegra.ph/a1"})
-    handle = _make_notification_handler(plan, article, gateway, 42, publisher=publisher)
+    handle = _make_notification_handler(
+        plan, article, gateway, FakeWorkspaces(), publisher=publisher
+    )
 
     await handle(_article_result("generate_article"))
 
@@ -532,7 +570,7 @@ async def test_redelivered_article_result_just_redraws_the_same_hub() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
     article.application = "already_applied"
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(_article_result("generate_article"))
     await handle(_article_result("generate_article"))
@@ -543,7 +581,7 @@ async def test_redelivered_article_result_just_redraws_the_same_hub() -> None:
 
 async def test_hub_without_a_recorded_message_is_sent_once_then_edited() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(_article_result("generate_article"))
     await handle(_article_result("generate_article"))
@@ -555,7 +593,7 @@ async def test_result_for_an_archived_plan_redraws_nothing() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     plan.plan_status = "archived"
     plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(_article_result("generate_article"))
 
@@ -566,7 +604,7 @@ async def test_regenerated_article_sends_its_card_and_redraws_the_hub() -> None:
     """«✏️ Доработать» was asked for by hand: its result is a card where the person is looking."""
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(_article_result("regenerate_article"))
 
@@ -579,7 +617,7 @@ async def test_failed_fan_out_article_only_turns_red_in_the_hub() -> None:
     «🔁 Повторить»."""
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
         JobResult(
@@ -606,7 +644,7 @@ def _cover_result(job_id: int = 1) -> JobResult:
 async def test_fan_out_cover_applies_and_redraws_the_hub_without_a_photo() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(_cover_result())
 
@@ -619,7 +657,7 @@ async def test_manual_cover_is_sent_as_a_photo_and_redraws_the_hub() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     plan.manual_cover_jobs = {1}
     plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(_cover_result())
 
@@ -630,7 +668,7 @@ async def test_manual_cover_is_sent_as_a_photo_and_redraws_the_hub() -> None:
 async def test_failed_fan_out_cover_only_turns_red_in_the_hub() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
         JobResult(
@@ -646,7 +684,7 @@ async def test_failed_fan_out_cover_only_turns_red_in_the_hub() -> None:
 async def test_failed_manual_cover_also_says_so_in_the_chat() -> None:
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     plan.manual_cover_jobs = {3}
-    handle = _make_notification_handler(plan, article, gateway, 42)
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
         JobResult(
@@ -659,75 +697,99 @@ async def test_failed_manual_cover_also_says_so_in_the_chat() -> None:
     ]
 
 
-# --- #114: the team chat's pinned note ---
+# --- ADR-0015: each Job's result goes to its own Пространство ---
 
 
-class FakeTeamNote:
+class WorkspaceRecordingPlan(FakePlan):
+    """Records which Пространство every Plan call was made in."""
+
     def __init__(self) -> None:
-        self.ensured = 0
+        super().__init__()
+        self.workspaces_seen: set[int] = set()
 
-    async def ensure(self) -> None:
-        self.ensured += 1
+    async def add_topics(self, workspace_id, week_label, topics):
+        self.workspaces_seen.add(workspace_id)
+        return await super().add_topics(workspace_id, week_label, topics)
 
+    async def get(self, workspace_id, plan_id):
+        self.workspaces_seen.add(workspace_id)
+        return await super().get(workspace_id, plan_id)
 
-_PLAN_RESULT = JobResult(
-    workspace_id=WS_A,
-    job_id=1,
-    job_type="generate_plan",
-    status="done",
-    output={"week_label": "Week 1", "topics": [{"title": "T1", "summary": "s", "keywords": []}]},
-)
+    async def get_message_ref(self, workspace_id, plan_id):
+        self.workspaces_seen.add(workspace_id)
+        return await super().get_message_ref(workspace_id, plan_id)
 
-
-async def test_a_plan_delivery_is_preceded_by_the_team_note() -> None:
-    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    note = FakeTeamNote()
-    handle = _make_notification_handler(plan, article, gateway, 42, team_note=note)
-
-    await handle(_PLAN_RESULT)
-    await handle(_PLAN_RESULT)
-
-    assert note.ensured == 2  # TeamNote itself posts only once
+    async def record_message_ref(self, workspace_id, plan_id, chat_id, message_id):
+        self.workspaces_seen.add(workspace_id)
+        return await super().record_message_ref(workspace_id, plan_id, chat_id, message_id)
 
 
-async def test_nothing_for_the_chat_means_no_team_note() -> None:
-    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    note = FakeTeamNote()
-    handle = _make_notification_handler(plan, article, gateway, 42, team_note=note)
+async def test_a_notification_of_b_goes_to_bs_chat_and_reads_only_b() -> None:
+    """Not A's chat, not the chat of whoever wrote last - the owner of the Job's Workspace."""
+    plan, article, gateway = WorkspaceRecordingPlan(), FakeArticle(), FakeGateway()
+    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
 
     await handle(
-        JobResult(workspace_id=WS_A, job_id=9, job_type="some_future_job", status="done", output={})
+        JobResult(
+            workspace_id=WS_B,
+            job_id=1,
+            job_type="generate_plan",
+            status="done",
+            output={"week_label": "Week 1", "topics": [{"title": "T", "summary": "s"}]},
+        )
+    )
+    await handle(
+        JobResult(workspace_id=WS_B, job_id=2, job_type="generate_plan", status="failed", error="x")
     )
 
-    assert note.ensured == 0
+    assert [chat for chat, _view in gateway.sent_plans] == [43]
+    assert [chat for chat, _text, _job in gateway.sent_errors_with_retry] == [43]
+    assert plan.workspaces_seen == {WS_B}
 
 
-class FakeDirections:
-    def __init__(self) -> None:
-        self.delivered: list[JobResult] = []
+async def test_a_reading_page_of_b_closes_with_bs_channel_not_as() -> None:
+    """ADR-0015: the page's footer is the «Ваш канал или сайт» of the Статья's Workspace."""
+    settings = FakeWorkspaceSettings()
+    settings.values[WS_A, PROJECT_KEY] = "https://a.example Канал A"
+    settings.values[WS_B, PROJECT_KEY] = "https://b.example Канал B"
+    telegraph = FakeTelegraph()
+    publisher = TelegraphPublisher(
+        telegraph, FakePages(), FakeSettings(), footer_link=project_footer(settings)
+    )
+    handle = _make_notification_handler(
+        FakePlan(), FakeArticle(), FakeGateway(), FakeWorkspaces(), publisher=publisher
+    )
+    result = _article_result("generate_article")
 
-    async def deliver(self, result: JobResult) -> None:
-        self.delivered.append(result)
-
-
-@pytest.mark.parametrize("status", ["done", "failed"])
-async def test_directions_suggestion_goes_to_its_own_message_not_the_team_chat(
-    status: str,
-) -> None:
-    """#113: a suggestion (or its failure) edits the Владелец's «⏳» message; nothing is
-    written to the domain and nothing lands in the team chat."""
-    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    directions = FakeDirections()
-    handle = _make_notification_handler(plan, article, gateway, 42, directions=directions)
-    result = JobResult(
-        workspace_id=WS_A,
-        job_id=9,
-        job_type="suggest_directions",
-        status=status,
-        output={"queries": []},
+    await handle(
+        JobResult(
+            workspace_id=WS_B,
+            job_id=result.job_id,
+            job_type=result.job_type,
+            status=result.status,
+            output=result.output,
+        )
     )
 
-    await handle(result)
+    ((_token, _title, content),) = telegraph.created
+    assert "https://b.example" in str(content)
+    assert "a.example" not in str(content)
 
-    assert directions.delivered == [result]
-    assert gateway.sent_errors_with_retry == [] and gateway.sent_notices == []
+
+async def test_a_blocked_bot_marks_the_workspace_and_counts_as_delivered() -> None:
+    """ADR-0015: a 403 must not burn the notification's retries; the tick then skips it."""
+
+    class BlockedGateway(FakeGateway):
+        async def send_error_with_retry(self, chat_id, text, job_id) -> None:
+            raise TelegramForbiddenError(
+                SendMessage(chat_id=chat_id, text=text), "Forbidden: bot was blocked by the user"
+            )
+
+    workspaces = FakeWorkspaces()
+    handle = _make_notification_handler(FakePlan(), FakeArticle(), BlockedGateway(), workspaces)
+
+    await handle(
+        JobResult(workspace_id=WS_B, job_id=1, job_type="generate_plan", status="failed", error="x")
+    )
+
+    assert workspaces.blocked == [WS_B]

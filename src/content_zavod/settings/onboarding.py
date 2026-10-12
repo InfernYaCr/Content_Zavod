@@ -11,14 +11,15 @@
   configured its Ниша (or anything else) before the wizard existed is never pushed into it.
 
 The flag lives in the same `workspace_settings` key-value table as the Настройки, so like
-them it is one per Пространство. The store handed in is already bound to one Workspace
-(today the team one, see `entrypoints._team_workspace`): this class never sees another's flag.
+them it is one per Пространство: every method takes the Workspace first, and one Workspace's
+wizard never sees another's flag (ADR-0015).
 """
 
 from __future__ import annotations
 
 from typing import Protocol
 
+from ..workspaces import WorkspaceId
 from .service import SETTING_STORE_KEYS
 
 ONBOARDING_KEY = "onboarding"
@@ -28,37 +29,37 @@ _LATER = "later"
 
 
 class OnboardingStore(Protocol):
-    async def get(self, key: str) -> str | None: ...
+    async def get(self, workspace_id: WorkspaceId, key: str) -> str | None: ...
 
-    async def set(self, key: str, value: str) -> None: ...
+    async def set(self, workspace_id: WorkspaceId, key: str, value: str) -> None: ...
 
-    async def set_if_changed(self, key: str, value: str) -> bool: ...
+    async def set_if_changed(self, workspace_id: WorkspaceId, key: str, value: str) -> bool: ...
 
 
 class OnboardingState:
     def __init__(self, store: OnboardingStore) -> None:
         self._store = store
 
-    async def needed(self) -> bool:
-        flag = await self._store.get(ONBOARDING_KEY)
+    async def needed(self, workspace_id: WorkspaceId) -> bool:
+        flag = await self._store.get(workspace_id, ONBOARDING_KEY)
         if flag is not None:
             return flag == ONBOARDING_STARTED
         for key in SETTING_STORE_KEYS:
-            if await self._store.get(key) is not None:
+            if await self._store.get(workspace_id, key) is not None:
                 return False
         return True
 
-    async def begin(self) -> None:
-        await self._store.set(ONBOARDING_KEY, ONBOARDING_STARTED)
+    async def begin(self, workspace_id: WorkspaceId) -> None:
+        await self._store.set(workspace_id, ONBOARDING_KEY, ONBOARDING_STARTED)
 
-    async def finish(self) -> bool:
+    async def finish(self, workspace_id: WorkspaceId) -> bool:
         """«🚀 Запустить»: `True` only for the call that actually launched - a double-tapped
-        «🚀 Запустить» or a second Владелец launching too gets `False` and starts no second
-        Plan. A launch after «Позже» (a review card still on screen) is a real first launch."""
-        return await self._store.set_if_changed(ONBOARDING_KEY, _DONE)
+        «🚀 Запустить» gets `False` and starts no second Plan. A launch after «Позже» (a review
+        card still on screen) is a real first launch."""
+        return await self._store.set_if_changed(workspace_id, ONBOARDING_KEY, _DONE)
 
-    async def skip(self) -> None:
+    async def skip(self, workspace_id: WorkspaceId) -> None:
         """«Позже»: never offered again, but nothing was launched - a stale «🚀 Запустить»
         still launches. Leaves an already launched wizard as it is."""
-        if await self._store.get(ONBOARDING_KEY) != _DONE:
-            await self._store.set(ONBOARDING_KEY, _LATER)
+        if await self._store.get(workspace_id, ONBOARDING_KEY) != _DONE:
+            await self._store.set(workspace_id, ONBOARDING_KEY, _LATER)

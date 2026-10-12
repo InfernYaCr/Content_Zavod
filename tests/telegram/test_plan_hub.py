@@ -21,6 +21,7 @@ from content_zavod.telegram.plan_hub import (
     render_hub_text,
     render_hub_topic_text,
 )
+from tests.tenancy import WS_A
 
 
 def _topic(
@@ -255,13 +256,13 @@ class FakePlan:
         self.ref = ref
         self.recorded: list[tuple[str, int, int]] = []
 
-    async def get_hub(self, plan_id):
+    async def get_hub(self, workspace_id, plan_id):
         return self.hub
 
-    async def get_message_ref(self, plan_id):
+    async def get_message_ref(self, workspace_id, plan_id):
         return self.ref
 
-    async def record_message_ref(self, plan_id, chat_id, message_id) -> None:
+    async def record_message_ref(self, workspace_id, plan_id, chat_id, message_id) -> None:
         self.recorded.append((plan_id, chat_id, message_id))
 
 
@@ -269,8 +270,8 @@ async def test_deliver_plan_hub_edits_the_canonical_plan_message() -> None:
     bot = FakeBot()
     plan = FakePlan(_hub(_topic(1)), PlanMessageRef(chat_id=-100, message_id=5))
 
-    await deliver_plan_hub(plan, TelegramGateway(bot), 42, PlanId("plan-1"))
-    await deliver_plan_hub(plan, TelegramGateway(bot), 42, PlanId("plan-1"))  # redelivery
+    await deliver_plan_hub(plan, TelegramGateway(bot), WS_A, 42, PlanId("plan-1"))
+    await deliver_plan_hub(plan, TelegramGateway(bot), WS_A, 42, PlanId("plan-1"))  # redelivery
 
     assert bot.sent == []
     assert [(c, m) for c, m, _ in bot.edited] == [(-100, 5), (-100, 5)]
@@ -281,7 +282,7 @@ async def test_deliver_plan_hub_sends_and_records_when_no_message_exists_yet() -
     bot = FakeBot()
     plan = FakePlan(_hub(_topic(1)), None)
 
-    await deliver_plan_hub(plan, TelegramGateway(bot), 42, PlanId("plan-1"))
+    await deliver_plan_hub(plan, TelegramGateway(bot), WS_A, 42, PlanId("plan-1"))
 
     assert len(bot.sent) == 1
     assert plan.recorded == [("plan-1", 42, 77)]
@@ -291,6 +292,6 @@ async def test_deliver_plan_hub_leaves_an_archived_plan_alone() -> None:
     bot = FakeBot()
     plan = FakePlan(_hub(_topic(1), status="archived"), PlanMessageRef(chat_id=1, message_id=2))
 
-    await deliver_plan_hub(plan, TelegramGateway(bot), 42, PlanId("plan-1"))
+    await deliver_plan_hub(plan, TelegramGateway(bot), WS_A, 42, PlanId("plan-1"))
 
     assert bot.sent == [] and bot.edited == []

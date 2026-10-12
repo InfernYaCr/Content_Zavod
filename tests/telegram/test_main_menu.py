@@ -1,33 +1,28 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from zoneinfo import ZoneInfo
 
-import pytest
-
+from content_zavod.domain import PlanHubView
 from content_zavod.scheduling import ScheduleConfig
 from content_zavod.telegram import (
     PlanId,
     PlanItemId,
     PlanItemView,
     PlanMessageRef,
+    PlanSummary,
     PlanView,
     TelegramGateway,
 )
 from content_zavod.telegram.asset_photos import AssetPhotos
 from content_zavod.telegram.input_prompt import InputPrompt
-from content_zavod.telegram.main_menu import (
-    TOPIC_INPUT_KIND,
-    MainMenu,
-    build_main_menu_keyboard,
-    plan_message_link,
-)
+from content_zavod.telegram.main_menu import TOPIC_INPUT_KIND, MainMenu, build_main_menu_keyboard
+from content_zavod.workspaces import Workspace
+from tests.tenancy import WS_A
 
 from .fakes import FakePendingInputs, RecordingBot, button_data, button_texts
 
 USER = 5
-TEAM_CHAT = -1001234567890
-MOSCOW = ZoneInfo("Europe/Moscow")
+WORKSPACE = Workspace(WS_A, USER, None, "Europe/Moscow", None, None)
 NOW = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)  # 2026-W33: 10–16 августа 2026
 
 
@@ -37,21 +32,24 @@ class FakePlan:
         self.ref = ref
         self.requested: list[str] = []
         self.added: list[tuple[str, list]] = []
+        self.status = "pending_review"
 
-    async def find_active(self, week_label: str) -> PlanView | None:
+    async def find_active(self, workspace_id: int, week_label: str) -> PlanView | None:
         return self.view
 
-    async def get_message_ref(self, plan_id: PlanId) -> PlanMessageRef | None:
+    async def get_message_ref(self, workspace_id: int, plan_id: PlanId) -> PlanMessageRef | None:
         return self.ref
 
-    async def request_new(self, week_label: str, *, generation_id: str | None = None) -> int:
+    async def request_new(
+        self, workspace_id: int, week_label: str, *, generation_id: str | None = None
+    ) -> int:
         self.requested.append(week_label)
         return 1
 
-    async def recent_topic_titles(self, since: datetime) -> list[str]:
+    async def recent_topic_titles(self, workspace_id: int, since: datetime) -> list[str]:
         return []
 
-    async def add_topics(self, week_label: str, topics: list) -> PlanId:
+    async def add_topics(self, workspace_id: int, week_label: str, topics: list) -> PlanId:
         self.added.append((week_label, topics))
         self.view = PlanView(
             id=PlanId("p"),
@@ -62,23 +60,37 @@ class FakePlan:
         )
         return PlanId("p")
 
-    async def get(self, plan_id: PlanId) -> PlanView:
+    async def get(self, workspace_id: int, plan_id: PlanId) -> PlanView:
         assert self.view is not None
         return self.view
 
-    async def record_message_ref(self, plan_id: PlanId, chat_id: int, message_id: int) -> None:
+    async def get_summary(self, workspace_id: int, plan_id: PlanId) -> PlanSummary:
+        return PlanSummary(id=plan_id, week_label="2026-W33", status=self.status)
+
+    async def record_message_ref(
+        self, workspace_id: int, plan_id: PlanId, chat_id: int, message_id: int
+    ) -> None:
+        if self.ref is None:
+            self.ref = PlanMessageRef(chat_id=chat_id, message_id=message_id)
+
+    async def replace_message_ref(
+        self, workspace_id: int, plan_id: PlanId, old, chat_id: int, message_id: int
+    ) -> bool:
+        if self.ref != old:
+            return False
         self.ref = PlanMessageRef(chat_id=chat_id, message_id=message_id)
+        return True
 
-    async def archive(self, plan_id: PlanId) -> None: ...
+    async def archive(self, workspace_id: int, plan_id: PlanId) -> None: ...
 
-    async def request_replacement(self, plan_id: PlanId) -> None: ...
+    async def request_replacement(self, workspace_id: int, plan_id: PlanId) -> None: ...
 
 
 class FakeQueue:
-    async def get_status(self, job_id: int) -> str:
+    async def get_status(self, workspace_id: int, job_id: int) -> str:
         return "queued"
 
-    async def retry(self, job_id: int) -> bool:
+    async def retry(self, workspace_id: int, job_id: int) -> bool:
         return True
 
 
@@ -86,10 +98,10 @@ class FakeSchedule:
     def __init__(self, config: ScheduleConfig | None = None) -> None:
         self.config = config
 
-    async def get(self) -> ScheduleConfig | None:
+    async def get(self, workspace_id: int) -> ScheduleConfig | None:
         return self.config
 
-    async def set(self, day_of_week: str, hour: int, minute: int) -> None: ...
+    async def set(self, workspace_id: int, day_of_week: str, hour: int, minute: int) -> None: ...
 
 
 class Env:
@@ -104,8 +116,6 @@ class Env:
             self.bot,
             TelegramGateway(self.bot),
             InputPrompt(self.bot, self.pending),
-            team_chat_id=TEAM_CHAT,
-            tz=MOSCOW,
             now=lambda: NOW,
         )
 
@@ -121,126 +131,120 @@ def make_view(*statuses: str) -> PlanView:
     )
 
 
-def test_content_manager_menu_has_the_shared_buttons_and_the_guide() -> None:
-    markup = build_main_menu_keyboard("content_manager")
+def test_everyone_gets_the_same_menu() -> None:
+    """ADR-0015: no Роли - every user is the Владелец of their own Пространство."""
+    markup = build_main_menu_keyboard()
 
     assert button_texts(markup) == [
         ["📋 План недели"],
         ["✍️ Предложить Тему"],
         ["🗂 История"],
+        ["⚙️ Настройки"],
+        ["🕘 Расписание"],
         ["📖 Как пользоваться"],
     ]
     # The carousel takes the menu's place (#114).
-    assert button_data(markup) == [["mp:"], ["mt:"], ["mh:"], ["gd:m"]]
-
-
-def test_owner_menu_adds_settings_members_schedule_and_team_note() -> None:
-    markup = build_main_menu_keyboard("owner")
-
-    assert button_texts(markup)[3:] == [
-        ["⚙️ Настройки"],
-        ["👥 Участники"],
-        ["🕘 Расписание"],
-        ["📌 Памятка в чат команды"],
-        ["📖 Как пользоваться"],
-    ]
-    assert button_data(markup)[3:] == [["st:"], ["mm:"], ["sc:m"], ["gp:"], ["gd:m"]]
+    assert button_data(markup) == [["mp:"], ["mt:"], ["mh:"], ["st:"], ["sc:m"], ["gd:m"]]
 
 
 async def test_start_menu_greets_then_shows_the_menu() -> None:
     env = Env()
 
-    await env.menu.send(USER, "owner", welcome=True)
+    await env.menu.send(USER, welcome=True)
 
     ((_, text, markup, _),) = env.bot.sent
     assert text.startswith("👋 Добро пожаловать!")
     assert text.endswith("🏠 Главное меню\nВыберите, что сделать:")
-    assert len(markup.inline_keyboard) == 8
+    assert len(markup.inline_keyboard) == 6
 
 
 async def test_show_edits_back_to_the_menu_in_place() -> None:
     env = Env()
 
-    await env.menu.show(USER, 42, "content_manager")
+    await env.menu.show(USER, 42)
 
     ((_, message_id, text, _),) = env.bot.edited
     assert (message_id, text) == (42, "🏠 Главное меню\nВыберите, что сделать:")
 
 
-@pytest.mark.parametrize(
-    ("chat_id", "expected"),
-    [(-1001234567890, "https://t.me/c/1234567890/77"), (-4567, None), (5, None)],
-)
-def test_plan_message_link_only_for_supergroups(chat_id, expected) -> None:
-    assert plan_message_link(PlanMessageRef(chat_id=chat_id, message_id=77)) == expected
-
-
-async def test_plan_of_the_week_links_to_its_message_in_the_team_chat() -> None:
+async def test_plan_of_the_week_is_sent_again_below_and_the_old_copy_goes() -> None:
+    """#118: a private chat has no link to an older message - the Plan moves to the bottom."""
     plan = FakePlan(
         make_view("pending_review", "approved", "rejected"),
-        PlanMessageRef(chat_id=TEAM_CHAT, message_id=77),
+        PlanMessageRef(chat_id=USER, message_id=7),
     )
     env = Env(plan)
 
-    await env.menu.show_plan(USER, 42)
+    await env.menu.show_plan(WORKSPACE, USER, 42)
 
     ((_, message_id, text, markup),) = env.bot.edited
     assert message_id == 42
     assert text.startswith("📋 План на 10–16 августа 2026\nТем: 2 — ждёт согласования.")
-    assert button_texts(markup) == [["📋 Открыть План"], ["◀ Назад"]]
-    assert markup.inline_keyboard[0][0].url == "https://t.me/c/1234567890/77"
-
-
-async def test_plan_without_a_linkable_message_says_where_it_is() -> None:
-    env = Env(FakePlan(make_view("approved"), PlanMessageRef(chat_id=-4567, message_id=1)))
-
-    await env.menu.show_plan(USER, 42)
-
-    _, _, text, markup = env.bot.edited[0]
-    assert "Тем: 1 — утверждён." in text
-    assert "найдите там сообщение с Планом" in text
+    assert "ниже" in text
     assert button_texts(markup) == [["◀ Назад"]]
+    ((chat_id, plan_text, _, _),) = env.bot.sent
+    assert chat_id == USER and "Тема 0" in plan_text
+    assert plan.ref == PlanMessageRef(chat_id=USER, message_id=100)
+    assert env.bot.deleted == [(USER, 7)]
+
+
+async def test_an_approved_plan_comes_back_as_its_hub() -> None:
+    plan = FakePlan(make_view("approved"), PlanMessageRef(chat_id=USER, message_id=7))
+    plan.status = "approved"
+
+    async def get_hub(workspace_id, plan_id):
+        return PlanHubView(id=plan_id, week_label="2026-W33", status="approved", topics=[])
+
+    plan.get_hub = get_hub  # type: ignore[attr-defined]
+    env = Env(plan)
+
+    await env.menu.show_plan(WORKSPACE, USER, 42)
+
+    assert "Тем: 1 — утверждён." in env.bot.edited[0][2]
+    assert plan.ref == PlanMessageRef(chat_id=USER, message_id=100)
 
 
 async def test_no_plan_yet_explains_the_schedule_and_offers_to_make_one() -> None:
     env = Env()
 
-    await env.menu.show_plan(USER, 42)
+    await env.menu.show_plan(WORKSPACE, USER, 42)
 
     _, _, text, markup = env.bot.edited[0]
     assert text.startswith("📋 Плана на 10–16 августа 2026 пока нет.")
     assert "по расписанию: среда, 10:00" in text
     assert button_texts(markup) == [["🪄 Составить План"], ["◀ Назад"]]
     assert button_data(markup) == [["mg:"], ["mn:"]]
+    assert env.bot.sent == []
 
 
 async def test_make_plan_button_runs_generate_plan() -> None:
     env = Env()
 
-    await env.menu.generate_plan(USER)
+    await env.menu.generate_plan(WORKSPACE, USER)
 
     assert env.plan.requested == ["2026-W33"]
-    assert "Он появится в чате команды" in env.bot.sent[0][1]
+    assert env.bot.sent[0][1] == "Генерирую План на 10–16 августа 2026..."
 
 
 async def test_propose_topic_asks_then_adds_the_answer_to_the_plan() -> None:
     env = Env()
 
-    await env.menu.ask_topic(USER, USER)
+    await env.menu.ask_topic(WORKSPACE, USER, USER)
     assert "Например:" in env.bot.sent[0][1]
     assert env.pending.rows[(USER, USER)].kind == TOPIC_INPUT_KIND
 
-    assert await env.menu.handle_reply(USER, USER, "Как считать ROI", None) is True
+    assert await env.menu.handle_reply(WORKSPACE, USER, USER, "Как считать ROI") is True
 
     assert env.plan.added[0][1][0].title == "Как считать ROI"
     assert (USER, 100) in env.bot.deleted  # the question is cleaned up
-    assert env.bot.sent[-1][1] == "Тема добавлена в План — он в чате команды."
+    # The Plan message itself arrives in the private chat.
+    assert "Как считать ROI" in env.bot.sent[-1][1]
 
 
 async def test_reply_without_a_topic_question_is_not_consumed() -> None:
     env = Env()
 
-    assert await env.menu.handle_reply(USER, USER, "привет", None) is False
+    assert await env.menu.handle_reply(WORKSPACE, USER, USER, "привет") is False
 
 
 class _GuideStore:
@@ -266,12 +270,10 @@ async def test_start_with_pictures_greets_with_a_photo_then_sends_the_menu() -> 
         env.bot,
         TelegramGateway(env.bot),
         InputPrompt(env.bot, env.pending),
-        team_chat_id=TEAM_CHAT,
-        tz=MOSCOW,
         photos=AssetPhotos(env.bot, _GuideStore()),
     )
 
-    await menu.send(USER, "owner", welcome=True)
+    await menu.send(USER, welcome=True)
 
     ((_, photo, caption, _),) = env.bot.photos
     assert photo.filename == "welcome.png" and caption.startswith("👋 Добро пожаловать!")
@@ -282,9 +284,9 @@ async def test_start_with_pictures_greets_with_a_photo_then_sends_the_menu() -> 
 
 async def test_show_on_a_photo_message_sends_the_menu_below_it() -> None:
     env = Env()
-    env.bot.fail_edits = True  # a photo (the КМ welcome) can't become a text message
+    env.bot.fail_edits = True  # a photo (the onboarding intro) can't become a text message
 
-    await env.menu.show(USER, 42, "content_manager")
+    await env.menu.show(USER, 42)
 
     ((_, text, _, _),) = env.bot.sent
     assert text == "🏠 Главное меню\nВыберите, что сделать:"

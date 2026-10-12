@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
-from aiogram.types import BufferedInputFile, ForceReply, InlineKeyboardMarkup
+from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
 
 from content_zavod.domain import HubArticleCell, HubTopic, PlanHubView
 from content_zavod.telegram import (
@@ -714,7 +714,7 @@ def test_chunk_text_splits_on_newline_boundary() -> None:
     assert chunks[1] == "tail"
 
 
-GROUP_CHAT_ID = -100123  # group ids are negative; a private chat's id is its user's id
+CHAT_ID = 10  # a private chat's id is its user's id
 
 
 @pytest.mark.asyncio
@@ -722,10 +722,13 @@ async def test_comment_prompt_sends_message_with_skip_button_encoding_regenerate
     bot = FakeBot()
     prompt = TelegramCommentPrompt(bot)
 
-    await prompt.prompt_for_comment(chat_id=GROUP_CHAT_ID, user_id=10, id_="item-1")
+    message_id = await prompt.prompt_for_comment(chat_id=CHAT_ID, id_="item-1")
 
-    chat_id, _, keyboard = bot.sent_messages[0]
-    assert chat_id == GROUP_CHAT_ID
+    assert message_id == 1
+    assert len(bot.sent_messages) == 1
+    chat_id, text, keyboard = bot.sent_messages[0]
+    assert chat_id == CHAT_ID
+    assert "следующим сообщением" in text
     skip_button, cancel_button = keyboard.inline_keyboard[0]
     assert decode_callback_data(skip_button.callback_data) == SimpleAction("regenerate", "item-1")
     assert decode_callback_data(cancel_button.callback_data) == SimpleAction(
@@ -738,7 +741,7 @@ async def test_comment_prompt_with_article_action_encodes_regenerate_article_on_
     bot = FakeBot()
     prompt = TelegramCommentPrompt(bot, action="regenerate_article")
 
-    await prompt.prompt_for_comment(chat_id=GROUP_CHAT_ID, user_id=10, id_="article-1")
+    await prompt.prompt_for_comment(chat_id=CHAT_ID, id_="article-1")
 
     skip_button, _ = bot.sent_messages[0][2].inline_keyboard[0]
     assert decode_callback_data(skip_button.callback_data) == SimpleAction(
@@ -747,45 +750,14 @@ async def test_comment_prompt_with_article_action_encodes_regenerate_article_on_
 
 
 @pytest.mark.asyncio
-async def test_comment_prompt_in_a_private_chat_is_one_message_without_force_reply() -> None:
-    """In a private chat the bot sees every message, so the next text is the comment - no
-    ForceReply line is needed, and the request is just the question with its buttons."""
+async def test_comment_prompt_mark_generating_edits_the_prompt() -> None:
     bot = FakeBot()
     prompt = TelegramCommentPrompt(bot)
 
-    message_ids = await prompt.prompt_for_comment(chat_id=10, user_id=10, id_="item-1")
+    await prompt.mark_generating(CHAT_ID, PendingInput("plan_item_comment", "item-1", 7))
 
-    assert message_ids == (1, None)
-    assert len(bot.sent_messages) == 1
-    assert isinstance(bot.sent_messages[0][2], InlineKeyboardMarkup)
-
-
-@pytest.mark.asyncio
-async def test_comment_prompt_in_a_group_adds_a_selective_force_reply_mentioning_the_user() -> None:
-    """#88: buttons and ForceReply can't share a message, so in a group the request is two -
-    and the ForceReply one mentions the asking user, which is what `selective` targets."""
-    bot = FakeBot()
-    prompt = TelegramCommentPrompt(bot)
-
-    message_ids = await prompt.prompt_for_comment(chat_id=GROUP_CHAT_ID, user_id=10, id_="item-1")
-
-    assert message_ids == (1, 2)
-    chat_id, text, markup = bot.sent_messages[1]
-    assert chat_id == GROUP_CHAT_ID
-    assert 'href="tg://user?id=10"' in text
-    assert isinstance(markup, ForceReply)
-    assert markup.selective is True
-
-
-@pytest.mark.asyncio
-async def test_comment_prompt_mark_generating_edits_the_prompt_and_drops_the_force_reply() -> None:
-    bot = FakeBot()
-    prompt = TelegramCommentPrompt(bot)
-
-    await prompt.mark_generating(GROUP_CHAT_ID, PendingInput("plan_item_comment", "item-1", 7, 8))
-
-    assert bot.edited_messages == [(GROUP_CHAT_ID, 7, "⏳ Генерирую...", None)]
-    assert bot.deleted_messages == [(GROUP_CHAT_ID, 8)]
+    assert bot.edited_messages == [(CHAT_ID, 7, "⏳ Генерирую...", None)]
+    assert bot.deleted_messages == []
 
 
 @pytest.mark.asyncio
@@ -799,20 +771,19 @@ async def test_comment_prompt_mark_generating_survives_a_prompt_deleted_meanwhil
     bot = PromptGoneBot()
     prompt = TelegramCommentPrompt(bot)
 
-    await prompt.mark_generating(10, PendingInput("plan_item_comment", "item-1", 7))
+    await prompt.mark_generating(CHAT_ID, PendingInput("plan_item_comment", "item-1", 7))
 
     assert bot.deleted_messages == []
 
 
 @pytest.mark.asyncio
-async def test_comment_prompt_withdraw_deletes_its_messages() -> None:
+async def test_comment_prompt_withdraw_deletes_its_message() -> None:
     bot = FakeBot()
     prompt = TelegramCommentPrompt(bot)
 
-    await prompt.withdraw(GROUP_CHAT_ID, PendingInput("plan_item_comment", "item-1", 7, 8))
-    await prompt.withdraw(10, PendingInput("plan_item_comment", "item-1", 9))
+    await prompt.withdraw(CHAT_ID, PendingInput("plan_item_comment", "item-1", 9))
 
-    assert bot.deleted_messages == [(GROUP_CHAT_ID, 7), (GROUP_CHAT_ID, 8), (10, 9)]
+    assert bot.deleted_messages == [(CHAT_ID, 9)]
     assert bot.edited_messages == []
 
 

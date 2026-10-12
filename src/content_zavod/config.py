@@ -8,10 +8,10 @@ expiry) or a long-lived OAuth token (`YANDEX_OAUTH_TOKEN`, refreshed
 internally into short-lived IAM tokens) — exactly one must be set, mirroring
 `TextGenerator.with_service_account_key` / `.with_oauth_token`.
 
-`TELEGRAM_NOTIFY_CHAT_ID` is where the bot process delivers Job results
-(new Plans, regenerated Темы, ready Статьи) - the Membership allowlist (#8)
-gates who may *act*, but there is no per-member chat registry yet, so
-results are posted to one shared team chat rather than fanned out.
+Every user gets their own Пространство on /start and the bot delivers each Job result to the
+private chat of the Workspace that owns the Job (ADR-0015) - there is no shared chat to
+configure. `GLOBAL_ADMIN_TELEGRAM_IDS` (comma-separated telegram ids, may be empty) names the
+Глобальные администраторы: not a Role, just this list.
 """
 
 from __future__ import annotations
@@ -65,7 +65,6 @@ class YandexPricing:
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
-    telegram_notify_chat_id: int
     postgres_dsn: str
     yandex: YandexCredentials
     yandex_pricing: YandexPricing
@@ -80,6 +79,7 @@ class Settings:
     # Optional (#92): without it the bot creates a Telegraph account on first use and keeps
     # its token in owner_settings.
     telegraph_access_token: str | None = None
+    global_admin_telegram_ids: frozenset[int] = frozenset()
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -89,13 +89,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         env = os.environ
 
     telegram_bot_token = _require(env, "TELEGRAM_BOT_TOKEN")
-    notify_chat_id_raw = _require(env, "TELEGRAM_NOTIFY_CHAT_ID")
-    try:
-        telegram_notify_chat_id = int(notify_chat_id_raw)
-    except ValueError as exc:
-        raise ConfigError(
-            f"invalid TELEGRAM_NOTIFY_CHAT_ID={notify_chat_id_raw!r}, must be an integer"
-        ) from exc
     postgres_dsn = _require(env, "POSTGRES_DSN")
     folder_id = _require(env, "YANDEX_FOLDER_ID")
     api_key = env.get("YANDEX_API_KEY") or None
@@ -111,7 +104,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
 
     return Settings(
         telegram_bot_token=telegram_bot_token,
-        telegram_notify_chat_id=telegram_notify_chat_id,
         postgres_dsn=postgres_dsn,
         yandex=YandexCredentials(folder_id=folder_id, api_key=api_key, oauth_token=oauth_token),
         yandex_pricing=YandexPricing(
@@ -127,6 +119,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
             text=env.get("YANDEX_TEXT_MODEL") or DEFAULT_TEXT_MODEL,
             image=env.get("YANDEX_IMAGE_MODEL") or DEFAULT_IMAGE_MODEL,
         ),
+        global_admin_telegram_ids=_telegram_ids(env, "GLOBAL_ADMIN_TELEGRAM_IDS"),
     )
 
 
@@ -135,6 +128,13 @@ def _require(env: Mapping[str, str], name: str) -> str:
     if not value:
         raise ConfigError(f"missing required environment variable: {name}")
     return value
+
+
+def _telegram_ids(env: Mapping[str, str], name: str) -> frozenset[int]:
+    try:
+        return frozenset(int(part) for part in (env.get(name) or "").split(",") if part.strip())
+    except ValueError as exc:
+        raise ConfigError(f"invalid {name}={env.get(name)!r}, must be comma-separated ids") from exc
 
 
 def _flag(env: Mapping[str, str], name: str, *, default: bool) -> bool:
