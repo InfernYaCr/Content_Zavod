@@ -70,6 +70,14 @@ class Workspaces:
         )
         return _to_workspace(row) if row is not None else None
 
+    async def set_timezone(self, workspace_id: WorkspaceId, timezone: str) -> None:
+        """The Расписание's time zone (an IANA name the screen picked from its fixed list)."""
+        await self._pool.execute(
+            "UPDATE workspaces SET timezone = $2, updated_at = now() WHERE id = $1",
+            workspace_id,
+            timezone,
+        )
+
 
 def _to_workspace(row: asyncpg.Record) -> Workspace:
     return Workspace(

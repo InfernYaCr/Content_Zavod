@@ -15,11 +15,12 @@ screen, its buttons, the prompt, the reply handling and the old-style `/set_<key
 read that list. Validation stays in `SettingsService`; an entry only phrases its
 `InvalidSettingValue` for the Owner.
 
-The Расписание screen has day-of-week buttons (save at once, keeping the time) and «Изменить
-время» (a typed ЧЧ:ММ). Every change is persisted and the live APScheduler job rescheduled
-immediately via its stable `JOB_ID`, as `/set_schedule` always did (and still does, as a
-hidden alias). Its «◀ Назад» returns to wherever it was opened from - Главное меню or Настройки -
-which rides along in its callback ids as `m`/`s`.
+The Расписание screen has day-of-week buttons (save at once, keeping the time), «Изменить
+время» (a typed ЧЧ:ММ) and «Часовой пояс» (a chooser of Russia's zones, МСК−1 … МСК+9). A
+change is only a write: the Расписание tick reads it from the database the next minute
+(ADR-0015), so nothing in memory is rescheduled. `/set_schedule` stays as a hidden alias. Its
+«◀ Назад» returns to wherever it was opened from - Главное меню or Настройки - which rides
+along in its callback ids as `m`/`s`.
 
 A field with `suggest` (Направления, #113) also gets «✨ Предложить по Нише» under its question:
 `DirectionSuggestions` picks them from the Ниша and comes back here (`suggestion_*`), the
@@ -35,14 +36,12 @@ import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Protocol
-from zoneinfo import ZoneInfo
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from apscheduler.triggers.cron import CronTrigger
 
 from ..access import Role
 from ..domain.errors import InvalidSettingValue
-from ..scheduling import DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE, JOB_ID, ScheduleConfig
+from ..scheduling import DEFAULT_SCHEDULE, ScheduleConfig
 from ..settings import (
     AUDIENCE_MAX_LENGTH,
     PERSONAS,
@@ -57,6 +56,7 @@ from ..settings import (
     project_detail_text,
     resolve_persona,
 )
+from ..workspaces import Workspace
 from .callback_codec import Action, SimpleAction, encode_callback_data
 from .gateway import BotClient
 from .input_prompt import InputPrompt
@@ -73,14 +73,20 @@ from .texts import (
     SCHEDULE_TIME_PLACEHOLDER,
     SCHEDULE_TIME_QUESTION,
     SCHEDULE_TIME_SAVED,
+    SCHEDULE_TIMEZONE_BUTTON,
+    SCHEDULE_TIMEZONE_LINE,
+    SCHEDULE_TIMEZONE_QUESTION,
+    SCHEDULE_TIMEZONE_SAVED,
     SCHEDULE_TITLE,
     SETTINGS_CHOOSE,
     SETTINGS_CURRENT,
     SETTINGS_SAVED,
     SETTINGS_TITLE,
+    TIMEZONES,
     WEEKDAYS,
     parse_weekday,
     schedule_text,
+    timezone_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -294,8 +300,12 @@ def _settings_origin(screen_message_id: int | None) -> str:
     return f"s:{screen_message_id or 0}"
 
 
-class Rescheduler(Protocol):
-    def reschedule_job(self, job_id: str, *, trigger: CronTrigger) -> None: ...
+class WorkspaceStore(Protocol):
+    """The screen's own Workspace (today the team one, bound by `TeamScoped`)."""
+
+    async def get(self) -> Workspace | None: ...
+
+    async def set_timezone(self, timezone: str) -> None: ...
 
 
 def _button(text: str, action: Action, id_: str = "") -> InlineKeyboardButton:
@@ -362,9 +372,28 @@ def build_chooser_keyboard(setting: SettingField, current: OwnerSettings) -> Inl
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def render_schedule_text(schedule: ScheduleConfig, *, notice: str | None = None) -> str:
+def render_schedule_text(
+    schedule: ScheduleConfig, timezone: str, *, notice: str | None = None
+) -> str:
     now = schedule_text(schedule.day_of_week, schedule.hour, schedule.minute)
-    return _with_notice(f"{SCHEDULE_TITLE}\n\n{current_line(now)}\n\n{SCHEDULE_HOW}", notice)
+    zone = SCHEDULE_TIMEZONE_LINE.format(timezone=timezone_name(timezone))
+    return _with_notice(
+        f"{SCHEDULE_TITLE}\n\n{current_line(now)}\n{zone}\n\n{SCHEDULE_HOW}", notice
+    )
+
+
+def render_timezone_text(timezone: str) -> str:
+    return f"{SCHEDULE_TIMEZONE_QUESTION}\n\n{current_line(timezone_name(timezone))}"
+
+
+def build_timezone_keyboard(timezone: str, back: str) -> InlineKeyboardMarkup:
+    zones = [
+        _button(f"✅ {label}" if code == timezone else label, "schedule_tz_pick", f"{index}:{back}")
+        for index, (code, label) in enumerate(TIMEZONES.items())
+    ]
+    rows = [zones[start : start + 3] for start in range(0, len(zones), 3)]
+    rows.append([_button(BACK_BUTTON, "schedule", back)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def build_schedule_keyboard(schedule: ScheduleConfig, back: str) -> InlineKeyboardMarkup:
@@ -386,6 +415,7 @@ def build_schedule_keyboard(schedule: ScheduleConfig, back: str) -> InlineKeyboa
             days[:4],
             days[4:],
             [_button(SCHEDULE_TIME_BUTTON, "schedule_time", back)],
+            [_button(SCHEDULE_TIMEZONE_BUTTON, "schedule_tz", back)],
             [back_button],
         ]
     )
@@ -396,20 +426,18 @@ class SettingsScreen:
         self,
         settings: SettingsService,
         schedule: ScheduleStore,
-        scheduler: Rescheduler,
+        workspace: WorkspaceStore,
         bot: BotClient,
         prompts: InputPrompt,
         *,
-        tz: ZoneInfo,
         directions: DirectionsSuggester | None = None,
     ) -> None:
         self._settings = settings
         self._directions = directions
         self._schedule = schedule
-        self._scheduler = scheduler
+        self._workspace = workspace
         self._bot = bot
         self._prompts = prompts
-        self._tz = tz
 
     # --- Настройки ---
 
@@ -486,32 +514,47 @@ class SettingsScreen:
     # --- Расписание ---
 
     async def send_schedule(self, chat_id: int, *, back: str = BACK_TO_MENU) -> None:
-        schedule = await self._schedule_config()
-        await self._bot.send_message(
-            chat_id,
-            render_schedule_text(schedule),
-            reply_markup=build_schedule_keyboard(schedule, back),
-        )
+        text, keyboard = await self._schedule_screen(back)
+        await self._bot.send_message(chat_id, text, reply_markup=keyboard)
 
     async def show_schedule(
         self, chat_id: int, message_id: int, back: str, *, notice: str | None = None
     ) -> None:
-        schedule = await self._schedule_config()
-        await self._redraw(
-            chat_id,
-            message_id,
-            render_schedule_text(schedule, notice=notice),
-            build_schedule_keyboard(schedule, back),
-        )
+        await self._redraw(chat_id, message_id, *await self._schedule_screen(back, notice))
 
     async def set_day(self, chat_id: int, message_id: int, day: str, back: str) -> None:
         if day not in WEEKDAYS:
             await self.show_schedule(chat_id, message_id, back)
             return
         current = await self._schedule_config()
-        saved = await self._reschedule(day, current.hour, current.minute)
+        saved = await self._save_schedule(day, current.hour, current.minute)
         await self.show_schedule(
             chat_id, message_id, back, notice=SCHEDULE_DAY_SAVED.format(schedule=saved)
+        )
+
+    async def show_timezones(self, chat_id: int, message_id: int, back: str) -> None:
+        timezone = await self._timezone()
+        await self._redraw(
+            chat_id,
+            message_id,
+            render_timezone_text(timezone),
+            build_timezone_keyboard(timezone, back),
+        )
+
+    async def set_timezone(self, chat_id: int, message_id: int, index: str, back: str) -> None:
+        """`index` into `TIMEZONES`, from the chooser's button; anything else just shows the
+        Расписание again."""
+        zones = list(TIMEZONES)
+        if not index.isdigit() or int(index) >= len(zones):
+            await self.show_schedule(chat_id, message_id, back)
+            return
+        timezone = zones[int(index)]
+        await self._workspace.set_timezone(timezone)
+        await self.show_schedule(
+            chat_id,
+            message_id,
+            back,
+            notice=SCHEDULE_TIMEZONE_SAVED.format(timezone=timezone_name(timezone)),
         )
 
     async def ask_time(self, chat_id: int, user_id: int, message_id: int, back: str) -> None:
@@ -546,7 +589,7 @@ class SettingsScreen:
                 chat_id, f"Неверный формат времени «{time_text}». Нужно ЧЧ:ММ, например 09:00"
             )
             return
-        saved = await self._reschedule(day, *parsed)
+        saved = await self._save_schedule(day, *parsed)
         await self._bot.send_message(chat_id, f"Расписание изменено: {saved}")
 
     # --- typed answers ---
@@ -582,15 +625,13 @@ class SettingsScreen:
                 )
                 return True
             current = await self._schedule_config()
-            saved = await self._reschedule(current.day_of_week, *parsed)
+            saved = await self._save_schedule(current.day_of_week, *parsed)
             await self._prompts.close(chat_id, pending)
             notice = SCHEDULE_TIME_SAVED.format(schedule=saved)
-            schedule = await self._schedule_config()
             await self._redraw(
                 chat_id,
                 screen_message_id,
-                render_schedule_text(schedule, notice=notice),
-                build_schedule_keyboard(schedule, back or BACK_TO_MENU),
+                *await self._schedule_screen(back or BACK_TO_MENU, notice),
             )
             return True
 
@@ -680,16 +721,24 @@ class SettingsScreen:
         return f"{SCHEDULE_TIME_QUESTION}\n\n{current_line(now)}"
 
     async def _schedule_config(self) -> ScheduleConfig:
-        return await self._schedule.get() or ScheduleConfig(
-            day_of_week=DEFAULT_DAY_OF_WEEK, hour=DEFAULT_HOUR, minute=DEFAULT_MINUTE
+        return await self._schedule.get() or DEFAULT_SCHEDULE
+
+    async def _timezone(self) -> str:
+        workspace = await self._workspace.get()
+        assert workspace is not None  # the bot creates its Workspace before any screen
+        return workspace.timezone
+
+    async def _schedule_screen(
+        self, back: str, notice: str | None = None
+    ) -> tuple[str, InlineKeyboardMarkup]:
+        schedule = await self._schedule_config()
+        return (
+            render_schedule_text(schedule, await self._timezone(), notice=notice),
+            build_schedule_keyboard(schedule, back),
         )
 
-    async def _reschedule(self, day: str, hour: int, minute: int) -> str:
+    async def _save_schedule(self, day: str, hour: int, minute: int) -> str:
         await self._schedule.set(day, hour, minute)
-        self._scheduler.reschedule_job(
-            JOB_ID,
-            trigger=CronTrigger(day_of_week=day, hour=hour, minute=minute, timezone=self._tz),
-        )
         return schedule_text(day, hour, minute)
 
     async def _redraw(
