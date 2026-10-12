@@ -136,3 +136,25 @@ async def test_a_wait_of_one_workspace_is_invisible_to_another(
     assert await pending_inputs.get(WS_A, 1, 10) == WAIT
     assert await pending_inputs.take(WS_B, 1, 10, other.kind) == other
     assert await pending_inputs.get(WS_A, 1, 10) == WAIT
+
+
+async def test_touch_renews_only_a_live_wait_of_that_kind_in_its_own_workspace(
+    pool: asyncpg.Pool, pending_inputs: PendingInputs
+) -> None:
+    """#134: a renewal is an UPDATE - it never brings back a wait someone has just taken."""
+    await pending_inputs.put(WS_A, 1, 10, WAIT)
+    await pool.execute("UPDATE pending_inputs SET created_at = now() - interval '20 minutes'")
+
+    assert not await pending_inputs.touch(WS_B, 1, 10, WAIT.kind)
+    assert not await pending_inputs.touch(WS_A, 1, 10, "other_kind")
+    assert await pending_inputs.touch(WS_A, 1, 10, WAIT.kind)
+    age = await pool.fetchval("SELECT now() - created_at FROM pending_inputs")
+    assert age.total_seconds() < 60
+
+    await pending_inputs.take(WS_A, 1, 10, WAIT.kind)
+    assert not await pending_inputs.touch(WS_A, 1, 10, WAIT.kind)
+    assert await pending_inputs.get(WS_A, 1, 10) is None
+
+    await pending_inputs.put(WS_A, 1, 10, WAIT)
+    await _expire(pool)
+    assert not await pending_inputs.touch(WS_A, 1, 10, WAIT.kind)  # expired stays expired

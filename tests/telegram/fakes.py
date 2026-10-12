@@ -19,6 +19,7 @@ class FakePendingInputs:
 
     def __init__(self) -> None:
         self.by_workspace: dict[int, dict[tuple[int, int], PendingInput]] = {WS_A: {}}
+        self.touched = 0
 
     @property
     def rows(self) -> dict[tuple[int, int], PendingInput]:
@@ -62,6 +63,12 @@ class FakePendingInputs:
         ):
             return None
         return rows.pop((chat_id, user_id))
+
+    async def touch(self, workspace_id: int, chat_id: int, user_id: int, kind: str) -> bool:
+        pending = self._rows(workspace_id).get((chat_id, user_id))
+        live = pending is not None and pending.kind == kind
+        self.touched += live
+        return live
 
 
 class FakeJobs:

@@ -31,7 +31,9 @@ confirmed, then in the Настройки). The buttons carry the Job id and rea
 the Job of the presser's own Пространство (ADR-0015), so nothing is saved until «✅» and a stale
 button saves exactly what its message showed. «✏️ Поправить» asks for the Владелец's own words
 and saves the profile with them as corrections the prompts rank above the profile; its result
-message loses its buttons, and a later «✅» on the same profile keeps the corrections.
+message keeps «✅» (a cancelled fix can still be confirmed), and a later «✅» on the same
+profile keeps the corrections. The result also shows the voice snippets, quoted: they go
+into every Статья.
 """
 
 from __future__ import annotations
@@ -97,6 +99,7 @@ from .texts import (
     STYLE_TALLY_LINKS,
     STYLE_TOO_SHORT,
     STYLE_UNREAD,
+    STYLE_VOICE_EXAMPLES,
     STYLE_WARN_DZEN,
     STYLE_WARN_FILE_BIG,
     STYLE_WARN_FILE_SIZE_UNKNOWN,
@@ -172,6 +175,12 @@ class StyleRef:
             STYLE_POSTS if mode == STYLE_POSTS else STYLE_ARTICLES,
             STYLE_FROM_WIZARD if origin == STYLE_FROM_WIZARD else STYLE_FROM_SETTINGS,
         )
+
+
+class SampleWaits(PendingInputStore, Protocol):
+    async def touch(
+        self, workspace_id: WorkspaceId, chat_id: int, user_id: int, kind: str
+    ) -> bool: ...
 
 
 class StyleJobs(Protocol):
@@ -328,6 +337,9 @@ def _retry_keyboard(ref: StyleRef) -> InlineKeyboardMarkup:
 def render_profile(profile: StyleProfile) -> str:
     """The profile as the Владелец reads it: the summary on «вы», then the traits."""
     blocks = [profile.summary, style_profile_text(profile)]
+    if profile.voice_examples:  # these go into every Статья: the Владелец sees them
+        quotes = "\n".join(f"«{quote}»" for quote in profile.voice_examples)
+        blocks.append(f"{STYLE_VOICE_EXAMPLES}\n{quotes}")
     if profile.corrections:
         blocks.append(STYLE_CORRECTIONS_LINE.format(corrections=profile.corrections))
     return "\n\n".join(block for block in blocks if block)
@@ -370,7 +382,7 @@ class StyleSamples:
         self,
         jobs: StyleJobs,
         settings: SettingsService,
-        pending: PendingInputStore,
+        pending: SampleWaits,
         prompts: InputPrompt,
         bot: BotClient,
         download: Download,
@@ -420,6 +432,10 @@ class StyleSamples:
             if alert:
                 await self._bot.send_message(chat_id, alert)
             return True
+        # The Владелец is still at it: the wait lives on from now. In place - if «Готово»
+        # has taken it meanwhile, this message comes too late and the wait stays closed.
+        if not await self._pending.touch(workspace.id, chat_id, user_id, STYLE_SAMPLES_KIND):
+            return True
         self._sweep()
         ref = StyleRef.decode(pending.target_id)
         key = (workspace.id, chat_id, user_id)
@@ -431,8 +447,6 @@ class StyleSamples:
         if restarted:  # the wait outlived a bot restart, what came before it didn't
             warning = STYLE_RESTARTED
         collected.touched = time.monotonic()
-        # The Владелец is still at it: the wait lives on from now, not from «Пришлю статью».
-        await self._pending.put(workspace.id, chat_id, user_id, pending)
         text = f"{_question(ref)}\n\n{_tally(collected)}"
         if warning:
             text += f"\n\n{warning}"
@@ -624,10 +638,9 @@ class StyleSamples:
         self, workspace: Workspace, chat_id: int, user_id: int, message_id: int, job_text: str
     ) -> bool:
         """«✏️ Поправить»: ask for the Владелец's own words about that Job's profile. The result
-        message loses its buttons, so its «✅» can't save the profile without them later."""
+        keeps its buttons: «✅» there keeps any corrections saved meanwhile (`confirm`)."""
         if await self._profile(workspace.id, job_text) is None:
             return False
-        await self._bot.edit_message_reply_markup(chat_id, message_id, None)
         await self._prompts.ask(
             workspace.id, chat_id, user_id, STYLE_FIX_KIND, job_text, STYLE_FIX_QUESTION
         )

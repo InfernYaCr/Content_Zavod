@@ -211,7 +211,8 @@ async def test_every_accepted_sample_renews_the_wait(env: Env) -> None:
     await env.send(PART)
     await env.send(PART)
 
-    assert env.pending.puts == before + 2
+    assert env.pending.touched == 2
+    assert env.pending.puts == before  # renewed in place, never re-inserted
     assert env.pending.rows[(CHAT, USER)].kind == STYLE_SAMPLES_KIND
 
 
@@ -500,7 +501,7 @@ async def test_fix_saves_corrections_and_a_later_ok_keeps_them(env: Env) -> None
     job_id = await _finished(env, PROFILE_OUTPUT)
 
     assert await env.style.ask_fix(env.a, CHAT, USER, 500, str(job_id))
-    assert env.bot.markups[-1] == (CHAT, 500, None)  # the result message loses its buttons
+    assert env.bot.markups == []  # «✅» stays: a cancelled fix can still be confirmed
     assert env.pending.rows[(CHAT, USER)].kind == STYLE_FIX_KIND
     assert await env.style.handle_reply(env.a, CHAT, USER, "x" * 501)  # too long: asked again
     assert (await env.settings.read(WS_A)).style_profile is None
@@ -568,3 +569,45 @@ async def test_a_refusal_after_typed_done_is_said_in_the_chat(env: Env) -> None:
     assert await env.send("готово")
 
     assert env.bot.sent[-1][1] == error_alert_text(GenerationBusy())
+
+
+class RacingPending(CountingPending):
+    """`get` still sees the wait `done` has just taken - two updates in flight at once."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen = None
+
+    async def get(self, workspace_id, chat_id, user_id):
+        return self.seen or await super().get(workspace_id, chat_id, user_id)
+
+
+async def test_a_sample_racing_done_never_resurrects_the_wait(env: Env) -> None:
+    env.pending = RacingPending()
+    env.style = env.new_style()
+    await env.style.start(env.a, CHAT, USER, "a:s")
+    await env.send(PART * 3)
+    env.pending.seen = env.pending.rows[(CHAT, USER)]
+
+    await env.done()
+    await env.send(PART)
+
+    assert (CHAT, USER) not in env.pending.rows
+    assert len(env.jobs.jobs) == 1
+
+
+async def test_a_cancelled_fix_leaves_the_profile_confirmable(env: Env) -> None:
+    job_id = await _finished(env, PROFILE_OUTPUT)
+    await env.style.ask_fix(env.a, CHAT, USER, 500, str(job_id))
+    await env.style._prompts.cancel(WS_A, CHAT, USER, STYLE_FIX_KIND)
+
+    assert await env.style.confirm(env.a, CHAT, 500, str(job_id))
+    assert (await env.settings.read(WS_A)).style_profile is not None
+
+
+async def test_the_result_shows_the_voice_snippets_that_go_into_every_article(env: Env) -> None:
+    await _finished(env, PROFILE_OUTPUT)
+
+    text = env.bot.edited[-1][2]
+    assert "«без воды и канцелярита»" in text
+    assert text.index("Тон: прямой") < text.index("«без воды и канцелярита»")

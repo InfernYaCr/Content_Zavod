@@ -643,6 +643,7 @@ STYLE_FIX_QUESTION = (
 )
 STYLE_FIX_INVALID = "Напишите поправку текстом, не длиннее {limit} знаков."
 STYLE_CORRECTIONS_LINE = "Ваши поправки: {corrections}"
+STYLE_VOICE_EXAMPLES = "Так звучит ваш голос — эти отрывки я покажу модели как образец:"
 STYLE_CONTINUE_BUTTON = "▶ Продолжить настройку"
 STYLE_WARN_TELEGRAM_LINK = (
     "⚠️ Это ссылка на Telegram. Посты канала присылайте через «📨 Посты канала» — там же "
