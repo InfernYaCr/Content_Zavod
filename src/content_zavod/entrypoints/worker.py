@@ -97,7 +97,8 @@ async def main(settings: Settings | None = None) -> None:
         # Every handler gets the claimed Job's own workspace_id and reads only that Workspace.
         plan = Plan(pool, queue)
         article = Article(pool, queue)
-        owner_settings_service = SettingsService(WorkspaceSettingsStore(pool))
+        workspace_settings = WorkspaceSettingsStore(pool)
+        owner_settings_service = SettingsService(workspace_settings)
         generation_steps = GenerationSteps(pool)
 
         text_generator = _build_yandex_client(
@@ -132,7 +133,12 @@ async def main(settings: Settings | None = None) -> None:
 
         handlers: dict[str, JobHandler] = {
             "generate_plan": make_generate_plan_handler(
-                keyword_stats, text_generator, plan.recent_topic_titles, owner_settings_service
+                keyword_stats,
+                text_generator,
+                plan.recent_topic_titles,
+                owner_settings_service,
+                workspace_settings,
+                web_search,
             ),
             "generate_article": make_generate_article_handler(
                 text_generator, researcher, owner_settings_service

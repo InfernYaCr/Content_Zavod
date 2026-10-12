@@ -36,6 +36,7 @@ async def test_run_pending_applies_every_migration_once_and_is_idempotent(
         "0011_topic_research",
         "0012_personal_workspaces",
         "0013_drop_roles",
+        "0014_plan_item_why",
     ]
 
     applied_second_run = await run_migrations(isolated_pool)
@@ -56,6 +57,7 @@ async def test_run_pending_applies_every_migration_once_and_is_idempotent(
         "0011_topic_research",
         "0012_personal_workspaces",
         "0013_drop_roles",
+        "0014_plan_item_why",
     ]
 
 
@@ -149,9 +151,10 @@ async def test_concurrent_run_pending_does_not_race_on_the_tracking_insert(
         "0011_topic_research",
         "0012_personal_workspaces",
         "0013_drop_roles",
+        "0014_plan_item_why",
     }
     recorded = await isolated_pool.fetch("SELECT version FROM schema_migrations")
-    assert len(recorded) == 13
+    assert len(recorded) == 14
 
 
 async def test_rollback_of_0002_drops_only_the_index_without_losing_data(

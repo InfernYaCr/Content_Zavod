@@ -599,7 +599,9 @@ _Delivery = (
 
 
 def _empty_plan_text(week_label: str, empty_reason: str | None) -> str:
-    """Why a `generate_plan` run came back with no Темы, and what to do about it (#84)."""
+    """Why a `generate_plan` run came back with no Темы, and what to do about it (#84). Only for
+    notifications of Jobs finished before #128: today's `generate_plan` never returns an empty
+    Plan - it fails instead, and gets «Повторить»."""
     if empty_reason == "all_recently_used":
         why = "все подобранные Темы недавно уже были в Планах"
     else:
@@ -653,7 +655,10 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> list
     if result.job_type == "generate_plan":
         topics = [
             TopicDraft(
-                title=t["title"], summary=t.get("summary", ""), keywords=t.get("keywords", [])
+                title=t["title"],
+                summary=t.get("summary", ""),
+                keywords=t.get("keywords", []),
+                why=t.get("why", ""),
             )
             for t in output["topics"]
         ]

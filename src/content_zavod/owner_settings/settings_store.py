@@ -1,8 +1,8 @@
 """Key-value stores for settings: one per Пространство, one for the bot itself (ADR-0015).
 
-`WorkspaceSettingsStore` backs the Владелец-editable Настройки (Ниша, Персона, Направления,
-...) and the Онбординг flag of one Workspace, sharing one table keyed by
-(workspace_id, name), so each new setting reuses this store rather than growing its own
+`WorkspaceSettingsStore` backs the Владелец-editable Настройки (Ниша, Персона, Аудитория,
+...), the Онбординг flag and the Карта Ниши (#128) of one Workspace, sharing one table keyed
+by (workspace_id, name), so each new setting reuses this store rather than growing its own
 table. `get()` returning `None` means "no override recorded yet" - each caller decides its
 own fallback default.
 
