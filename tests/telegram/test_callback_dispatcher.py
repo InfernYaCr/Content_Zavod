@@ -48,10 +48,11 @@ from content_zavod.telegram.main_menu import MainMenu
 from content_zavod.telegram.onboarding import ONBOARDING_INPUT_KIND, Onboarding
 from content_zavod.telegram.pending_inputs import PendingInput
 from content_zavod.telegram.settings_screen import SETTING_INPUT_KIND, SettingsScreen
+from content_zavod.telegram.style_samples import STYLE_SAMPLES_KIND, StyleSamples
 from content_zavod.workspaces import GenerationBusy, TrialLimitExhausted, Usage, Workspace
 from tests.tenancy import WS_A
 
-from .fakes import FakeLimits, FakePendingInputs
+from .fakes import FakeJobs, FakeLimits, FakePendingInputs
 
 USER = 1  # a private chat's id is its user's id
 WORKSPACE = Workspace(WS_A, USER, None, "Europe/Moscow", None, None)
@@ -383,6 +384,10 @@ class FakeAnswerer:
         self.calls.append((text, show_alert))
 
 
+async def _no_download(file_id: str) -> bytes:
+    raise AssertionError("no file here")
+
+
 class Fixtures:
     def __init__(self, *, plan: FakePlan | None = None) -> None:
         self.bot = FakeBot()
@@ -432,6 +437,16 @@ class Fixtures:
         )
         self.photos = AssetPhotos(self.bot, FakeBotState())
         self.guide = Guide(self.photos, self.bot)
+        self.style_samples = StyleSamples(
+            FakeJobs(),
+            SettingsService(self.owner_settings),
+            self.pending_inputs,
+            self.prompts,
+            self.bot,
+            _no_download,
+            OnboardingState(self.owner_settings),
+            self.limits,
+        )
         self.dispatcher = CallbackDispatcher(
             self.plan,
             self.article,
@@ -446,6 +461,7 @@ class Fixtures:
             self.onboarding,
             guide=self.guide,
             limits=self.limits,
+            style_samples=self.style_samples,
         )
 
 
@@ -1234,3 +1250,72 @@ async def test_a_cover_refused_requests_nothing(f: Fixtures) -> None:
 
     assert answer.calls == [(BUSY, True)]
     assert f.plan.manual_cover_requests == []
+
+
+# --- Стиль автора по образцам (#134) ---
+
+
+async def test_style_start_asks_for_samples_and_cancel_drops_the_wait(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("style_start", "a"))
+
+    question_id = len(f.bot.sent_messages)
+    assert "Пришлите 1–3 свои статьи" in f.bot.sent_messages[-1][1]
+    assert f.pending_inputs.rows[(USER, USER)].kind == STYLE_SAMPLES_KIND
+
+    await dispatch(f, SimpleAction("cancel_input", STYLE_SAMPLES_KIND), message_id=question_id)
+
+    assert (USER, USER) not in f.pending_inputs.rows
+    assert (USER, question_id) in f.bot.deleted_messages
+
+
+async def test_style_presets_turns_the_message_into_the_chooser(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("style_start", "a"))
+
+    await dispatch(f, SimpleAction("style_presets", ""), message_id=7)
+
+    assert (USER, USER) not in f.pending_inputs.rows
+    _, message_id, text, _ = f.bot.edited_messages[-1]
+    assert message_id == 7 and text.startswith("Стиль автора — ")
+
+
+async def test_style_done_with_nothing_sent_is_an_alert(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("style_start", "a"))
+
+    answer = await dispatch(f, SimpleAction("style_done", "a"), message_id=len(f.bot.sent_messages))
+
+    assert answer.calls == [("Сначала пришлите текст, файл или ссылку.", True)]
+
+
+async def test_style_buttons_of_a_build_without_the_flow_are_stale(f: Fixtures) -> None:
+    f.dispatcher._style_samples = None
+
+    answer = await dispatch(f, SimpleAction("style_ok", "1"))
+
+    assert answer.calls == [("Кнопка устарела.", True)]
+
+
+async def _style_question_from_the_wizard(f: Fixtures) -> int:
+    """The wizard's Стиль автора step, then «📄 Пришлю статью» on it."""
+    await dispatch(f, SimpleAction("onboarding_step", "persona"))
+    await dispatch(f, SimpleAction("style_start", "a:o"), message_id=len(f.bot.sent_messages))
+    return len(f.bot.sent_messages)
+
+
+async def test_cancel_of_samples_asked_from_the_wizard_returns_to_its_step(f: Fixtures) -> None:
+    question = await _style_question_from_the_wizard(f)
+
+    await dispatch(f, SimpleAction("cancel_input", STYLE_SAMPLES_KIND), message_id=question)
+
+    assert (USER, question) in f.bot.deleted_messages
+    assert f.bot.sent_messages[-1][1].startswith("Шаг 3 из 4 · Стиль автора")
+    assert f.pending_inputs.rows[(USER, USER)].kind == ONBOARDING_INPUT_KIND
+
+
+async def test_presets_from_the_wizard_return_to_its_step_not_to_settings(f: Fixtures) -> None:
+    question = await _style_question_from_the_wizard(f)
+
+    await dispatch(f, SimpleAction("style_presets", "o"), message_id=question)
+
+    assert f.bot.sent_messages[-1][1].startswith("Шаг 3 из 4 · Стиль автора")
+    assert f.pending_inputs.rows[(USER, USER)].kind == ONBOARDING_INPUT_KIND
+    assert not any(text.startswith("Стиль автора — ") for _, _, text, _ in f.bot.edited_messages)

@@ -4,6 +4,7 @@ nothing, and leaves B's rows exactly as they were. A real database, real reposit
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import get_args
@@ -41,6 +42,7 @@ from content_zavod.telegram.main_menu import MainMenu
 from content_zavod.telegram.onboarding import Onboarding
 from content_zavod.telegram.pending_inputs import PendingInputs
 from content_zavod.telegram.settings_screen import SettingsScreen
+from content_zavod.telegram.style_samples import StyleSamples
 from content_zavod.telegram.texts import STALE_BUTTON
 from content_zavod.workspaces import Limits, TrialLimits, Workspace, WorkspaceId, Workspaces
 from tests.tenancy import WS_A, WS_B
@@ -49,7 +51,15 @@ from .fakes import RecordingBot
 
 WEEK = "2026-W42"
 # Every table with B's data, dumped whole: any write by A's press would show.
-_TABLES = ("plans", "plan_items", "articles", "article_versions", "jobs", "pending_inputs")
+_TABLES = (
+    "plans",
+    "plan_items",
+    "articles",
+    "article_versions",
+    "jobs",
+    "pending_inputs",
+    "workspace_settings",
+)
 
 
 @dataclass(frozen=True)
@@ -59,6 +69,7 @@ class Content:
     article_id: ArticleId
     version_id: int
     failed_job_id: int
+    style_job_id: int
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -71,6 +82,7 @@ async def queue(pool: asyncpg.Pool) -> AsyncIterator[JobQueue]:
 
 
 async def _content(pool: asyncpg.Pool, plan: Plan, article: Article, ws: WorkspaceId) -> Content:
+    queue_ = JobQueue(pool)
     plan_id = await plan.add_topics(ws, WEEK, [TopicDraft(title="Тема")])
     item_id = (await plan.get(ws, plan_id)).items[0].id
     article_id = await article.request_generation(ws, plan_id, item_id, "Тема", "", [], "zen")
@@ -85,7 +97,18 @@ async def _content(pool: asyncpg.Pool, plan: Plan, article: Article, ws: Workspa
     await pool.execute(
         "UPDATE jobs SET status = 'failed', notified_at = now() WHERE id = $1", job_id
     )
-    return Content(plan_id, item_id, article_id, version_id, job_id)
+    # A finished Профиль стиля analysis (#134), its profile waiting for «✅ Да, это я».
+    style_job_id = await queue_.enqueue(ws, "analyze_style", {"message_id": 1}, "style")
+    output = {
+        "status": "ok",
+        "profile": {"traits": {"tone": "сухой"}, "summary": "Вы пишете коротко."},
+    }
+    await pool.execute(
+        "UPDATE jobs SET status = 'done', output = $2::jsonb, notified_at = now() WHERE id = $1",
+        style_job_id,
+        json.dumps(output),
+    )
+    return Content(plan_id, item_id, article_id, version_id, job_id, style_job_id)
 
 
 async def _snapshot(pool: asyncpg.Pool, ws: WorkspaceId) -> dict[str, list[dict]]:
@@ -98,6 +121,10 @@ async def _snapshot(pool: asyncpg.Pool, ws: WorkspaceId) -> dict[str, list[dict]
         ]
         for table in _TABLES
     }
+
+
+async def _no_download(file_id: str) -> bytes:
+    raise AssertionError("no file here")
 
 
 def _dispatcher(pool: asyncpg.Pool, queue: JobQueue, bot: RecordingBot) -> CallbackDispatcher:
@@ -140,6 +167,9 @@ def _dispatcher(pool: asyncpg.Pool, queue: JobQueue, bot: RecordingBot) -> Callb
         Onboarding(onboarding_state, settings, prompts, bot, menu, schedule),
         guide=Guide(AssetPhotos(bot, BotStateStore(pool)), bot),
         limits=limits,
+        style_samples=StyleSamples(
+            queue, settings, pending, prompts, bot, _no_download, onboarding_state, limits
+        ),
     )
 
 
@@ -166,6 +196,8 @@ def _payloads_with_bs_ids(b: Content) -> list[CallbackPayload]:
         SimpleAction("hub_article", article),
         SimpleAction("hub_retry", plan),
         SimpleAction("hub_retry_topic", item),
+        SimpleAction("style_ok", str(b.style_job_id)),
+        SimpleAction("style_fix", str(b.style_job_id)),
     ]
 
 
@@ -197,6 +229,9 @@ _ACTIONS_WITHOUT_A_DOMAIN_ID: set[Action] = {
     "onboarding_launch",
     "guide",
     "guide_slide",
+    "style_start",
+    "style_done",
+    "style_presets",
 }
 
 
@@ -215,7 +250,7 @@ def _action(payload: CallbackPayload) -> Action:
 def test_every_action_with_an_id_is_in_the_table() -> None:
     """A new Действие must be classified: either it carries an id (and joins the table) or
     it doesn't."""
-    dummy = Content(PlanId("p"), PlanItemId("i"), ArticleId("a"), 1, 1)
+    dummy = Content(PlanId("p"), PlanItemId("i"), ArticleId("a"), 1, 1, 1)
     with_ids = {_action(payload) for payload in _payloads_with_bs_ids(dummy)}
 
     assert with_ids | _ACTIONS_WITHOUT_A_DOMAIN_ID == set(get_args(Action))
@@ -269,6 +304,7 @@ async def test_the_same_presses_by_b_work(pool: asyncpg.Pool, queue: JobQueue) -
         Page(theirs.plan_id, 0),
         SimpleAction("regenerate", theirs.item_id),
         SimpleAction("retry", str(theirs.failed_job_id)),
+        SimpleAction("style_ok", str(theirs.style_job_id)),
     ):
         answer = _Answerer()
         await _dispatcher(pool, queue, RecordingBot()).dispatch(
@@ -276,6 +312,8 @@ async def test_the_same_presses_by_b_work(pool: asyncpg.Pool, queue: JobQueue) -
         )
         assert (STALE_BUTTON, True) not in answer.calls, payload
     assert await queue.get_status(WS_B, JobId(theirs.failed_job_id)) == "queued"
+    style = (await SettingsService(WorkspaceSettingsStore(pool)).read(WS_B)).style_profile
+    assert style is not None and style.summary == "Вы пишете коротко."
 
 
 async def test_cancel_comment_with_bs_id_drops_nothing_of_b(

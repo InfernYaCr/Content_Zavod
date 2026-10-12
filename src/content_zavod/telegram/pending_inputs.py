@@ -91,6 +91,23 @@ class PendingInputs:
         )
         return None if row is None else PendingInput(**dict(row))
 
+    async def touch(self, workspace_id: WorkspaceId, chat_id: int, user_id: int, kind: str) -> bool:
+        """Renew the live `kind` wait's TTL in place; `False` if there is none. An UPDATE,
+        never an insert: a wait taken a moment ago by a concurrent update stays taken."""
+        result = await self._pool.execute(
+            """
+            UPDATE pending_inputs SET created_at = now()
+            WHERE workspace_id = $1 AND chat_id = $2 AND user_id = $3 AND kind = $4
+              AND created_at > now() - $5::interval
+            """,
+            workspace_id,
+            chat_id,
+            user_id,
+            kind,
+            PENDING_INPUT_TTL,
+        )
+        return result == "UPDATE 1"
+
     async def take(
         self,
         workspace_id: WorkspaceId,

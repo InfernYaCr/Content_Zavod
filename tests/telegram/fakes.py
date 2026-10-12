@@ -19,6 +19,7 @@ class FakePendingInputs:
 
     def __init__(self) -> None:
         self.by_workspace: dict[int, dict[tuple[int, int], PendingInput]] = {WS_A: {}}
+        self.touched = 0
 
     @property
     def rows(self) -> dict[tuple[int, int], PendingInput]:
@@ -63,34 +64,62 @@ class FakePendingInputs:
             return None
         return rows.pop((chat_id, user_id))
 
+    async def touch(self, workspace_id: int, chat_id: int, user_id: int, kind: str) -> bool:
+        pending = self._rows(workspace_id).get((chat_id, user_id))
+        live = pending is not None and pending.kind == kind
+        self.touched += live
+        return live
+
 
 class FakeJobs:
-    """`JobQueue.enqueue`/`get_job` (#113): idempotent by key, ids from 1; `finish` stores an
-    output the way the worker would and returns the notification's `JobResult`."""
+    """`JobQueue.enqueue`/`get_job`/`drop_payload_keys`: idempotent by key, ids from 1, every
+    Job of the Пространство it was enqueued in; `finish` stores an output the way the worker
+    would and returns the notification's `JobResult`."""
 
     def __init__(self) -> None:
         self.jobs: dict[int, JobSnapshot] = {}
-        self.keys: dict[str, int] = {}
+        self.workspaces: dict[int, int] = {}
+        self.keys: dict[tuple[int, str], int] = {}
 
     async def enqueue(
-        self, workspace_id: int, job_type: str, payload: dict[str, Any], idempotency_key: str
+        self,
+        workspace_id: int,
+        job_type: str,
+        payload: dict[str, Any],
+        idempotency_key: str,
+        *,
+        conn: Any = None,
     ) -> int:
-        if idempotency_key in self.keys:
-            return self.keys[idempotency_key]
+        if (workspace_id, idempotency_key) in self.keys:
+            return self.keys[(workspace_id, idempotency_key)]
         job_id = len(self.jobs) + 1
         self.jobs[job_id] = JobSnapshot(job_id, job_type, "queued", payload)
-        self.keys[idempotency_key] = job_id
+        self.workspaces[job_id] = workspace_id
+        self.keys[(workspace_id, idempotency_key)] = job_id
         return job_id
 
     async def get_job(self, workspace_id: int, job_id: int) -> JobSnapshot | None:
+        if self.workspaces.get(job_id) != workspace_id:
+            return None
         return self.jobs.get(job_id)
+
+    async def drop_payload_keys(self, workspace_id: int, job_id: int, keys: list[str]) -> None:
+        job = self.jobs.get(job_id)
+        if job is None or self.workspaces[job_id] != workspace_id or job.status == "queued":
+            return
+        payload = {key: value for key, value in job.payload.items() if key not in keys}
+        self.jobs[job_id] = JobSnapshot(job_id, job.job_type, job.status, payload, job.output)
 
     def finish(self, job_id: int, output: dict[str, Any] | None) -> JobResult:
         job = self.jobs[job_id]
         status = "done" if output is not None else "failed"
         self.jobs[job_id] = JobSnapshot(job_id, job.job_type, status, job.payload, output)
         return JobResult(
-            workspace_id=WS_A, job_id=job_id, job_type=job.job_type, status=status, output=output
+            workspace_id=self.workspaces[job_id],
+            job_id=job_id,
+            job_type=job.job_type,
+            status=status,
+            output=output,
         )
 
 
@@ -104,6 +133,7 @@ class RecordingBot:
         self.photos: list[tuple[int, object, str | None, object]] = []
         self.edited_media: list[tuple[int, int, object, str | None, object]] = []
         self.pinned: list[tuple[int, int]] = []
+        self.markups: list[tuple[int, int, object]] = []
         self.fail_edits = False
         self.fail_pins = False
         self._next_id = 100
@@ -142,7 +172,7 @@ class RecordingBot:
         self.edited.append((chat_id, message_id, text, reply_markup))
 
     async def edit_message_reply_markup(self, chat_id, message_id, reply_markup=None) -> None:
-        pass
+        self.markups.append((chat_id, message_id, reply_markup))
 
     async def delete_message(self, chat_id, message_id) -> None:
         self.deleted.append((chat_id, message_id))

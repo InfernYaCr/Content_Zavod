@@ -85,6 +85,12 @@ from ..telegram.guide import Guide
 from ..telegram.onboarding import Onboarding
 from ..telegram.pending_inputs import PendingInputs
 from ..telegram.start_guard import StartGuard
+from ..telegram.style_samples import (
+    ANALYZE_STYLE_JOB,
+    IncomingSample,
+    SampleDocument,
+    StyleSamples,
+)
 from ..telegram.texts import (
     BOT_DESCRIPTION,
     BOT_SHORT_DESCRIPTION,
@@ -259,6 +265,7 @@ async def answer_text(
     onboarding: Onboarding,
     prompts: InputPrompt,
     gateway: TelegramGateway,
+    style_samples: StyleSamples | None = None,
 ) -> None:
     """A text in the private chat that no command took: a comment for a pending regeneration
     (#4/#9), or an answer to a menu/Настройки/onboarding question (#95) - each looked up in the
@@ -272,6 +279,10 @@ async def answer_text(
         or await settings_screen.handle_reply(workspace, chat_id, user_id, text)
         or await main_menu.handle_reply(workspace, chat_id, user_id, text)
         or await onboarding.handle_reply(workspace, chat_id, user_id, text)
+        or (
+            style_samples is not None
+            and await style_samples.handle_reply(workspace, chat_id, user_id, text)
+        )
     )
     if consumed:
         return
@@ -337,6 +348,7 @@ def _build_router(
     limits: Limits,
     admin: AdminRegistry,
     spend: SpendSource,
+    style_samples: StyleSamples | None = None,
 ) -> Router:
     router = Router()
     admin_ids: Collection[int] = settings.global_admin_telegram_ids
@@ -521,6 +533,7 @@ def _build_router(
         guide=guide,
         limits=limits,
         publisher=publisher,
+        style_samples=style_samples,
     )
 
     @router.callback_query()
@@ -547,12 +560,29 @@ def _build_router(
 
     @router.message()
     async def on_message(message: Message) -> None:
-        """Any other message in a private chat: see `answer_text`. A sticker/photo/voice is
-        not a comment - a wait stays open."""
+        """Any other message in a private chat: an Образец while the Стиль автора is being
+        learned from texts (#134) - a text, a forwarded post or a file - else see
+        `answer_text`. A sticker/photo/voice is not a comment - a wait stays open."""
         workspace = await private_workspace(message)
-        if workspace is None or message.text is None:
+        if workspace is None:
             return
         assert message.from_user is not None
+        if style_samples is not None:
+            document = message.document
+            sample = IncomingSample(
+                text=message.text or message.caption,
+                document=SampleDocument(
+                    document.file_id, document.file_name or "", document.file_size
+                )
+                if document is not None
+                else None,
+            )
+            if await style_samples.handle_message(
+                workspace, message.chat.id, message.from_user.id, sample
+            ):
+                return
+        if message.text is None:
+            return
         await answer_text(
             workspace,
             message.chat.id,
@@ -565,6 +595,7 @@ def _build_router(
             onboarding=onboarding,
             prompts=prompts,
             gateway=gateway,
+            style_samples=style_samples,
         )
 
     return router
@@ -617,6 +648,13 @@ class _CoverDelivery:
 
 
 @dataclass(frozen=True)
+class _StyleDelivery:
+    """A finished `analyze_style` Job (#134): its «⏳» message becomes the profile to confirm."""
+
+    result: JobResult
+
+
+@dataclass(frozen=True)
 class _ErrorDelivery:
     text: str
     job_id: int
@@ -629,6 +667,7 @@ _Delivery = (
     | _ArticleDelivery
     | _PagePublishDelivery
     | _CoverDelivery
+    | _StyleDelivery
     | _ErrorDelivery
 )
 
@@ -767,6 +806,7 @@ async def _deliver(
     chat_id: int,
     delivery: _Delivery,
     publisher: ArticlePagePublisher | None = None,
+    style_samples: StyleSamples | None = None,
 ) -> None:
     """The Telegram half of notification handling (#73): turns an `_apply_result` outcome
     into the actual message in the Workspace owner's chat. A Plan delivery goes through
@@ -791,6 +831,9 @@ async def _deliver(
     elif isinstance(delivery, _CoverDelivery):
         item = await plan.get_item(workspace_id, delivery.plan_item_id)
         await gateway.send_cover(chat_id, delivery.image, delivery.mime_type, item.title)
+    elif isinstance(delivery, _StyleDelivery):
+        if style_samples is not None:
+            await style_samples.deliver(chat_id, delivery.result)
     elif isinstance(delivery, _ErrorDelivery):
         await gateway.send_error_with_retry(chat_id, delivery.text, delivery.job_id)
 
@@ -802,6 +845,7 @@ def _make_notification_handler(
     workspaces: WorkspaceDirectory,
     *,
     publisher: ArticlePagePublisher | None = None,
+    style_samples: StyleSamples | None = None,
 ):
     async def handle(result: JobResult) -> None:
         # The Job's own Пространство and its owner's private chat - never the chat of whoever
@@ -810,7 +854,13 @@ def _make_notification_handler(
         if workspace is None:  # the composite FK on `jobs` makes this unreachable
             logger.error("Job %s has no Workspace %s", result.job_id, result.workspace_id)
             return
-        deliveries = await _apply_result(plan, article, result)
+        deliveries: list[_Delivery]
+        if style_samples is not None and result.job_type == ANALYZE_STYLE_JOB:
+            # The Образцы leave the Job's payload whether or not the owner gets the result.
+            await style_samples.forget_samples(result)
+            deliveries = [_StyleDelivery(result)]
+        else:
+            deliveries = await _apply_result(plan, article, result)
         if workspace.blocked or workspace.owner_telegram_id < 0:
             # Nobody would read it: the owner blocked the bot, or this is the interim team
             # Workspace of a group chat (a Job from before 0013). The result is stored above.
@@ -826,6 +876,7 @@ def _make_notification_handler(
                     workspace.owner_telegram_id,
                     delivery,
                     publisher,
+                    style_samples,
                 )
         except TelegramForbiddenError:
             # The owner blocked the bot: delivered as far as it goes, no 5 retries, and the
@@ -910,6 +961,21 @@ async def main(settings: Settings | None = None) -> None:
         # What a new user sees before /start (#96): the empty-chat card and the profile.
         await bot.set_my_description(BOT_DESCRIPTION)
         await bot.set_my_short_description(BOT_SHORT_DESCRIPTION)
+
+        async def download(file_id: str) -> bytes:
+            buffer = await bot.download(file_id)
+            return buffer.getvalue() if buffer is not None else b""
+
+        style_samples = StyleSamples(
+            queue,
+            settings_service,
+            pending_inputs,
+            prompts,
+            bot_client,
+            download,
+            onboarding_state,
+            limits,
+        )
         onboarding = Onboarding(
             onboarding_state,
             settings_service,
@@ -950,6 +1016,7 @@ async def main(settings: Settings | None = None) -> None:
                 limits=limits,
                 admin=WorkspaceAdmin(pool, settings.trial_limits),
                 spend=GenerationSteps(pool),
+                style_samples=style_samples,
             )
         )
 
@@ -957,7 +1024,7 @@ async def main(settings: Settings | None = None) -> None:
         register_shutdown(stop)
 
         notify_handler = _make_notification_handler(
-            plan, article, gateway, workspaces, publisher=publisher
+            plan, article, gateway, workspaces, publisher=publisher, style_samples=style_samples
         )
         polling_task = asyncio.create_task(dispatcher.start_polling(bot, handle_signals=False))
         notifications_task = asyncio.create_task(

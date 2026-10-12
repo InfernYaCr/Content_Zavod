@@ -269,7 +269,10 @@ async def test_change_persona_opens_the_preset_chooser_in_place(env: Env) -> Non
     assert message_id == SCREEN
     assert "Стиль автора — от чьего лица и каким тоном пишутся Статьи." in text
     assert "Сейчас: Маркетолог-практик" in text
+    # The Владелец's own texts first (#134), then the Пресеты and «Свой стиль».
     assert button_texts(markup) == [
+        ["📄 Пришлю статью"],
+        ["📨 Посты канала"],
         ["✅ Маркетолог-практик"],
         ["Доказательный аналитик"],
         ["Фаундер-оператор"],
@@ -277,7 +280,10 @@ async def test_change_persona_opens_the_preset_chooser_in_place(env: Env) -> Non
         ["✏️ Свой стиль"],
         ["◀ Назад"],
     ]
-    assert button_data(markup)[1:] == [
+    assert button_data(markup) == [
+        ["ya:a:s"],
+        ["ya:p:s"],
+        ["sp:persona:0"],
         ["sp:persona:1"],
         ["sp:persona:2"],
         ["sp:persona:3"],

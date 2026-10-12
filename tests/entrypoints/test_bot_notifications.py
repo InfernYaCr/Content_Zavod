@@ -831,3 +831,58 @@ async def test_a_workspace_nobody_reads_gets_its_result_applied_but_nothing_sent
 
     assert len(plan.added_topics) == 1
     assert gateway.sent_plans == [] and gateway.sent_notices == []
+
+
+class RecordingStyleSamples:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    async def forget_samples(self, result: JobResult) -> None:
+        self.calls.append(("forget", result.job_id))
+
+    async def deliver(self, chat_id: int, result: JobResult) -> None:
+        self.calls.append(("deliver", chat_id))
+
+
+@pytest.mark.parametrize("status", ["done", "failed"])
+async def test_style_analysis_strips_its_samples_then_shows_the_result_to_its_owner(
+    status: str,
+) -> None:
+    """#134: the Образцы leave the Job first; the result goes to the Job's own owner (B: 43)."""
+    style = RecordingStyleSamples()
+    gateway = FakeGateway()
+    handle = _make_notification_handler(
+        FakePlan(),
+        FakeArticle(),
+        gateway,
+        FakeWorkspaces(),
+        style_samples=style,  # type: ignore[arg-type]
+    )
+
+    await handle(
+        JobResult(
+            workspace_id=WS_B,
+            job_id=7,
+            job_type="analyze_style",
+            status=status,  # type: ignore[arg-type]
+            output={"status": "ok"} if status == "done" else None,
+        )
+    )
+
+    assert style.calls == [("forget", 7), ("deliver", 43)]
+    assert gateway.sent_errors_with_retry == []
+
+
+async def test_style_samples_are_stripped_even_when_the_owner_blocked_the_bot() -> None:
+    style = RecordingStyleSamples()
+    handle = _make_notification_handler(
+        FakePlan(),
+        FakeArticle(),
+        FakeGateway(),
+        FakeWorkspaces(blocked=True),
+        style_samples=style,  # type: ignore[arg-type]
+    )
+
+    await handle(JobResult(workspace_id=WS_A, job_id=3, job_type="analyze_style", status="failed"))
+
+    assert style.calls == [("forget", 3)]

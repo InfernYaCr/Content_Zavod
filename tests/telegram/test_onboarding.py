@@ -271,13 +271,15 @@ async def test_persona_step_offers_the_presets_as_buttons(env: Env) -> None:
 
     _, question, markup, _ = env.last
     assert question.startswith("Шаг 3 из 4 · Стиль автора")
-    assert "Выберите стиль кнопкой ниже или опишите свой" in question
+    assert "Как мне понять ваш стиль? Проще всего — по вашим текстам" in question
     # A newcomer sees what each Пресет means, not just its title.
     assert "• Маркетолог-практик — практикующий маркетолог" in question
     data = _data(markup)
     persona = next(setting for setting in SETTING_FIELDS if setting.key == "persona")
+    # The Владелец's own texts first (#134), asked from the wizard ("o"), then the Пресеты.
+    assert data[:2] == ["ya:a:o", "ya:p:o"]
     assert [f"op:persona:{index}" for index in range(len(persona.presets))] == data[
-        : len(persona.presets)
+        2 : 2 + len(persona.presets)
     ]
     assert "ob:persona:c" in data and "ob:audience" in data and "ob:project" in data
     assert "✏️ Свой стиль" in [text for row in button_texts(markup) for text in row]

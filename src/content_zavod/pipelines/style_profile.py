@@ -62,7 +62,8 @@ ANALYZE_STYLE_JOB = "analyze_style"
 MIN_SAMPLE_CHARS = 1500
 LOW_CONFIDENCE_CHARS = 4000
 MAX_SAMPLE_CHARS = 12_000
-MAX_SAMPLES = 20
+MAX_SAMPLES = 60
+"""Texts per Job: forwarded posts arrive one message each."""
 MAX_LINKS = 3
 _CHANNEL_PAGES = 3
 # An ld+json body shorter than this is a teaser, not the article.
@@ -82,6 +83,7 @@ _BREAK_RE = re.compile(r"</p\s*>|<br\s*/?>", re.I)
 # JSON-LD nests @graph in @graph rarely more than twice; deeper is not an article page.
 _LD_MAX_DEPTH = 8
 _ARTICLE_TYPES = ("Article", "BlogPosting")
+_TELEGRAM_HOSTS = frozenset({"t.me", "www.t.me", "telegram.me", "www.telegram.me"})
 # Where a sign-in wall redirects to (Дзен: sso.passport.yandex.ru): the page read is the login
 # form, not the article. Whole host labels and path segments only - `/author/ivan` is no wall.
 _LOGIN_HOST_LABELS = frozenset({"sso", "passport", "login", "auth"})
@@ -274,6 +276,8 @@ async def read_link(fetcher: HtmlFetcher, url: str) -> str | None:
     channel = channel_name(url)
     if channel is not None:
         return await _read_channel(fetcher, channel)
+    if urlsplit(url).hostname in _TELEGRAM_HOSTS:  # an invite or a group: no public posts
+        return None
     found = await fetcher.fetch_html(url)
     if found is None or _is_login(found[0]):
         return None

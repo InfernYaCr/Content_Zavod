@@ -5,7 +5,9 @@ The screen lists every Настройка's current value with what it drives an
 per Настройка, plus the Расписание (not a Настройка - see CONTEXT.md - but the Owner looks for it
 in the same place). «Изменить» asks for the new value with an example through `InputPrompt`
 (the shared typed-input wait, #88); a Настройка with ready-made variants (Пресеты of the Стиль
-автора) first turns the screen into a chooser - one button per variant plus «Свой». A saved value
+автора) first turns the screen into a chooser - one button per variant plus «Свой»; the Стиль
+автора's also offers «📄 Пришлю статью» / «📨 Посты канала», a Профиль стиля learned from the
+Владелец's own texts (#134, `style_samples`), shown as «по вашим текстам». A saved value
 redraws the same screen with «✅ … изменена» on top, so the Owner sees the result where they
 pressed; a rejected one keeps the question open and says what was wrong.
 
@@ -54,6 +56,7 @@ from ..settings import (
     persona_setting_value,
     project_detail_text,
     resolve_persona,
+    style_profile_text,
 )
 from ..workspaces import Workspace, WorkspaceId
 from .callback_codec import Action, SimpleAction, encode_callback_data
@@ -82,6 +85,10 @@ from .texts import (
     SETTINGS_SAVED,
     SETTINGS_TITLE,
     SETTINGS_TOO_LONG,
+    STYLE_ARTICLES_BUTTON,
+    STYLE_CORRECTIONS_LINE,
+    STYLE_FROM_SAMPLES,
+    STYLE_POSTS_BUTTON,
     TIMEZONES,
     WEEKDAYS,
     parse_weekday,
@@ -128,6 +135,41 @@ class SettingField:
     """(button title, value passed to `save`): ready-made variants. Non-empty makes
     «Изменить» open a chooser with these plus `custom_button` instead of asking at once."""
     custom_button: str = "✏️ Свой вариант"
+    from_samples: bool = False
+    """The chooser also offers «📄 Пришлю статью» / «📨 Посты канала» (#134): the value is
+    then a Профиль стиля drawn from the Владелец's own texts (`style_samples`)."""
+
+
+STYLE_ARTICLES = "a"
+STYLE_POSTS = "p"
+"""`style_start` ids: Образцы are articles, or a channel's posts …"""
+STYLE_FROM_SETTINGS = "s"
+STYLE_FROM_WIZARD = "o"
+"""… `:` the screen they were asked from, where «Отмена»/«🎨 Готовый стиль» return."""
+
+
+def build_style_start_rows(origin: str = STYLE_FROM_SETTINGS) -> list[list[InlineKeyboardButton]]:
+    """The chooser's «по вашим текстам» buttons, shared with the onboarding wizard."""
+    return [
+        [_button(STYLE_ARTICLES_BUTTON, "style_start", f"{STYLE_ARTICLES}:{origin}")],
+        [_button(STYLE_POSTS_BUTTON, "style_start", f"{STYLE_POSTS}:{origin}")],
+    ]
+
+
+def _persona_show(current: OwnerSettings) -> str:
+    if current.style_profile is not None:
+        return STYLE_FROM_SAMPLES
+    return persona_display_title(current.persona, current.custom_persona)
+
+
+def _persona_detail(current: OwnerSettings) -> str:
+    profile = current.style_profile
+    if profile is not None:
+        text = f"{STYLE_FROM_SAMPLES}\n{profile.summary or style_profile_text(profile)}"
+        if profile.corrections:
+            text += "\n" + STYLE_CORRECTIONS_LINE.format(corrections=profile.corrections)
+        return text
+    return persona_detail_text(current.persona, current.custom_persona)
 
 
 async def _save_niche(settings: SettingsService, workspace_id: WorkspaceId, text: str) -> str:
@@ -173,8 +215,8 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
         label="Стиль автора",
         change_button="✏️ Изменить стиль автора",
         purpose="от чьего лица и каким тоном пишутся Статьи",
-        show=lambda current: persona_display_title(current.persona, current.custom_persona),
-        detail=lambda current: persona_detail_text(current.persona, current.custom_persona),
+        show=_persona_show,
+        detail=_persona_detail,
         save=_save_persona,
         question=(
             "✏️ Опишите свой стиль: каждое поле с новой строки, обязательна только «Роль».\n\n"
@@ -190,6 +232,7 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
             (persona.title, persona_setting_value(persona.key)) for persona in PERSONAS.values()
         ),
         custom_button="✏️ Свой стиль",
+        from_samples=True,
     ),
     SettingField(
         key="audience",
@@ -308,7 +351,9 @@ def render_chooser_text(setting: SettingField, current: OwnerSettings) -> str:
 
 def build_chooser_keyboard(setting: SettingField, current: OwnerSettings) -> InlineKeyboardMarkup:
     shown = setting.show(current)
-    rows = [
+    # The Владелец's own texts first: the easiest way, if they have any (#134).
+    rows = build_style_start_rows() if setting.from_samples else []
+    rows += [
         [
             _button(
                 f"✅ {title}" if title == shown else title,

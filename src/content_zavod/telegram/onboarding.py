@@ -48,8 +48,10 @@ from .input_prompt import InputPrompt
 from .main_menu import build_open_menu_keyboard
 from .settings_screen import (
     SETTING_FIELDS,
+    STYLE_FROM_WIZARD,
     ScheduleStore,
     SettingField,
+    build_style_start_rows,
     current_line,
 )
 from .texts import (
@@ -433,6 +435,8 @@ class Onboarding:
         rows: list[list[InlineKeyboardButton]] = []
         if chooser:
             shown = setting.show(current)
+            if setting.from_samples:  # the Владелец's own texts first (#134)
+                rows += build_style_start_rows(STYLE_FROM_WIZARD)
             rows += [
                 [
                     _button(

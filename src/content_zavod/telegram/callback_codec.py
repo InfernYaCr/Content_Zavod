@@ -4,8 +4,9 @@ Payload is a union of six types: five immutable dataclasses for the composite
 Действия that pack more than one field into their id (`Page`, `HistoryWeek`,
 `HistoryVersions`, `HistoryVersion`, `ExportArticle`), plus `SimpleAction` for
 the remaining Действия that carry a single opaque id (the Хаб's six, #91, the
-Главное меню and Экран Настроек ones, #95, the onboarding wizard's, #96, and the
-Инструкция's, #114, pack whatever they need into that id).
+Главное меню and Экран Настроек ones, #95, the onboarding wizard's, #96, the
+Инструкция's, #114, and the Стиль автора по образцам's, #134, pack whatever they need into
+that id).
 
 There are no Roles any more (ADR-0015): whoever presses a button acts in their own
 Пространство, and the callback dispatcher resolves every id within it. The codes of removed
@@ -72,6 +73,11 @@ Action = Literal[
     "onboarding_launch",
     "guide",
     "guide_slide",
+    "style_start",
+    "style_done",
+    "style_presets",
+    "style_ok",
+    "style_fix",
 ]
 
 _ACTION_CODES: dict[Action, str] = {
@@ -122,6 +128,12 @@ _ACTION_CODES: dict[Action, str] = {
     # The Инструкция (#114): "g…".
     "guide": "gd",
     "guide_slide": "gs",
+    # Стиль автора по образцам (#134): "y…".
+    "style_start": "ya",
+    "style_done": "yd",
+    "style_presets": "yp",
+    "style_ok": "yk",
+    "style_fix": "yf",
 }
 _CODE_ACTIONS: dict[str, Action] = {code: action for action, code in _ACTION_CODES.items()}
 
