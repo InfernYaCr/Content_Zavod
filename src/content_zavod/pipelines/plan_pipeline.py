@@ -38,7 +38,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -106,7 +106,10 @@ _TOP_UP_KINDS = (
     frozenset({"question"}),
     frozenset({"growing", "seasonal"}),
     frozenset({"evergreen"}),
+    frozenset({"date"}),
 )
+# The last resort when even candidates run out: evergreen Темы from the Ниша itself.
+_NICHE_TEMPLATES = ("{niche}: с чего начать", "{niche}: частые ошибки", "{niche}: как выбрать")
 
 EVERGREEN_WHY = "💡 Вечная тема для ваших читателей"
 
@@ -265,7 +268,7 @@ def make_generate_plan_handler(
             picked, near = await _edit_plan(
                 text_generator, recorder, owner.niche, owner.audience, candidates, history
             )
-            picked = _top_up(picked, near, candidates, history)
+            picked = _top_up(picked, near, candidates, history, owner.niche)
             if niche_map.phrases:
                 used = [c.map_phrase for _, c in picked if c is not None and c.map_phrase]
                 checks = [p.phrase for p in checked if (p.phrase, week) in dynamics_cache]
@@ -304,8 +307,9 @@ async def _current_map(
 ) -> NicheMap:
     """The Пространство's Map, rebuilt and stored when due. A failed rebuild keeps a stored Map
     of the same Ниша, or goes on with none - news, dates and evergreen Темы remain. A rebuild
-    the model answered without a single query is stored empty: `needs_rebuild` retries it a
-    week later instead of paying for it on every Plan."""
+    the model answered without a single query keeps a stale Map of the same Ниша and
+    Аудитория (dated today), or else is stored empty: `needs_rebuild` retries that a week later
+    instead of paying for it on every Plan."""
     audience = owner.audience or ""
     stored = load_niche_map(await store.get(workspace_id, NICHE_MAP_KEY))
     if stored is not None and not needs_rebuild(stored, owner.niche, audience, today):
@@ -319,8 +323,15 @@ async def _current_map(
         if stored is not None and stored.niche == owner.niche:
             return stored
         return NicheMap(owner.niche, audience, today.isoformat(), ())
+    if not fresh.phrases and stored is not None and not _changed(stored, owner.niche, audience):
+        # A stale Map of the same Ниша beats an empty one: it is kept for another month.
+        fresh = replace(stored, built=today.isoformat())
     await store.set(workspace_id, NICHE_MAP_KEY, fresh.dump())
     return fresh
+
+
+def _changed(niche_map: NicheMap, niche: str, audience: str) -> bool:
+    return niche_map.niche != niche or niche_map.audience != audience
 
 
 async def _trend_candidates(
@@ -508,11 +519,12 @@ def _top_up(
     near: list[TopicDraft],
     candidates: Sequence[_Candidate],
     history: Sequence[str],
+    niche: str,
 ) -> list[_Picked]:
     """Exactly `TOPICS_PER_PLAN` Темы with no more model calls (#128: a Plan always has 3):
     the editor's own Темы, then its near repeats, then candidates written as Темы themselves -
-    a question, a growing or seasonal query, a plain one - each skipped if it repeats one
-    already there. Fails only when the editor gave nothing and there is no candidate."""
+    a question, a growing or seasonal query, a plain one, a date - then evergreen templates on
+    the Ниша; each skipped if it repeats one already there. Fails only with no Ниша at all."""
     chosen = list(picked)
     used = {id(c) for _, c in chosen if c is not None}
 
@@ -534,8 +546,13 @@ def _top_up(
             used.add(id(candidate))
             draft = TopicDraft(title=title, keywords=[candidate.phrase])
             chosen.append((draft, candidate))
+    subject = niche.strip()[:1].upper() + niche.strip()[1:]
+    for template in _NICHE_TEMPLATES if subject else ():
+        title = template.format(niche=subject)
+        if len(chosen) < TOPICS_PER_PLAN and not repeats(title, [*history, *titles()]):
+            chosen.append((TopicDraft(title=title, keywords=[niche.strip()]), None))
     if not chosen:
-        raise RuntimeError("Модель не предложила ни одной новой Темы, и кандидатов нет")
+        raise RuntimeError("Модель не предложила ни одной новой Темы, и Ниша пуста")
     if len(chosen) < TOPICS_PER_PLAN:
         logger.warning("Plan has %d of %d Темы", len(chosen), TOPICS_PER_PLAN)
     return chosen

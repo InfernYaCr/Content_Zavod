@@ -12,6 +12,7 @@ from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.job_queue import JobPartialFailure
 from content_zavod.pipelines.niche_map import NICHE_MAP_KEY, MapPhrase, NicheMap, load_niche_map
 from content_zavod.pipelines.plan_pipeline import (
+    _top_up,
     make_generate_plan_handler,
     make_regenerate_topic_handler,
     parse_editor_answer,
@@ -390,15 +391,50 @@ async def test_a_source_used_twice_counts_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_without_any_candidate_an_empty_answer_fails_the_job() -> None:
-    empty_map = NicheMap("кофейни", "", "2026-06-28", ())
+async def test_news_and_dates_only_and_a_garbage_answer_still_give_three() -> None:
+    """Empty Map, nothing parseable: the date, then evergreen Темы from the Ниша itself."""
+    empty_map = NicheMap("кофейни", "", "2026-10-18", ())
+    news = FakeNews([SearchHit("https://rbc.ru/news/1", "Новость", "")])
     llm = FakeLLM(editor_answers=["нет"] * 3)
-    handler = _handler(
-        FakeWordstat(), llm, _store(niche_map=empty_map), now=datetime(2026, 7, 1, tzinfo=UTC)
+
+    output = await _handler(FakeWordstat(), llm, _store(niche_map=empty_map), news)(
+        WS_A, {"week_label": "w"}
     )
 
-    with pytest.raises(JobPartialFailure):
-        await handler(WS_A, {"week_label": "w"})
+    assert [(t["title"], t["why"]) for t in output["topics"]] == [
+        ("4 ноября — День народного единства", "🗓 Скоро: 4 ноября — День народного единства"),
+        ("Кофейни: с чего начать", "💡 Вечная тема для ваших читателей"),
+        ("Кофейни: частые ошибки", "💡 Вечная тема для ваших читателей"),
+    ]
+    assert output["topics"][1]["keywords"] == ["кофейни"]
+
+
+@pytest.mark.asyncio
+async def test_a_one_query_map_and_a_garbage_answer_still_give_three() -> None:
+    one = NicheMap("кофейни", "", "2026-10-18", (MapPhrase("кофе на вынос", 9000, "llm"),))
+    llm = FakeLLM(editor_answers=["нет"] * 3)
+
+    async def history(workspace_id: int, since: datetime) -> list[str]:
+        return ["Кофейни: с чего начать"]
+
+    output = await _handler(
+        FakeWordstat(dynamics={"кофе на вынос": flat()}),
+        llm,
+        _store(niche_map=one),
+        history=history,
+        now=datetime(2026, 7, 6, 12, tzinfo=UTC),
+    )(WS_A, {"week_label": "w"})
+
+    assert [t["title"] for t in output["topics"]] == [
+        "Кофе на вынос",
+        "Кофейни: частые ошибки",
+        "Кофейни: как выбрать",
+    ]
+
+
+def test_only_an_empty_niche_with_nothing_else_fails() -> None:
+    with pytest.raises(RuntimeError):
+        _top_up([], [], [], [], "")
 
 
 @pytest.mark.asyncio
@@ -425,6 +461,22 @@ async def test_a_map_answer_with_no_queries_is_stored_empty_and_not_rebuilt_ever
 
     stored = load_niche_map(store.values[WS_A][NICHE_MAP_KEY])
     assert stored is not None and stored.phrases == () and stored.built == "2026-10-19"
+    assert sum("Карту Ниши" in call[0].text for call in llm.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_map_answer_with_no_queries_keeps_a_stale_map_of_the_same_niche() -> None:
+    stale = NicheMap("кофейни", "", "2026-09-01", STORED_MAP.phrases)
+    llm = FakeLLM("Конечно! Ничем не могу помочь.", [THREE_EVERGREEN, THREE_EVERGREEN])
+    store = _store(niche_map=stale)
+    handler = _handler(FakeWordstat(), llm, store)
+
+    await handler(WS_A, {"week_label": "w"})
+    await handler(WS_A, {"week_label": "w"})
+
+    stored = load_niche_map(store.values[WS_A][NICHE_MAP_KEY])
+    assert stored.built == "2026-10-19"
+    assert [p.phrase for p in stored.phrases] == [p.phrase for p in STORED_MAP.phrases]
     assert sum("Карту Ниши" in call[0].text for call in llm.calls) == 1
 
 
