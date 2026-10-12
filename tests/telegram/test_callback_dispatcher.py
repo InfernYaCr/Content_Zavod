@@ -48,10 +48,10 @@ from content_zavod.telegram.main_menu import MainMenu
 from content_zavod.telegram.onboarding import ONBOARDING_INPUT_KIND, Onboarding
 from content_zavod.telegram.pending_inputs import PendingInput
 from content_zavod.telegram.settings_screen import SETTING_INPUT_KIND, SettingsScreen
-from content_zavod.workspaces import Workspace
+from content_zavod.workspaces import GenerationBusy, TrialLimitExhausted, Usage, Workspace
 from tests.tenancy import WS_A
 
-from .fakes import FakePendingInputs
+from .fakes import FakeLimits, FakePendingInputs
 
 USER = 1  # a private chat's id is its user's id
 WORKSPACE = Workspace(WS_A, USER, None, "Europe/Moscow", None, None)
@@ -144,6 +144,7 @@ class FakePlan:
         )
         self.message_ref: PlanMessageRef | None = None
         self.requested_weeks: list[str] = []
+        self.approved: list[PlanId] = []
         self._view = PlanView(
             id=PlanId("plan-1"),
             week_label="2026-W33",
@@ -163,7 +164,7 @@ class FakePlan:
         return None
 
     async def request_new(
-        self, workspace_id, week_label: str, *, generation_id: str | None = None
+        self, workspace_id, week_label: str, *, generation_id: str | None = None, conn=None
     ) -> int:
         self.requested_weeks.append(week_label)
         return 1
@@ -183,7 +184,7 @@ class FakePlan:
         return [self._summary], 1
 
     async def request_cover(
-        self, workspace_id, plan_item_id: PlanItemId, *, manual: bool = False
+        self, workspace_id, plan_item_id: PlanItemId, *, manual: bool = False, conn=None
     ) -> None:
         (self.manual_cover_requests if manual else self.cover_requests).append(plan_item_id)
 
@@ -199,10 +200,16 @@ class FakePlan:
     async def get_cover(self, workspace_id, plan_item_id: PlanItemId) -> PlanItemCoverView | None:
         return self.cover
 
-    async def approved_items(self, workspace_id, plan_id: PlanId) -> list[PlanItemDetail]:
+    async def approve_all(self, workspace_id, plan_id: PlanId, *, conn=None) -> bool:
+        self.approved.append(plan_id)
+        return True
+
+    async def approved_items(
+        self, workspace_id, plan_id: PlanId, *, conn=None
+    ) -> list[PlanItemDetail]:
         return self._approved_items
 
-    async def request_replacement(self, workspace_id, plan_id: PlanId) -> None:
+    async def request_replacement(self, workspace_id, plan_id: PlanId, *, conn=None) -> None:
         self.replacement_requests.append(plan_id)
 
 
@@ -235,7 +242,7 @@ class FakeArticle:
         return self.telegraph_path
 
     async def request_generation(
-        self, workspace_id, plan_id, plan_item_id, title, summary, keywords, platform
+        self, workspace_id, plan_id, plan_item_id, title, summary, keywords, platform, *, conn=None
     ) -> str:
         self.requested_generations.append(
             (plan_id, plan_item_id, title, summary, keywords, platform)
@@ -268,7 +275,6 @@ class FakePlanOps:
     def __init__(self) -> None:
         self.deleted: list[PlanItemId] = []
         self.regenerated: list[tuple[PlanItemId, str | None]] = []
-        self.approved: list[PlanItemId] = []
 
     async def delete_item(self, workspace_id, plan_item_id: PlanItemId) -> None:
         self.deleted.append(plan_item_id)
@@ -277,9 +283,6 @@ class FakePlanOps:
         self, workspace_id, plan_item_id: PlanItemId, comment: str | None
     ) -> None:
         self.regenerated.append((plan_item_id, comment))
-
-    async def approve_all(self, workspace_id, plan_item_id: PlanItemId) -> None:
-        self.approved.append(plan_item_id)
 
 
 class FakePrompt:
@@ -364,10 +367,10 @@ class FakeQueue:
         job_type = self.job_types.get(job_id)
         return None if job_type is None else JobSnapshot(job_id, job_type, "failed", {})
 
-    async def get_status(self, workspace_id, job_id: int) -> str:
+    async def get_status(self, workspace_id, job_id: int, *, conn=None) -> str:
         return "queued"
 
-    async def retry(self, workspace_id, job_id: int) -> bool:
+    async def retry(self, workspace_id, job_id: int, *, conn=None) -> bool:
         self.retried.append(job_id)
         return True
 
@@ -399,6 +402,7 @@ class Fixtures:
         self.schedule = FakeSchedule()
         self.workspace = FakeWorkspaces()
         self.queue = FakeQueue()
+        self.limits = FakeLimits()
         self.prompts = InputPrompt(self.bot, self.pending_inputs)
         self.settings_screen = SettingsScreen(
             SettingsService(self.owner_settings),
@@ -416,6 +420,7 @@ class Fixtures:
             self.prompts,
             settings=SettingsService(self.owner_settings),
             onboarding=OnboardingState(self.owner_settings),
+            limits=self.limits,
         )
         self.onboarding = Onboarding(
             OnboardingState(self.owner_settings),
@@ -440,6 +445,7 @@ class Fixtures:
             self.prompts,
             self.onboarding,
             guide=self.guide,
+            limits=self.limits,
         )
 
 
@@ -712,7 +718,7 @@ async def test_approve_all_approves_and_fans_out_generation(f: Fixtures) -> None
     answer = await dispatch(f, SimpleAction("approve_all", "plan-1"))
 
     assert answer.calls == [(None, None)]
-    assert f.plan_ops.approved == [PlanItemId("plan-1")]
+    assert f.plan.approved == [PlanId("plan-1")]
     assert f.plan.cover_requests == [PlanItemId("item-1")]
     assert len(f.article.requested_generations) > 0
 
@@ -1106,3 +1112,125 @@ async def test_to_menu_from_the_carousel_replaces_it_with_the_menu(f: Fixtures) 
     assert f.bot.deleted_messages == [(1, 2)]
     ((chat_id, text, _),) = f.bot.sent_messages
     assert chat_id == USER and text.startswith("🏠 Главное меню")
+
+
+# --- the Лимит (ADR-0015): a refusal is the callback's alert, and nothing is enqueued ---
+
+BUSY = "⏳ Дождитесь окончания текущей генерации — потом можно продолжить."
+
+
+async def test_approve_all_asks_the_limit_for_every_statya_at_once(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("approve_all", "plan-1"))
+
+    # One Тема × two Площадки, and its cover.
+    assert f.limits.required == [("generate_article", 2), ("generate_cover", 1)]
+
+
+async def test_approve_all_short_of_the_limit_alerts_the_remainder_and_starts_nothing(
+    f: Fixtures,
+) -> None:
+    usage = Usage(plans_used=1, plan_limit=1, articles_used=4, article_limit=8)
+    f.limits.short = TrialLimitExhausted(usage, plans=0, articles=6, contact=None)
+
+    answer = await dispatch(f, SimpleAction("approve_all", "plan-1"))
+
+    [(text, alert)] = answer.calls
+    assert alert is True
+    assert "хватит ещё на 4 Статьи" in text and "запустит 6" in text and "🗑" in text
+    assert f.article.requested_generations == [] and f.plan.cover_requests == []
+    assert f.bot.edited_messages == []
+
+
+async def test_approve_all_with_less_than_one_tema_left_says_the_limit_is_nearly_used(
+    f: Fixtures,
+) -> None:
+    """Removing Темы can't help when not even one Тема's Статьи fit."""
+    usage = Usage(plans_used=1, plan_limit=1, articles_used=7, article_limit=8)
+    f.limits.short = TrialLimitExhausted(usage, plans=0, articles=6, contact="@owner")
+
+    answer = await dispatch(f, SimpleAction("approve_all", "plan-1"))
+
+    [(text, _)] = answer.calls
+    assert "почти исчерпан" in text and "1 Статья" in text and "@owner" in text
+    assert "🗑" not in text
+
+
+async def test_hub_retry_short_of_the_limit_says_so_without_asking_to_remove_temy(
+    f: Fixtures,
+) -> None:
+    usage = Usage(plans_used=1, plan_limit=1, articles_used=7, article_limit=8)
+    f.limits.short = TrialLimitExhausted(usage, plans=0, articles=3, contact="@owner")
+
+    answer = await dispatch(f, SimpleAction("hub_retry", "plan-1"))
+
+    [(text, alert)] = answer.calls
+    assert alert is True
+    assert "хватит ещё на 1 Статью, а нужно 3" in text and "@owner" in text
+    assert "🗑" not in text and "утвердите" not in text
+    assert f.queue.retried == []
+
+
+async def test_approve_all_of_an_approved_plan_just_redraws_the_hub(f: Fixtures) -> None:
+    """A repeated press: nothing is counted or enqueued again, and no «Дождитесь»."""
+    f.plan._summary = PlanSummary(id=PlanId("plan-1"), week_label="2026-W33", status="approved")
+    f.limits.refusal = GenerationBusy()
+
+    answer = await dispatch(f, SimpleAction("approve_all", "plan-1"))
+
+    assert answer.calls == [(None, None)]
+    assert f.plan.approved == [] and f.article.requested_generations == []
+    assert len(f.bot.edited_messages) == 1
+
+
+async def test_refine_while_a_generation_runs_is_refused_before_asking_for_a_comment(
+    f: Fixtures,
+) -> None:
+    f.limits.refusal = GenerationBusy()
+
+    answer = await dispatch(f, SimpleAction("regenerate_article", "article-1"))
+
+    assert answer.calls == [(BUSY, True)]
+    assert f.article_prompt.prompted == []
+    assert f.limits.prechecked == ["regenerate_article"]
+
+
+async def test_regenerate_topic_while_a_generation_runs_is_refused(f: Fixtures) -> None:
+    f.limits.refusal = GenerationBusy()
+
+    answer = await dispatch(f, SimpleAction("regenerate", "item-1"))
+
+    assert answer.calls == [(BUSY, True)]
+    assert f.plan_prompt.prompted == []
+
+
+async def test_retry_of_a_statya_reserves_one_statya(f: Fixtures) -> None:
+    f.queue.job_types[7] = "regenerate_article"
+
+    await dispatch(f, SimpleAction("retry", "7"))
+
+    assert f.limits.reserved == [("regenerate_article", 1)]
+
+
+async def test_retry_refused_requeues_nothing(f: Fixtures) -> None:
+    f.queue.job_types[7] = "generate_article"
+    f.limits.refusal = GenerationBusy()
+
+    answer = await dispatch(f, SimpleAction("retry", "7"))
+
+    assert answer.calls == [(BUSY, True)]
+    assert f.queue.retried == []
+
+
+async def test_hub_retry_reserves_one_statya_per_failed_statya(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("hub_retry", "plan-1"))
+
+    assert f.limits.required == [("generate_cover", 1), ("generate_article", 1)]
+
+
+async def test_a_cover_refused_requests_nothing(f: Fixtures) -> None:
+    f.limits.refusal = GenerationBusy()
+
+    answer = await dispatch(f, SimpleAction("request_cover", "item-1"))
+
+    assert answer.calls == [(BUSY, True)]
+    assert f.plan.manual_cover_requests == []

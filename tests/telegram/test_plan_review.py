@@ -11,7 +11,6 @@ class FakeOps:
     def __init__(self) -> None:
         self.deleted: list[PlanItemId] = []
         self.regenerated: list[tuple[PlanItemId, str | None]] = []
-        self.approved: list[PlanItemId] = []
 
     async def delete_item(self, workspace_id: int, plan_item_id: PlanItemId) -> None:
         assert workspace_id == WS_A
@@ -22,10 +21,6 @@ class FakeOps:
     ) -> None:
         assert workspace_id == WS_A
         self.regenerated.append((plan_item_id, comment))
-
-    async def approve_all(self, workspace_id: int, plan_id: str) -> None:
-        assert workspace_id == WS_A
-        self.approved.append(PlanItemId(plan_id))
 
 
 class FakePrompt:
@@ -67,13 +62,6 @@ async def test_delete_calls_ops_directly(review: PlanReview, ops: FakeOps) -> No
 
 
 @pytest.mark.asyncio
-async def test_approve_all_calls_ops_directly(review: PlanReview, ops: FakeOps) -> None:
-    await review.handle_action(WS_A, 1, 10, PlanItemId("plan-1"), "approve_all")
-
-    assert ops.approved == [PlanItemId("plan-1")]
-
-
-@pytest.mark.asyncio
 async def test_regenerate_action_delegates_to_the_comment_gated_flow(
     review: PlanReview, ops: FakeOps, prompt: FakePrompt
 ) -> None:
@@ -102,16 +90,17 @@ async def test_delete_clears_any_pending_wait_for_same_user(
 
 
 @pytest.mark.asyncio
-async def test_approve_all_clears_any_pending_wait_for_same_user(
+async def test_cancel_comment_without_a_tema_clears_any_pending_wait_for_same_user(
     review: PlanReview, ops: FakeOps
 ) -> None:
+    """«Утвердить всё» leaves no Тема to comment on (the dispatcher calls this after it)."""
     await review.handle_action(WS_A, 1, 10, PlanItemId("item-1"), "regenerate")
 
-    await review.handle_action(WS_A, 1, 10, PlanItemId("plan-1"), "approve_all")
+    assert await review.cancel_comment(WS_A, 1, 10) is True
 
     consumed = await review.handle_comment_reply(WS_A, 1, 10, "too late")
     assert consumed is False
-    assert ops.approved == [PlanItemId("plan-1")]
+    assert ops.regenerated == []
 
 
 @pytest.mark.asyncio

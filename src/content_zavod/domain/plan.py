@@ -40,6 +40,11 @@ generation rather than counted, so no notification replay or retry can skew it.
 
 Every method takes the Пространство's `workspace_id` first (ADR-0015) and only sees that
 Workspace's rows: an id from another Workspace is "not found", exactly like a missing one.
+
+The methods that enqueue a generation take an optional `conn`: the transaction in which the
+caller's `Limits.reserve` checked the Лимит (ADR-0015, «Лимит»). They don't check it
+themselves - the caller knows what one press asks for (one Plan, or every Статья of
+«Утвердить всё» at once).
 """
 
 from __future__ import annotations
@@ -54,6 +59,8 @@ import asyncpg
 
 from ..job_queue import JobId, JobQueue
 from ..workspaces import WorkspaceId
+from ..workspaces.limits import charge
+from ._transaction import transaction
 from .errors import PlanItemNotEditable, PlanItemNotFound, PlanNotFound
 from .types import (
     PLATFORMS,
@@ -369,7 +376,12 @@ class Plan:
         return PlanId(row["plan_id"])
 
     async def add_topics(
-        self, workspace_id: WorkspaceId, week_label: str, topics: Sequence[TopicDraft]
+        self,
+        workspace_id: WorkspaceId,
+        week_label: str,
+        topics: Sequence[TopicDraft],
+        *,
+        source_job_id: JobId | None = None,
     ) -> PlanId:
         """Append Topics to the week's draft Plan, creating it if none exists yet.
 
@@ -389,6 +401,10 @@ class Plan:
         the same topics it already appended are recognised and skipped - and
         it does so without the old `dedupe_by_week` bail-out that would have
         also swallowed a second caller's genuinely different Topics.
+
+        `source_job_id` - the `generate_plan` Job whose result this is: its Plan is charged
+        against the Лимит in this same transaction, once per Job (ADR-0015). A /topic proposal
+        has none and charges nothing.
         """
         async with self._pool.acquire() as conn:
             async with conn.transaction():
@@ -442,13 +458,20 @@ class Plan:
                         topic.why,
                     )
                     next_position += 1
+                if source_job_id is not None:
+                    await charge(conn, workspace_id, source_job_id, "plan")
         return PlanId(plan_id)
 
     async def request_new(
-        self, workspace_id: WorkspaceId, week_label: str, *, generation_id: str | None = None
+        self,
+        workspace_id: WorkspaceId,
+        week_label: str,
+        *,
+        generation_id: str | None = None,
+        conn: asyncpg.Connection | None = None,
     ) -> JobId:
         payload = {"week_label": week_label}
-        idempotency_key = f"generate_plan:{week_label}"
+        idempotency_key = plan_job_key(week_label)
         if generation_id is not None:
             payload["generation_id"] = generation_id
             idempotency_key = f"{idempotency_key}:{generation_id}"
@@ -457,9 +480,12 @@ class Plan:
             "generate_plan",
             payload,
             idempotency_key=idempotency_key,
+            conn=conn,
         )
 
-    async def request_replacement(self, workspace_id: WorkspaceId, plan_id: PlanId) -> JobId:
+    async def request_replacement(
+        self, workspace_id: WorkspaceId, plan_id: PlanId, *, conn: asyncpg.Connection | None = None
+    ) -> JobId:
         """Enqueue a distinct replacement before retiring its source Plan.
 
         Holding the source row lock until it is archived also makes a very fast
@@ -467,36 +493,35 @@ class Plan:
         result to the Plan being retired. If enqueue raises, the transaction
         exits without changing the source Plan.
         """
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                row = await conn.fetchrow(
-                    "SELECT week_label, status FROM plans WHERE id = $1 AND workspace_id = $2 "
-                    "FOR UPDATE",
+        async with transaction(self._pool, conn) as tx:
+            row = await tx.fetchrow(
+                "SELECT week_label, status FROM plans WHERE id = $1 AND workspace_id = $2 "
+                "FOR UPDATE",
+                plan_id,
+                workspace_id,
+            )
+            if row is None:
+                raise PlanNotFound(plan_id)
+            job_id = await self.request_new(
+                workspace_id, row["week_label"], generation_id=f"replace:{plan_id}", conn=tx
+            )
+            if row["status"] != "archived":
+                await tx.execute(
+                    "UPDATE plans SET status = 'archived', updated_at = now() "
+                    "WHERE id = $1 AND workspace_id = $2",
                     plan_id,
                     workspace_id,
                 )
-                if row is None:
-                    raise PlanNotFound(plan_id)
-                job_id = await self.request_new(
-                    workspace_id, row["week_label"], generation_id=f"replace:{plan_id}"
+                await tx.execute(
+                    """
+                    UPDATE plan_items SET status = 'archived', updated_at = now()
+                    WHERE plan_id = $1 AND workspace_id = $2
+                      AND status IN ('pending_review', 'approved')
+                    """,
+                    plan_id,
+                    workspace_id,
                 )
-                if row["status"] != "archived":
-                    await conn.execute(
-                        "UPDATE plans SET status = 'archived', updated_at = now() "
-                        "WHERE id = $1 AND workspace_id = $2",
-                        plan_id,
-                        workspace_id,
-                    )
-                    await conn.execute(
-                        """
-                        UPDATE plan_items SET status = 'archived', updated_at = now()
-                        WHERE plan_id = $1 AND workspace_id = $2
-                          AND status IN ('pending_review', 'approved')
-                        """,
-                        plan_id,
-                        workspace_id,
-                    )
-                return job_id
+            return job_id
 
     async def delete_item(self, workspace_id: WorkspaceId, plan_item_id: PlanItemId) -> None:
         status = await self._item_status(workspace_id, plan_item_id)
@@ -512,9 +537,14 @@ class Plan:
         )
 
     async def regenerate_item(
-        self, workspace_id: WorkspaceId, plan_item_id: PlanItemId, comment: str | None
+        self,
+        workspace_id: WorkspaceId,
+        plan_item_id: PlanItemId,
+        comment: str | None,
+        *,
+        conn: asyncpg.Connection | None = None,
     ) -> None:
-        row = await self._pool.fetchrow(
+        row = await (conn or self._pool).fetchrow(
             "SELECT status, updated_at FROM plan_items WHERE id = $1 AND workspace_id = $2",
             plan_item_id,
             workspace_id,
@@ -530,41 +560,46 @@ class Plan:
             # Keyed on the item's current updated_at so a retried callback (same item,
             # unchanged since) collapses into the same job instead of enqueuing a duplicate.
             idempotency_key=f"regenerate_topic:{plan_item_id}:{row['updated_at'].isoformat()}",
+            conn=conn,
         )
 
-    async def approve_all(self, workspace_id: WorkspaceId, plan_id: PlanId) -> None:
-        plan_row = await self._pool.fetchrow(
-            "SELECT status FROM plans WHERE id = $1 AND workspace_id = $2", plan_id, workspace_id
-        )
-        if plan_row is None:
-            raise PlanNotFound(plan_id)
-        if plan_row["status"] == "approved":
-            return
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    "UPDATE plans SET status = 'approved', updated_at = now() "
-                    "WHERE id = $1 AND workspace_id = $2",
-                    plan_id,
-                    workspace_id,
-                )
-                await conn.execute(
-                    """
-                    UPDATE plan_items SET status = 'approved', updated_at = now()
-                    WHERE plan_id = $1 AND workspace_id = $2 AND status = 'pending_review'
-                    """,
-                    plan_id,
-                    workspace_id,
-                )
+    async def approve_all(
+        self, workspace_id: WorkspaceId, plan_id: PlanId, *, conn: asyncpg.Connection | None = None
+    ) -> bool:
+        """Whether this call approved the Plan: `False` for one already approved (a repeated
+        press) - its Статьи were started together with the approval."""
+        async with transaction(self._pool, conn) as tx:
+            status = await tx.fetchval(
+                "SELECT status FROM plans WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
+                plan_id,
+                workspace_id,
+            )
+            if status is None:
+                raise PlanNotFound(plan_id)
+            if status == "approved":
+                return False
+            await tx.execute(
+                "UPDATE plans SET status = 'approved', updated_at = now() "
+                "WHERE id = $1 AND workspace_id = $2",
+                plan_id,
+                workspace_id,
+            )
+            await tx.execute(
+                """
+                UPDATE plan_items SET status = 'approved', updated_at = now()
+                WHERE plan_id = $1 AND workspace_id = $2 AND status = 'pending_review'
+                """,
+                plan_id,
+                workspace_id,
+            )
+            return True
 
     async def approved_items(
-        self, workspace_id: WorkspaceId, plan_id: PlanId
+        self, workspace_id: WorkspaceId, plan_id: PlanId, *, conn: asyncpg.Connection | None = None
     ) -> list[PlanItemDetail]:
         """The Plan's currently-approved items, full detail - what `approve_all`'s Article/Job
-        fan-out iterates over (#14). Safe to call repeatedly: it reflects current DB state rather
-        than "items approved by this call", so replaying the fan-out after `approve_all` itself
-        already returned early (already-approved Plan) still finds every approved item."""
-        rows = await self._pool.fetch(
+        fan-out iterates over (#14), in the approving transaction (`conn`)."""
+        rows = await (conn or self._pool).fetch(
             "SELECT id, title, summary, keywords FROM plan_items "
             "WHERE plan_id = $1 AND workspace_id = $2 AND status = 'approved'",
             plan_id,
@@ -663,7 +698,12 @@ class Plan:
         raise PlanItemNotEditable(plan_item_id, row["status"])
 
     async def request_cover(
-        self, workspace_id: WorkspaceId, plan_item_id: PlanItemId, *, manual: bool = False
+        self,
+        workspace_id: WorkspaceId,
+        plan_item_id: PlanItemId,
+        *,
+        manual: bool = False,
+        conn: asyncpg.Connection | None = None,
     ) -> None:
         """`manual` marks a re-request someone made by hand (the Article card's «🖼 Обложка»):
         its result is also sent to the chat as a photo, where the person who asked is looking,
@@ -671,7 +711,8 @@ class Plan:
         A no-op while covers are switched off (#123)."""
         if not self._covers_enabled:
             return
-        row = await self._pool.fetchrow(
+        db = conn or self._pool
+        row = await db.fetchrow(
             "SELECT title, summary, updated_at FROM plan_items WHERE id = $1 AND workspace_id = $2",
             plan_item_id,
             workspace_id,
@@ -692,8 +733,9 @@ class Plan:
             # Keyed on the item's current updated_at so a retried callback (same item,
             # unchanged since) collapses into the same job instead of enqueuing a duplicate.
             idempotency_key=f"generate_cover:{plan_item_id}:{row['updated_at'].isoformat()}",
+            conn=conn,
         )
-        await self._pool.execute(
+        await db.execute(
             "UPDATE plan_items SET active_cover_job_id = $2 WHERE id = $1 AND workspace_id = $3",
             plan_item_id,
             job_id,
@@ -803,6 +845,12 @@ def _cover_cell_state(has_cover: bool, job_status: str | None) -> HubCellState:
     if job_status == "done":
         return "pending"
     return "failed"
+
+
+def plan_job_key(week_label: str) -> str:
+    """The idempotency key of the week's `generate_plan` Job - unique per Workspace, so the
+    Расписание tick and «🪄 Составить План» collapse into one Job."""
+    return f"generate_plan:{week_label}"
 
 
 def _keywords_json(keywords: Sequence[str]) -> str:

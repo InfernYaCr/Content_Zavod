@@ -13,17 +13,21 @@ private chat of the Workspace that owns the Job (ADR-0015) - there is no shared 
 configure. `GLOBAL_ADMIN_TELEGRAM_IDS` (comma-separated telegram ids, may be empty) names the
 Глобальные администраторы: not a Role, just this list. `SIGNUP_DAILY_LIMIT` (default 50) caps
 how many new Пространства `/start` creates in 24 hours; past it the admins are told once a day.
+The trial Лимит of a Пространство (`TRIAL_PLAN_LIMIT`, `TRIAL_ARTICLE_LIMIT`), the daily Job
+caps (`JOBS_PER_DAY_LIMIT`, and `FREE_JOBS_PER_DAY_LIMIT` for Jobs that cost no Лимит) and whom
+to ask for more (`LIMIT_CONTACT`) are `TrialLimits` (ADR-0015, «Лимит»).
 """
 
 from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
+from .workspaces import TrialLimits
 from .yandex.image_generator import DEFAULT_IMAGE_MODEL
 from .yandex.text_generator import DEFAULT_TEXT_MODEL
 
@@ -82,6 +86,7 @@ class Settings:
     # its token in owner_settings.
     telegraph_access_token: str | None = None
     global_admin_telegram_ids: frozenset[int] = frozenset()
+    trial_limits: TrialLimits = field(default_factory=TrialLimits)
     signup_daily_limit: int = DEFAULT_SIGNUP_DAILY_LIMIT
 
 
@@ -123,6 +128,17 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
             image=env.get("YANDEX_IMAGE_MODEL") or DEFAULT_IMAGE_MODEL,
         ),
         global_admin_telegram_ids=_telegram_ids(env, "GLOBAL_ADMIN_TELEGRAM_IDS"),
+        trial_limits=TrialLimits(
+            plans=_non_negative_int(env, "TRIAL_PLAN_LIMIT", default=TrialLimits.plans),
+            articles=_non_negative_int(env, "TRIAL_ARTICLE_LIMIT", default=TrialLimits.articles),
+            jobs_per_day=_non_negative_int(
+                env, "JOBS_PER_DAY_LIMIT", default=TrialLimits.jobs_per_day
+            ),
+            free_jobs_per_day=_non_negative_int(
+                env, "FREE_JOBS_PER_DAY_LIMIT", default=TrialLimits.free_jobs_per_day
+            ),
+            contact=(env.get("LIMIT_CONTACT") or "").strip() or None,
+        ),
         signup_daily_limit=_non_negative_int(
             env, "SIGNUP_DAILY_LIMIT", default=DEFAULT_SIGNUP_DAILY_LIMIT
         ),

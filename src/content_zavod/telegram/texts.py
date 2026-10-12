@@ -22,6 +22,14 @@ from ..domain.errors import (
     PlanNotFound,
 )
 from ..job_queue import JobNotFound
+from ..workspaces import (
+    DailyFreeJobLimitReached,
+    DailyJobLimitReached,
+    DailyPlanLimitReached,
+    GenerationBusy,
+    TrialLimitExhausted,
+    Usage,
+)
 
 ARTICLE_STATUSES = {
     "queued": "в очереди",
@@ -156,6 +164,13 @@ ERROR_ALERTS: dict[type[Exception], str] = {
     ArticleNotReady: "Статья ещё не готова.",
     ArticleNotRegenerable: "Эту Статью сейчас нельзя перегенерировать.",
     InvalidSettingValue: "Значение не может быть пустым.",
+    # ADR-0015, «Защита от лавины»: one generation at a time, and a daily ceiling of Jobs.
+    GenerationBusy: "⏳ Дождитесь окончания текущей генерации — потом можно продолжить.",
+    DailyJobLimitReached: "На сегодня генераций достаточно — продолжим завтра.",
+    DailyPlanLimitReached: "Планов на сегодня составлено достаточно — новый можно будет завтра.",
+    DailyFreeJobLimitReached: (
+        "Перегенераций Тем и обложек на сегодня достаточно — продолжим завтра."
+    ),
 }
 ERROR_ALERT_FALLBACK = "Не получилось, попробуйте ещё раз"
 
@@ -260,7 +275,82 @@ def hub_cover_state(state: str) -> str:
 
 
 def error_alert_text(exc: Exception) -> str:
+    if isinstance(exc, TrialLimitExhausted):
+        return limit_exhausted_text(exc)
     return ERROR_ALERTS.get(type(exc), ERROR_ALERT_FALLBACK)
+
+
+# --- Лимит (ADR-0015) ---
+
+
+def _plural(count: int, one: str, few: str, many: str) -> str:
+    if count % 10 == 1 and count % 100 != 11:
+        return one
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return few
+    return many
+
+
+def plans_text(count: int) -> str:
+    return f"{count} {_plural(count, 'План', 'Плана', 'Планов')}"
+
+
+def articles_text(count: int) -> str:
+    return f"{count} {_plural(count, 'Статья', 'Статьи', 'Статей')}"
+
+
+def remaining_text(usage: Usage) -> str:
+    """The Главное меню's line: «Осталось: 1 План, 8 Статей»."""
+    return f"Осталось: {plans_text(usage.plans_left)}, {articles_text(usage.articles_left)}"
+
+
+def _articles_accusative(count: int) -> str:
+    """«хватит на 1 Статью, 2 Статьи, 5 Статей»."""
+    return f"{count} {_plural(count, 'Статью', 'Статьи', 'Статей')}"
+
+
+def _with_contact(text: str, contact: str | None) -> str:
+    return f"{text}\nЧтобы продолжить, напишите {contact}." if contact else text
+
+
+def limit_exhausted_text(exc: TrialLimitExhausted) -> str:
+    """A refused generation (fits a callback alert, 200 characters): what is left when some
+    Статьи are, but fewer than asked (a «🔁 Повторить» of several), else the used-up Лимит."""
+    usage = exc.usage
+    if exc.articles > usage.articles_left > 0:
+        text = (
+            f"Пробного лимита хватит ещё на {_articles_accusative(usage.articles_left)}, "
+            f"а нужно {exc.articles}."
+        )
+    else:
+        text = (
+            f"Пробный лимит исчерпан: Планов {usage.plans_used} из {usage.plan_limit}, "
+            f"Статей {usage.articles_used} из {usage.article_limit}."
+        )
+    return _with_contact(text, exc.contact)
+
+
+def approve_shortfall_text(exc: TrialLimitExhausted, *, per_tema: int) -> str:
+    """«Утвердить всё» asking for more Статьи than are left: removing Темы helps only while the
+    remainder still fits one Тема (`per_tema` Статьи, one per Площадка)."""
+    left = exc.usage.articles_left
+    if left >= per_tema:
+        return (
+            f"Пробного лимита хватит ещё на {_articles_accusative(left)}, а утверждение "
+            f"запустит {exc.articles}. Уберите лишние Темы (🗑) и утвердите снова."
+        )
+    if left:
+        remains = _plural(left, "осталась", "осталось", "осталось")
+        text = f"Пробный лимит почти исчерпан: {remains} {articles_text(left)} — меньше одной Темы."
+        return _with_contact(text, exc.contact)
+    return limit_exhausted_text(exc)
+
+
+def schedule_skipped_text(exc: TrialLimitExhausted) -> str:
+    """The Расписание tick's one message a week when the Лимит of Планов is used up."""
+    return (
+        f"🕘 По Расписанию пора составить новый План, но его не будет.\n{limit_exhausted_text(exc)}"
+    )
 
 
 # --- Главное меню, Экран Настроек, Расписание (#95) ---
@@ -287,12 +377,33 @@ GROUP_START_TEXT = "Я работаю только в личном чате: о�
 OPEN_PRIVATE_CHAT_BUTTON = "💬 Открыть личный чат"
 # A message before the first /start (or from before the Пространства, #118).
 NO_WORKSPACE_TEXT = "👋 Нажмите /start — я всё подготовлю."
-# `/admin` (ADR-0015): for now only proves the Глобальный администратор is recognised; the
-# list of Пространства and their Лимиты come with the Лимит itself.
-ADMIN_PENDING_TEXT = (
-    "Вы Глобальный администратор. Список Пространств, их расход и Лимиты появятся здесь "
-    "вместе с Лимитом."
+# `/admin` (ADR-0015): metadata and spend only - never a Тема, a Статья or a Настройка.
+ADMIN_TITLE = "🛠 Пространства: {shown} из {total}, недавние первыми"
+ADMIN_EMPTY = "🛠 Пространств пока нет."
+ADMIN_WORKSPACE = (
+    "#{id} {username} · с {created} · активность {active}\n"
+    "Планы {plans_used}/{plan_limit} · Статьи {articles_used}/{article_limit}{custom}\n"
+    "30 дней: {spend}"
 )
+ADMIN_CUSTOM_LIMIT = " (свой Лимит)"
+ADMIN_NO_USERNAME = "без username"
+ADMIN_NO_ACTIVITY = "—"
+ADMIN_NO_SPEND = "расхода нет"
+ADMIN_UNITS = {
+    "tokens": "ток.",
+    "image": "карт.",
+    "search_request": "поиск.",
+    "wordstat_request": "Wordstat",
+}
+ADMIN_COST = "≈ {cost:.2f} ₽"
+ADMIN_COST_INCOMPLETE = " (неполная)"
+ADMIN_HINT = (
+    "Задать Лимит: /admin limit <id> <планы> <статьи>, например /admin limit 12 2 12. "
+    "Вернуть Лимит по конфигу: /admin limit <id> default"
+)
+ADMIN_LIMIT_SET = "✅ Лимит Пространства #{id}: Планов {plans}, Статей {articles}."
+ADMIN_LIMIT_DEFAULT = "✅ Лимит Пространства #{id} снова по конфигу."
+ADMIN_LIMIT_NOT_FOUND = "Пространства #{id} нет."
 MENU_TEXT = "🏠 Главное меню\nВыберите, что сделать:"
 MENU_PLAN_BUTTON = "📋 План недели"
 MENU_TOPIC_BUTTON = "✍️ Предложить Тему"
@@ -462,8 +573,4 @@ ONBOARDING_CANCELLED = (
 
 def steps_count_text(count: int) -> str:
     """«5 коротких шагов», «3 коротких шага», «1 короткий шаг»."""
-    if count % 10 == 1 and count % 100 != 11:
-        return f"{count} короткий шаг"
-    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
-        return f"{count} коротких шага"
-    return f"{count} коротких шагов"
+    return f"{count} {_plural(count, 'короткий шаг', 'коротких шага', 'коротких шагов')}"

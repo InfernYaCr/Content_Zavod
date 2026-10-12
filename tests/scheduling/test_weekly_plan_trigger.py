@@ -69,14 +69,14 @@ def test_due_week_respects_a_custom_schedule() -> None:
 
 def test_the_tick_runs_every_minute_starting_right_away() -> None:
     scheduler = FakeScheduler()
-    pool, plan = object(), object()
+    pool, plan, limits, tell = object(), object(), object(), object()
     before = datetime.now(UTC)
 
-    schedule_weekly_plan_tick(scheduler, pool, plan)
+    schedule_weekly_plan_tick(scheduler, pool, plan, limits, tell)
 
     [job] = scheduler.jobs
     assert job["func"] is weekly_plan_tick
-    assert job["args"] == [pool, plan]
+    assert job["args"] == [pool, plan, limits, tell]
     assert isinstance(job["trigger"], IntervalTrigger)
     assert job["trigger"].interval == timedelta(minutes=1)
     # The first run catches up a deadline missed while the bot was down (#72).

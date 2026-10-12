@@ -71,8 +71,11 @@ class FakePlan:
         self.cover_failures_marked: list[int] = []
         self.mark_cover_generation_failed_returns: PlanItemId | None = PlanItemId("item-1")
 
-    async def add_topics(self, workspace_id, week_label: str, topics: list[TopicDraft]) -> PlanId:
+    async def add_topics(
+        self, workspace_id, week_label: str, topics: list[TopicDraft], *, source_job_id=None
+    ) -> PlanId:
         self.added_topics.append((week_label, topics))
+        self.charged_job_id = source_job_id
         return PlanId("plan-1")
 
     async def get(self, workspace_id, plan_id: PlanId) -> PlanView:
@@ -295,6 +298,8 @@ async def test_generate_plan_appends_topics_and_sends_the_plan() -> None:
     assert plan.added_topics == [
         ("Week 1", [TopicDraft(title="T1", summary="s", keywords=["k"], why="📈 w")])
     ]
+    # The Plan is charged against the Лимит with its Job, in `add_topics`' transaction.
+    assert plan.charged_job_id == 1
     assert len(gateway.sent_plans) == 1
     assert gateway.sent_plans[0][0] == 42
 
@@ -713,7 +718,7 @@ class WorkspaceRecordingPlan(FakePlan):
         super().__init__()
         self.workspaces_seen: set[int] = set()
 
-    async def add_topics(self, workspace_id, week_label, topics):
+    async def add_topics(self, workspace_id, week_label, topics, *, source_job_id=None):
         self.workspaces_seen.add(workspace_id)
         return await super().add_topics(workspace_id, week_label, topics)
 
