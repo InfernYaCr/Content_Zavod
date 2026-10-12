@@ -354,11 +354,12 @@ def _build_router(
             except Exception:
                 # An admin who never pressed /start can't be written to; the log has it.
                 logger.warning("could not alert admin %s", admin_id, exc_info=True)
+            else:
+                guard.signup_alert_sent()
 
     @router.message(Command("start"))
     async def on_start(message: Message) -> None:
-        # ADR-0015: one /start per id per 3 seconds; the rest are silently ignored.
-        if message.from_user is None or not guard.admit(message.from_user.id):
+        if message.from_user is None:
             return
         chat_id = message.chat.id
         if message.chat.type != "private":
@@ -366,10 +367,15 @@ def _build_router(
                 chat_id, GROUP_START_TEXT, reply_markup=_private_chat_button(bot_username)
             )
             return
+        # ADR-0015: one /start per id per 3 seconds; the rest are silently ignored.
+        if not guard.admit(message.from_user.id):
+            return
         # ponytail: count-then-insert isn't atomic, so simultaneous newcomers can overshoot the
-        # cap by a few; lock `workspaces` in `get_or_create` if it must be exact.
+        # cap by a few; lock `workspaces` in `get_or_create` if it must be exact. A Глобальный
+        # администратор is never locked out of their own bot.
         if (
-            await workspaces.get_by_owner(message.from_user.id) is None
+            message.from_user.id not in admin_ids
+            and await workspaces.get_by_owner(message.from_user.id) is None
             and await workspaces.count_created_last_day() >= settings.signup_daily_limit
         ):
             await signups_closed(chat_id)

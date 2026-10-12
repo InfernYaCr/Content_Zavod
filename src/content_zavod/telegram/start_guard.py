@@ -41,8 +41,10 @@ class StartGuard:
 
     def signup_alert_due(self) -> bool:
         """Whether to tell the admins that sign-ups are closed: once per 24 hours."""
-        now = self._clock()
-        if self._alerted_at is not None and now - self._alerted_at < ALERT_INTERVAL_SECONDS:
-            return False
-        self._alerted_at = now
-        return True
+        return (
+            self._alerted_at is None or self._clock() - self._alerted_at >= ALERT_INTERVAL_SECONDS
+        )
+
+    def signup_alert_sent(self) -> None:
+        """At least one admin got the alert; until then every refusal tries again."""
+        self._alerted_at = self._clock()

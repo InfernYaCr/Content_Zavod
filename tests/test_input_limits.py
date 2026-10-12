@@ -73,6 +73,15 @@ def test_the_refusal_names_the_limit(key: str, limit: int, prefix: str, setter: 
     assert str(limit) in setting.invalid_by_field[f"{key}_too_long"]
 
 
+async def test_the_limit_counts_characters_after_trimming_not_bytes() -> None:
+    """Emoji are one character each, and the spaces around the text don't count."""
+    store = InMemoryStore()
+
+    assert await SettingsService(store).set_niche(WS_A, f"  {'🍰' * NICHE_MAX_LENGTH}\n") == (
+        "🍰" * NICHE_MAX_LENGTH
+    )
+
+
 async def test_a_topic_at_its_limit_is_added_and_one_more_is_refused() -> None:
     plan = FakePlan()
     bot = FakeBot()

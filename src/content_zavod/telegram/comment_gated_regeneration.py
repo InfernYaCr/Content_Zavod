@@ -103,7 +103,8 @@ class CommentGatedRegeneration[Id: str]:
     ) -> bool:
         """Any text resolves this Пространство's wait, if it has one - except one over
         `COMMENT_MAX_LENGTH`: that is refused, nothing is regenerated, and the wait stays."""
-        if len(text.strip()) > COMMENT_MAX_LENGTH:
+        comment = text.strip()
+        if len(comment) > COMMENT_MAX_LENGTH:
             current = await self._pending.get(workspace_id, chat_id, user_id)
             if current is None or current.kind != self._kind:
                 return False
@@ -112,7 +113,7 @@ class CommentGatedRegeneration[Id: str]:
         pending = await self._pending.take(workspace_id, chat_id, user_id, self._kind)
         if pending is None:
             return False
-        await self._regenerate(workspace_id, cast(Id, pending.target_id), text)
+        await self._regenerate(workspace_id, cast(Id, pending.target_id), comment)
         await self._prompt.mark_generating(chat_id, pending)
         return True
 

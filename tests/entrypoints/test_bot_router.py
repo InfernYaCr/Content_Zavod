@@ -403,7 +403,7 @@ async def test_past_the_signup_limit_no_workspace_is_made_and_admins_hear_once_a
     assert bot.texts(newcomer) == [SIGNUP_CLOSED_TEXT]
     assert bot.texts(another) == [SIGNUP_CLOSED_TEXT]
     (alert,) = bot.texts(ADMIN)
-    assert "1 новых Пространств" in alert
+    assert "Новых Пространств за сутки: 1" in alert
 
     # An existing Пространство is served as usual.
     bot.clock += START_INTERVAL_SECONDS
@@ -417,3 +417,54 @@ async def test_past_the_signup_limit_no_workspace_is_made_and_admins_hear_once_a
     bot.clock += 24 * 60 * 60
     await bot.message("/start", user=newcomer)
     assert len(bot.texts(ADMIN)) == 1
+
+
+async def test_a_global_admin_gets_a_workspace_past_the_signup_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = _patched(Bot_(SIGNUP_DAILY_LIMIT="0"), monkeypatch)
+
+    await bot.message("/start", user=ADMIN)
+
+    assert list(bot.workspaces.by_owner) == [ADMIN]
+    assert SIGNUP_CLOSED_TEXT not in bot.texts(ADMIN)
+
+
+async def test_an_alert_no_admin_received_is_tried_again_on_the_next_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = _patched(Bot_(SIGNUP_DAILY_LIMIT="0"), monkeypatch)
+    send = bot.bot.send_message
+
+    async def admin_unreachable(chat_id: int, text: str, reply_markup: object = None) -> int:
+        if chat_id == ADMIN:
+            raise RuntimeError("Forbidden: bot can't initiate conversation with a user")
+        return await send(chat_id, text, reply_markup)
+
+    monkeypatch.setattr(bot.bot, "send_message", admin_unreachable)
+    await bot.message("/start", user=USER)
+    monkeypatch.setattr(bot.bot, "send_message", send)
+    await bot.message("/start", user=7003)
+    await bot.message("/start", user=7004)
+
+    assert len(bot.texts(ADMIN)) == 1
+
+
+async def test_start_in_a_group_does_not_use_up_the_private_one(bot: Bot_) -> None:
+    await bot.message("/start", user=USER, chat=GROUP)
+    await bot.message("/start", user=USER)
+
+    assert list(bot.workspaces.by_owner) == [USER]
+    assert bot.texts(USER)
+
+
+def test_start_guard_forgets_ids_past_the_interval_once_it_holds_many() -> None:
+    now = 0.0
+    guard = StartGuard(clock=lambda: now)
+    for owner in range(10_000):
+        assert guard.admit(owner)
+
+    now = START_INTERVAL_SECONDS
+    assert guard.admit(-1)
+
+    assert guard._last_start == {-1: START_INTERVAL_SECONDS}

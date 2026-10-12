@@ -259,3 +259,14 @@ async def test_a_long_text_without_a_wait_is_left_to_other_handlers(
 ) -> None:
     assert not await flow.handle_comment_reply(WS_A, 1, 10, "я" * (COMMENT_MAX_LENGTH + 1))
     assert prompt.rejected == []
+
+
+@pytest.mark.asyncio
+async def test_the_comment_reaches_the_regeneration_trimmed(
+    flow: CommentGatedRegeneration[str], regenerate: FakeRegenerate
+) -> None:
+    await flow.request(WS_A, 1, 10, "item-1")
+
+    await flow.handle_comment_reply(WS_A, 1, 10, "  короче \n")
+
+    assert regenerate.calls == [("item-1", "короче")]
