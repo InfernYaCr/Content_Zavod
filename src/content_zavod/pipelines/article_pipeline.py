@@ -76,8 +76,8 @@ _SENSITIVE_KEYWORDS = frozenset(
 _PROMPT_VERSIONS = {
     "research_extract": "research-extract-v1",
     "outline": "outline-v4",
-    "draft": "draft-v7",
-    "rewrite": "rewrite-v7",
+    "draft": "draft-v8",
+    "rewrite": "rewrite-v8",
 }
 
 SOURCES_HEADING = "Источники:"
@@ -214,6 +214,7 @@ async def _run_pipeline(
                 project=project,
                 sensitive=_is_money_or_legal(title, brief.keywords),
                 audience=audience,
+                style_profile=owner_settings.style_profile,
             ),
         )
         rewrite = await steps.llm(
@@ -226,6 +227,7 @@ async def _run_pipeline(
                 profile=profile,
                 project=project,
                 audience=audience,
+                style_profile=owner_settings.style_profile,
             ),
         )
         content = assemble_content(rewrite, research.bundle, project)

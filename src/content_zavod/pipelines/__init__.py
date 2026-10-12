@@ -10,6 +10,7 @@ from .plan_pipeline import (
     make_generate_plan_handler,
     make_regenerate_topic_handler,
 )
+from .style_profile import ANALYZE_STYLE_JOB, make_analyze_style_handler
 from .topic_research import (
     ResearchCache,
     SearchProvider,
@@ -18,6 +19,7 @@ from .topic_research import (
 )
 
 __all__ = [
+    "ANALYZE_STYLE_JOB",
     "ArticleReader",
     "FetchedPage",
     "HttpxPageFetcher",
@@ -27,6 +29,7 @@ __all__ = [
     "SearchProvider",
     "TopicBrief",
     "TopicResearcher",
+    "make_analyze_style_handler",
     "make_generate_article_handler",
     "make_generate_cover_handler",
     "make_generate_plan_handler",

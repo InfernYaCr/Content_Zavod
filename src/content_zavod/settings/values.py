@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from .persona import CustomPersona, Persona
 from .project import Project
+from .style_profile import StyleProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,3 +21,6 @@ class OwnerSettings:
     # Whether the Владелец has told their Ниша: `niche` falls back to `DEFAULT_NICHE` either way,
     # but a Plan is only drafted once it was told (the Расписание tick checks the same).
     niche_saved: bool = False
+    # Optional (#134): drawn from the Владелец's own texts; when set, it is the Стиль автора the
+    # prompts use in place of `persona`/`custom_persona`.
+    style_profile: StyleProfile | None = None

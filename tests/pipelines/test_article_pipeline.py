@@ -9,9 +9,9 @@ from content_zavod.pipelines.article_pipeline import (
     make_regenerate_article_handler,
 )
 from content_zavod.pipelines.topic_research import TopicResearcher
-from content_zavod.settings import SettingsService
+from content_zavod.settings import SettingsService, StyleProfile
 from content_zavod.yandex import Completion, Message
-from tests.tenancy import WS_A
+from tests.tenancy import WS_A, WS_B
 
 from .research_fakes import FakePageFetcher, FakeSearch, InMemoryResearchCache, page
 
@@ -318,7 +318,7 @@ async def test_audience_reaches_draft_and_rewrite_as_input_data_but_not_the_cach
         assert '"audience": "Студенты-маркетологи"' in user.text
     versions = {s["step_name"]: s["prompt_template_version"] for s in first["steps"]}
     assert versions["outline"] == "outline-v4"  # unchanged: the outline takes no Аудитория
-    assert (versions["draft"], versions["rewrite"]) == ("draft-v7", "rewrite-v7")
+    assert (versions["draft"], versions["rewrite"]) == ("draft-v8", "rewrite-v8")
     assert [s["step_name"] for s in second["steps"]] == ["draft", "rewrite"]
 
 
@@ -823,3 +823,34 @@ async def test_sources_filter_never_removes_the_project_cta_and_lists_it_nowhere
         f"Факт [1]. Чужая ссылка.\n\nПодписывайтесь: {_PROJECT_URL}\n\n"
         f"Источники:\n1. Опрос о CRM — {_PAGE_A}"
     )
+
+
+class _WorkspaceStore:
+    def __init__(self) -> None:
+        self.values: dict[tuple[int, str], str] = {}
+
+    async def get(self, workspace_id: int, key: str) -> str | None:
+        return self.values.get((workspace_id, key))
+
+    async def set(self, workspace_id: int, key: str, value: str) -> None:
+        self.values[(workspace_id, key)] = value
+
+
+@pytest.mark.asyncio
+async def test_a_style_profile_of_one_workspace_never_reaches_anothers_prompt() -> None:
+    """#134, ADR-0015: A's Профиль стиля is read for A's Статьи only."""
+    settings = SettingsService(_WorkspaceStore())
+    await settings.set_style_profile(
+        WS_A, StyleProfile(traits=(("tone", "фирменный тон А"),), summary="Вы пишете как А.")
+    )
+    text_generator = ScriptedTextGenerator([*_plain_completions(), *_plain_completions()])
+    handler = make_generate_article_handler(text_generator, _no_evidence_researcher(), settings)
+
+    b_output = await handler(WS_B, _PAYLOAD)
+    await handler(WS_A, {**_PAYLOAD, "article_id": "b"})
+
+    b_prompts = " ".join(message.text for call in text_generator.calls[:3] for message in call)
+    assert "фирменный тон А" not in b_prompts + b_output["prompt"]
+    assert "author_style" not in b_prompts
+    for _system, user in text_generator.calls[4:]:
+        assert "фирменный тон А" in user.text

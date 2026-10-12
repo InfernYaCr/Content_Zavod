@@ -90,3 +90,28 @@ async def test_does_not_record_when_output_has_no_steps() -> None:
     await on_attempt(_CLAIMED, {"week_label": "Week 1"}, None)
 
     assert generation_steps.recorded == []
+
+
+class FakeQueue:
+    def __init__(self) -> None:
+        self.dropped: list[tuple[int, int, list[str]]] = []
+
+    async def drop_payload_keys(self, workspace_id: int, job_id: int, keys: list[str]) -> None:
+        self.dropped.append((workspace_id, job_id, keys))
+
+
+async def test_a_settled_style_analysis_loses_its_samples_in_the_worker_already() -> None:
+    """#134: the Образцы leave the payload as soon as the Job settles - not only when the bot
+    gets to its notification. A retried attempt keeps them (`drop_payload_keys` only touches
+    done/failed Jobs)."""
+    queue = FakeQueue()
+    on_attempt = _make_on_attempt(FakeGenerationSteps(), queue=queue)
+    claimed = ClaimedJob(
+        id=7, workspace_id=WS_B, job_type="analyze_style", payload={}, attempts=1, lease_token="t"
+    )
+
+    await on_attempt(claimed, {"status": "ok", "steps": []}, None)
+    await on_attempt(claimed, None, RuntimeError("boom"))
+    await on_attempt(_CLAIMED, {"steps": []}, None)
+
+    assert queue.dropped == [(WS_B, 7, ["samples", "links"])] * 2
