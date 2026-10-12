@@ -26,10 +26,12 @@ from content_zavod.telegram.input_prompt import InputPrompt
 from content_zavod.telegram.main_menu import MainMenu
 from content_zavod.telegram.onboarding import Onboarding
 from content_zavod.telegram.settings_screen import SETTING_INPUT_KIND, SettingsScreen
+from content_zavod.telegram.start_guard import START_INTERVAL_SECONDS, StartGuard
 from content_zavod.telegram.texts import (
     ADMIN_PENDING_TEXT,
     GROUP_START_TEXT,
     NO_WORKSPACE_TEXT,
+    SIGNUP_CLOSED_TEXT,
     STALE_BUTTON,
     UNKNOWN_MESSAGE_TEXT,
 )
@@ -64,6 +66,9 @@ class FakeWorkspaces:
 
     async def get_by_owner(self, owner_telegram_id: int) -> Workspace | None:
         return self.by_owner.get(owner_telegram_id)
+
+    async def count_created_last_day(self) -> int:
+        return len(self.by_owner)  # all of them created today
 
     async def get(self, workspace_id: WorkspaceId) -> Workspace | None:
         return next((ws for ws in self.by_owner.values() if ws.id == workspace_id), None)
@@ -117,8 +122,9 @@ class NoPlanOps:
 class Bot_:
     """Everything the router is built from; `bot` records what the bot sends."""
 
-    def __init__(self) -> None:
+    def __init__(self, **env_overrides: str) -> None:
         self.bot = RecordingBot()
+        self.clock = 1000.0
         self.workspaces = FakeWorkspaces()
         self.store = FakeStore()
         self.pending = FakePendingInputs()
@@ -159,6 +165,7 @@ class Bot_:
             "YANDEX_FOLDER_ID": "f",
             "YANDEX_API_KEY": "k",
             "GLOBAL_ADMIN_TELEGRAM_IDS": str(ADMIN),
+            **env_overrides,
         }
         self.dispatcher = Dispatcher()
         self.dispatcher.include_router(
@@ -178,6 +185,7 @@ class Bot_:
                 self.flows["onboarding"],
                 cast(Any, Unused()),
                 bot_username="zavod_bot",
+                start_guard=StartGuard(clock=lambda: self.clock),
             )
         )
         self.aiogram_bot = Bot(token="123456:test")
@@ -234,11 +242,7 @@ class Bot_:
         return [text for chat_id, text, _, _ in self.bot.sent if chat_id == chat]
 
 
-@pytest.fixture
-def bot(monkeypatch: pytest.MonkeyPatch) -> Bot_:
-    tg = Bot_()
-    tg.answers = []
-
+def _patched(tg: Bot_, monkeypatch: pytest.MonkeyPatch) -> Bot_:
     async def telegram_api(self: Bot, method: Any, request_timeout: int | None = None) -> Any:
         if isinstance(method, AnswerCallbackQuery):
             tg.answers.append((method.text, method.show_alert))
@@ -246,6 +250,11 @@ def bot(monkeypatch: pytest.MonkeyPatch) -> Bot_:
 
     monkeypatch.setattr(Bot, "__call__", telegram_api)
     return tg
+
+
+@pytest.fixture
+def bot(monkeypatch: pytest.MonkeyPatch) -> Bot_:
+    return _patched(Bot_(), monkeypatch)
 
 
 async def test_admin_from_anyone_else_is_an_unknown_command(bot: Bot_) -> None:
@@ -357,3 +366,54 @@ async def test_through_the_router_a_text_of_a_does_not_close_bs_wait(bot: Bot_) 
 
     assert bot.pending.by_workspace[workspace_b.id][(ADMIN, ADMIN)].kind == SETTING_INPUT_KIND
     assert (workspace_b.id, "niche") not in bot.store.values
+
+
+async def test_frequent_start_creates_one_workspace_and_is_answered_once_per_interval(
+    bot: Bot_,
+) -> None:
+    """ADR-0015: /start from one id at most once per 3 seconds; the rest are silently dropped."""
+    await bot.message("/start", user=USER)
+    answered = len(bot.texts(USER))
+    for _ in range(5):
+        bot.clock += 0.5
+        await bot.message("/start", user=USER)
+
+    assert answered > 0
+    assert len(bot.texts(USER)) == answered
+    assert list(bot.workspaces.by_owner) == [USER]
+
+    bot.clock += START_INTERVAL_SECONDS
+    await bot.message("/start", user=USER)
+
+    assert len(bot.texts(USER)) > answered
+    assert list(bot.workspaces.by_owner) == [USER]
+
+
+async def test_past_the_signup_limit_no_workspace_is_made_and_admins_hear_once_a_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = _patched(Bot_(SIGNUP_DAILY_LIMIT="1"), monkeypatch)
+    newcomer, another = 7003, 7004
+    await bot.message("/start", user=USER)
+
+    await bot.message("/start", user=newcomer)
+    await bot.message("/start", user=another)
+
+    assert list(bot.workspaces.by_owner) == [USER]
+    assert bot.texts(newcomer) == [SIGNUP_CLOSED_TEXT]
+    assert bot.texts(another) == [SIGNUP_CLOSED_TEXT]
+    (alert,) = bot.texts(ADMIN)
+    assert "1 новых Пространств" in alert
+
+    # An existing Пространство is served as usual.
+    bot.clock += START_INTERVAL_SECONDS
+    bot.bot.sent.clear()
+    await bot.message("/start", user=USER)
+    await bot.message("/menu", user=USER)
+    assert SIGNUP_CLOSED_TEXT not in bot.texts(USER)
+    assert len(bot.texts(USER)) >= 2
+
+    # A day later the admins are told again, if it is still closed.
+    bot.clock += 24 * 60 * 60
+    await bot.message("/start", user=newcomer)
+    assert len(bot.texts(ADMIN)) == 1

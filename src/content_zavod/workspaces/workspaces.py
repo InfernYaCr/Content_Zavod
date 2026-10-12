@@ -76,6 +76,13 @@ class Workspaces:
         )
         return _to_workspace(row) if row is not None else None
 
+    async def count_created_last_day(self) -> int:
+        """New Пространства in the last 24 hours - what `SIGNUP_DAILY_LIMIT` caps (ADR-0015)."""
+        count = await self._pool.fetchval(
+            "SELECT count(*) FROM workspaces WHERE created_at > now() - interval '24 hours'"
+        )
+        return int(count)
+
     async def set_timezone(self, workspace_id: WorkspaceId, timezone: str) -> None:
         """The Расписание's time zone (an IANA name the screen picked from its fixed list)."""
         await self._pool.execute(

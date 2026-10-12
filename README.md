@@ -107,6 +107,9 @@ nano .env
 
 - `TELEGRAM_BOT_TOKEN`;
 - `GLOBAL_ADMIN_TELEGRAM_IDS` — свой Telegram id (через запятую, если администраторов несколько);
+- `SIGNUP_DAILY_LIMIT` — по желанию: сколько новых Пространств бот создаёт за сутки (по умолчанию
+  50). Сверх него `/start` отвечает «Регистрация временно закрыта», а Глобальный администратор
+  получает одно уведомление в сутки; у тех, кто уже зарегистрирован, всё работает;
 - `YANDEX_FOLDER_ID` и **один** из `YANDEX_API_KEY` / `YANDEX_OAUTH_TOKEN`;
 - `POSTGRES_PASSWORD` — вставить пароль из `openssl rand -hex 24`. `POSTGRES_USER` и
   `POSTGRES_DB` можно оставить как есть. `POSTGRES_DSN` оставить пустым — в Docker адрес базы

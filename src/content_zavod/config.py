@@ -11,7 +11,8 @@ internally into short-lived IAM tokens) — exactly one must be set, mirroring
 Every user gets their own Пространство on /start and the bot delivers each Job result to the
 private chat of the Workspace that owns the Job (ADR-0015) - there is no shared chat to
 configure. `GLOBAL_ADMIN_TELEGRAM_IDS` (comma-separated telegram ids, may be empty) names the
-Глобальные администраторы: not a Role, just this list.
+Глобальные администраторы: not a Role, just this list. `SIGNUP_DAILY_LIMIT` (default 50) caps
+how many new Пространства `/start` creates in 24 hours; past it the admins are told once a day.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from .yandex.image_generator import DEFAULT_IMAGE_MODEL
 from .yandex.text_generator import DEFAULT_TEXT_MODEL
 
 DEFAULT_TIMEZONE = "Europe/Moscow"
+DEFAULT_SIGNUP_DAILY_LIMIT = 50
 
 
 class ConfigError(Exception):
@@ -80,6 +82,7 @@ class Settings:
     # its token in owner_settings.
     telegraph_access_token: str | None = None
     global_admin_telegram_ids: frozenset[int] = frozenset()
+    signup_daily_limit: int = DEFAULT_SIGNUP_DAILY_LIMIT
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -120,6 +123,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
             image=env.get("YANDEX_IMAGE_MODEL") or DEFAULT_IMAGE_MODEL,
         ),
         global_admin_telegram_ids=_telegram_ids(env, "GLOBAL_ADMIN_TELEGRAM_IDS"),
+        signup_daily_limit=_non_negative_int(
+            env, "SIGNUP_DAILY_LIMIT", default=DEFAULT_SIGNUP_DAILY_LIMIT
+        ),
     )
 
 
@@ -146,6 +152,15 @@ def _flag(env: Mapping[str, str], name: str, *, default: bool) -> bool:
     if value in ("0", "off", "false", "no"):
         return False
     raise ConfigError(f"invalid {name}={value!r}, must be on/off")
+
+
+def _non_negative_int(env: Mapping[str, str], name: str, *, default: int) -> int:
+    value = (env.get(name) or "").strip()
+    if not value:
+        return default
+    if not value.isdecimal():
+        raise ConfigError(f"invalid {name}={value!r}, must be a whole number >= 0")
+    return int(value)
 
 
 def _optional_float(env: Mapping[str, str], name: str) -> float | None:

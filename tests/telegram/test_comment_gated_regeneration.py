@@ -1,6 +1,7 @@
 import pytest
 
 from content_zavod.telegram import CommentGatedRegeneration
+from content_zavod.telegram.comment_gated_regeneration import COMMENT_MAX_LENGTH
 from content_zavod.telegram.pending_inputs import PendingInput
 from tests.tenancy import WS_A, WS_B
 
@@ -23,6 +24,7 @@ class FakePrompt:
         self.prompted: list[tuple[int, str]] = []
         self.generating: list[tuple[int, int]] = []
         self.withdrawn: list[tuple[int, int]] = []
+        self.rejected: list[int] = []
         self._next_message_id = 100
 
     async def prompt_for_comment(self, chat_id: int, id_: str) -> int:
@@ -35,6 +37,9 @@ class FakePrompt:
 
     async def withdraw(self, chat_id: int, pending: PendingInput) -> None:
         self.withdrawn.append((chat_id, pending.prompt_message_id))
+
+    async def reject_too_long(self, chat_id: int) -> None:
+        self.rejected.append(chat_id)
 
 
 @pytest.fixture
@@ -246,3 +251,11 @@ async def test_a_text_in_another_workspace_does_not_close_the_wait(
     assert await flow.has_matching_pending(WS_B, 1, 10, "item-1") is False
     assert await flow.handle_comment_reply(WS_A, 1, 10, "свой") is True
     assert regenerate.calls == [("item-1", "свой")]
+
+
+@pytest.mark.asyncio
+async def test_a_long_text_without_a_wait_is_left_to_other_handlers(
+    flow: CommentGatedRegeneration[str], prompt: FakePrompt
+) -> None:
+    assert not await flow.handle_comment_reply(WS_A, 1, 10, "я" * (COMMENT_MAX_LENGTH + 1))
+    assert prompt.rejected == []

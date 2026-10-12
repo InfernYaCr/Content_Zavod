@@ -10,6 +10,7 @@ from .persona import (
     DEFAULT_PERSONA_KEY,
     DEFAULT_PERSONA_TITLE,
     PERSONA_KEY,
+    PERSONA_MAX_LENGTH,
     PERSONA_VALUE_PREFIX,
     PERSONAS,
     CustomPersona,
@@ -23,11 +24,19 @@ from .persona import (
     resolve_persona,
     serialize_custom_persona,
 )
-from .project import CLEAR_PROJECT, PROJECT_KEY, Project, normalize_project_url, project_detail_text
+from .project import (
+    CLEAR_PROJECT,
+    PROJECT_KEY,
+    PROJECT_MAX_LENGTH,
+    Project,
+    normalize_project_url,
+    project_detail_text,
+)
 from .service import (
     DEFAULT_NICHE,
     DIRECTIONS_KEY,
     NICHE_KEY,
+    NICHE_MAX_LENGTH,
     SETTING_STORE_KEYS,
     SettingsReader,
     SettingsService,
@@ -45,11 +54,14 @@ __all__ = [
     "DEFAULT_PERSONA_TITLE",
     "DIRECTIONS_KEY",
     "NICHE_KEY",
+    "NICHE_MAX_LENGTH",
     "ONBOARDING_KEY",
     "PERSONAS",
     "PERSONA_KEY",
+    "PERSONA_MAX_LENGTH",
     "PERSONA_VALUE_PREFIX",
     "PROJECT_KEY",
+    "PROJECT_MAX_LENGTH",
     "SETTING_STORE_KEYS",
     "CustomPersona",
     "OnboardingState",

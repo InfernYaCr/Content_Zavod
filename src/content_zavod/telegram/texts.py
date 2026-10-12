@@ -276,6 +276,13 @@ WELCOME_TEXT = (
     "и пишу по нему Статьи для Дзена и VC.ru."
 )
 # /start in a group: the bot works in the private chat only (ADR-0015).
+# ADR-0015: past `SIGNUP_DAILY_LIMIT` new Пространства in 24 hours.
+SIGNUP_CLOSED_TEXT = "Регистрация временно закрыта. Попробуйте нажать /start завтра."
+SIGNUP_LIMIT_ADMIN_TEXT = (
+    "⚠️ Регистрация закрыта: за сутки создано {limit} новых Пространств (SIGNUP_DAILY_LIMIT). "
+    "Новые /start получают «Регистрация временно закрыта», у существующих всё работает. "
+    "Следующее такое уведомление — не раньше чем через сутки."
+)
 GROUP_START_TEXT = "Я работаю только в личном чате: откройте его и нажмите /start."
 OPEN_PRIVATE_CHAT_BUTTON = "💬 Открыть личный чат"
 # A message before the first /start (or from before the Пространства, #118).
@@ -321,7 +328,8 @@ PLAN_EMPTY_TEXT = (
 )
 # No Ниша told yet (#118): no Plan is drafted by the default one, and the Расписание tick waits.
 NICHE_MISSING_TEXT = (
-    "Сначала скажите, о чём ваш блог: без Ниши я не подберу Темы. Укажите её — и составлю План."
+    "Сначала скажите, о чём ваш блог: без Ниши я не подберу Темы. "
+    "Укажите её — после этого можно составить План."
 )
 NICHE_ASK_BUTTON = "✏️ Указать Нишу"
 NICHE_UNSET = "не задана"
@@ -333,6 +341,11 @@ PLAN_MISSING_TEXT = (
     "Можно составить его прямо сейчас."
 )
 
+TOPIC_TOO_LONG_TEXT = "Тема слишком длинная — уложитесь в {limit} символов."
+COMMENT_TOO_LONG_TEXT = (
+    "⚠️ Комментарий слишком длинный — уложитесь в {limit} символов. "
+    "Напишите его короче или нажмите «Пропустить»."
+)
 TOPIC_QUESTION = (
     "✍️ Напишите Тему — она добавится в План этой недели.\n\n"
     "Например: Как малому бизнесу посчитать окупаемость рекламы"
@@ -345,6 +358,7 @@ SETTINGS_CURRENT = "Сейчас: {value}"
 SETTINGS_CHOOSE = "Выберите готовый вариант или задайте свой."
 SETTINGS_SAVED = "✅ {text}"
 SETTINGS_INVALID = "⚠️ {text}"
+SETTINGS_TOO_LONG = "Слишком длинно — уложитесь в {limit} символов."
 
 SCHEDULE_LABEL = "Расписание"
 SCHEDULE_PURPOSE = "когда автоматически составляется новый План"
