@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from content_zavod.domain import PlanHubView
 from content_zavod.scheduling import ScheduleConfig
+from content_zavod.settings import OwnerSettings
 from content_zavod.telegram import (
     PlanId,
     PlanItemId,
@@ -104,11 +105,37 @@ class FakeSchedule:
     async def set(self, workspace_id: int, day_of_week: str, hour: int, minute: int) -> None: ...
 
 
+class FakeSettings:
+    """`niche_saved` - whether the Владелец has told the Ниша."""
+
+    def __init__(self) -> None:
+        self.niche_saved = True
+
+    async def read(self, workspace_id: int) -> OwnerSettings:
+        return OwnerSettings(
+            niche="кофейни",
+            directions=(),
+            persona=None,
+            custom_persona=None,
+            niche_saved=self.niche_saved,
+        )
+
+
+class FakeOnboarding:
+    def __init__(self) -> None:
+        self.mid_way = False
+
+    async def needed(self, workspace_id: int) -> bool:
+        return self.mid_way
+
+
 class Env:
     def __init__(self, plan: FakePlan | None = None) -> None:
         self.bot = RecordingBot()
         self.pending = FakePendingInputs()
         self.plan = plan or FakePlan()
+        self.settings = FakeSettings()
+        self.onboarding = FakeOnboarding()
         self.menu = MainMenu(
             self.plan,
             FakeQueue(),
@@ -116,6 +143,8 @@ class Env:
             self.bot,
             TelegramGateway(self.bot),
             InputPrompt(self.bot, self.pending),
+            settings=self.settings,
+            onboarding=self.onboarding,
             now=lambda: NOW,
         )
 
@@ -217,6 +246,53 @@ async def test_no_plan_yet_explains_the_schedule_and_offers_to_make_one() -> Non
     assert env.bot.sent == []
 
 
+async def test_no_plan_and_no_niche_asks_for_the_niche_not_the_schedule() -> None:
+    """#118: the Расписание won't make a Plan without a Ниша - don't promise it will."""
+    env = Env()
+    env.settings.niche_saved = False
+
+    await env.menu.show_plan(WORKSPACE, USER, 42)
+
+    _, _, text, markup = env.bot.edited[0]
+    assert text.startswith("Сначала скажите, о чём ваш блог")
+    assert "по расписанию" not in text
+    assert button_data(markup) == [["sa:niche"], ["mn:"]]
+
+
+async def test_no_plan_mid_wizard_promises_no_schedule() -> None:
+    """The tick skips a Пространство whose wizard is mid-way, so no time is promised."""
+    env = Env()
+    env.onboarding.mid_way = True
+
+    await env.menu.show_plan(WORKSPACE, USER, 42)
+
+    _, _, text, markup = env.bot.edited[0]
+    assert text == "📋 Плана на 10–16 августа 2026 пока нет. Можно составить его прямо сейчас."
+    assert button_data(markup) == [["mg:"], ["mn:"]]
+
+
+async def test_a_plan_with_every_topic_removed_is_said_empty_and_not_sent_again() -> None:
+    plan = FakePlan(make_view("rejected"), PlanMessageRef(chat_id=USER, message_id=7))
+    env = Env(plan)
+
+    await env.menu.show_plan(WORKSPACE, USER, 42)
+
+    _, _, text, markup = env.bot.edited[0]
+    assert text.startswith("📋 План на 10–16 августа 2026 пока пуст")
+    assert button_data(markup) == [["mt:"], ["mn:"]]
+    assert env.bot.sent == [] and env.bot.deleted == []
+
+
+async def test_make_plan_button_without_a_niche_asks_for_it() -> None:
+    env = Env()
+    env.settings.niche_saved = False
+
+    await env.menu.generate_plan(WORKSPACE, USER)
+
+    assert env.plan.requested == []
+    assert env.bot.sent[0][1].startswith("Сначала скажите, о чём ваш блог")
+
+
 async def test_make_plan_button_runs_generate_plan() -> None:
     env = Env()
 
@@ -270,6 +346,8 @@ async def test_start_with_pictures_greets_with_a_photo_then_sends_the_menu() -> 
         env.bot,
         TelegramGateway(env.bot),
         InputPrompt(env.bot, env.pending),
+        settings=env.settings,
+        onboarding=env.onboarding,
         photos=AssetPhotos(env.bot, _GuideStore()),
     )
 

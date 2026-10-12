@@ -108,7 +108,17 @@ def _dispatcher(pool: asyncpg.Pool, queue: JobQueue, bot: RecordingBot) -> Callb
     prompts = InputPrompt(bot, pending)
     settings = SettingsService(WorkspaceSettingsStore(pool))
     schedule = ScheduleSettings(pool)
-    menu = MainMenu(plan, queue, schedule, bot, gateway, prompts)
+    onboarding_state = OnboardingState(WorkspaceSettingsStore(pool))
+    menu = MainMenu(
+        plan,
+        queue,
+        schedule,
+        bot,
+        gateway,
+        prompts,
+        settings=settings,
+        onboarding=onboarding_state,
+    )
     return CallbackDispatcher(
         plan,
         article,
@@ -125,9 +135,7 @@ def _dispatcher(pool: asyncpg.Pool, queue: JobQueue, bot: RecordingBot) -> Callb
         queue,
         menu,
         prompts,
-        Onboarding(
-            OnboardingState(WorkspaceSettingsStore(pool)), settings, prompts, bot, menu, schedule
-        ),
+        Onboarding(onboarding_state, settings, prompts, bot, menu, schedule),
         guide=Guide(AssetPhotos(bot, BotStateStore(pool)), bot),
     )
 
@@ -241,7 +249,7 @@ async def test_a_press_by_a_with_bs_ids_is_a_stale_button_and_changes_nothing_of
             workspace_a, CallbackInput(WS_A, 7, WS_A, None, payload), answer
         )
 
-        assert answer.calls[-1] == (STALE_BUTTON, True), payload
+        assert answer.calls == [(STALE_BUTTON, True)], payload  # the only answer Telegram takes
         assert (bot.sent, bot.edited, bot.photos, bot.deleted) == ([], [], [], []), payload
         assert await _snapshot(pool, WS_B) == before, payload
     # A's press created nothing in A either: no comment prompt opened, no Задача queued.

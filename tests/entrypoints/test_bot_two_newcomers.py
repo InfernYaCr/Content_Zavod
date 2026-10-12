@@ -68,7 +68,16 @@ class Telegram:
         pending = PendingInputs(pool)
         self.gateway = TelegramGateway(self.bot)
         prompts = InputPrompt(self.bot, pending)
-        menu = MainMenu(self.plan, self.queue, schedule, self.bot, self.gateway, prompts)
+        menu = MainMenu(
+            self.plan,
+            self.queue,
+            schedule,
+            self.bot,
+            self.gateway,
+            prompts,
+            settings=settings,
+            onboarding=OnboardingState(store),
+        )
         self.settings = settings
         config = load_settings(
             {

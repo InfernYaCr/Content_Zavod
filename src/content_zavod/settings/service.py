@@ -87,6 +87,7 @@ async def _read_settings(get: Callable[[str], Awaitable[str | None]]) -> OwnerSe
         custom_persona=custom_persona,
         project=parse_stored_project(project_raw),
         audience=parse_stored_audience(audience_raw),
+        niche_saved=bool(niche_raw),
     )
 
 

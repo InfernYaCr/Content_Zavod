@@ -44,12 +44,16 @@ from tests.tenancy import WS_A, WS_B
 class FakeWorkspaces:
     """A's owner chats in 42, B's in 43; `blocked` records `mark_blocked`."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, owners: dict[int, int] | None = None, blocked: bool = False) -> None:
         self.blocked: list[int] = []
+        self._owners = owners or {WS_A: 42, WS_B: 43}
+        self._is_blocked = blocked
 
     async def get(self, workspace_id):
-        owner = {WS_A: 42, WS_B: 43}[workspace_id]
-        return Workspace(workspace_id, owner, None, "Europe/Moscow", None, None)
+        owner = self._owners[workspace_id]
+        return Workspace(
+            workspace_id, owner, None, "Europe/Moscow", None, None, blocked=self._is_blocked
+        )
 
     async def mark_blocked(self, workspace_id) -> None:
         self.blocked.append(workspace_id)
@@ -346,7 +350,7 @@ async def test_empty_generate_plan_result_creates_no_plan_and_explains_why() -> 
     ((chat_id, text),) = gateway.sent_notices
     assert chat_id == 42
     assert "5–11 октября 2026" in text and "не создан" in text
-    assert "/topic" in text and "Направлени" not in text
+    assert "✍️ Предложить Тему" in text and "Направлени" not in text
 
 
 async def test_empty_generate_plan_result_of_only_recent_repeats_says_so() -> None:
@@ -793,3 +797,30 @@ async def test_a_blocked_bot_marks_the_workspace_and_counts_as_delivered() -> No
     )
 
     assert workspaces.blocked == [WS_B]
+
+
+@pytest.mark.parametrize(
+    "workspaces",
+    [FakeWorkspaces(blocked=True), FakeWorkspaces(owners={WS_A: -100500})],
+    ids=["blocked the bot", "the old team group"],
+)
+async def test_a_workspace_nobody_reads_gets_its_result_applied_but_nothing_sent(
+    workspaces: FakeWorkspaces,
+) -> None:
+    """ADR-0015: a Workspace that blocked the bot, or the interim team Workspace of a group
+    (in-flight Jobs from before the migration), has its result stored but nothing delivered."""
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    handle = _make_notification_handler(plan, article, gateway, workspaces)
+
+    await handle(
+        JobResult(
+            workspace_id=WS_A,
+            job_id=1,
+            job_type="generate_plan",
+            status="done",
+            output={"week_label": "Week 1", "topics": [{"title": "T", "summary": "s"}]},
+        )
+    )
+
+    assert len(plan.added_topics) == 1
+    assert gateway.sent_plans == [] and gateway.sent_notices == []

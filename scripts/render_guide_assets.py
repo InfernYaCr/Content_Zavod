@@ -75,6 +75,7 @@ from content_zavod.telegram.texts import (
     MENU_TEXT,
     PLAN_GENERATE_BUTTON,
     PLAN_MISSING_TEXT,
+    TOPIC_ADDED_TEXT,
     TOPIC_QUESTION,
     WELCOME_TEXT,
     format_week_range,
@@ -240,7 +241,7 @@ async def _slide_mockup(slide: Slide) -> Mockup:
             Bubble("🏠 Меню → ✍️ Предложить Тему", service=True),
             Bubble(question_text(TOPIC_QUESTION), _buttons(keyboard)),
             Bubble(example_of(TOPIC_QUESTION), mine=True),
-            Bubble("Тема добавлена в План — сообщение Плана выше обновлено."),
+            Bubble(TOPIC_ADDED_TEXT),
         ]
     elif slide.key == "faq":
         text = PLAN_MISSING_TEXT.format(

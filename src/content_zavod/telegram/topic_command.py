@@ -31,6 +31,7 @@ from ..workspaces import Workspace, WorkspaceId
 from .gateway import TelegramGateway
 from .generate_plan_command import workspace_week
 from .plan_delivery import PlanMessageRefs, deliver_plan_message
+from .texts import TOPIC_ADDED_TEXT
 from .types import PlanView
 
 RECENT_HISTORY_DAYS = 90
@@ -82,6 +83,4 @@ async def handle_topic_command(
     if not sent_new:
         # The Plan message was edited in place, maybe far up the chat - without a reply the
         # /topic would look like it did nothing.
-        await gateway.send_notice(
-            chat_id, "Тема добавлена в План — сообщение Плана выше обновлено."
-        )
+        await gateway.send_notice(chat_id, TOPIC_ADDED_TEXT)

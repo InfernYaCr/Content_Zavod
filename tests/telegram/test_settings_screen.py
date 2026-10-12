@@ -99,7 +99,7 @@ async def test_screen_shows_every_value_with_its_purpose_and_a_change_button(env
 
     ((_, text, markup, _),) = env.bot.sent
     assert text.startswith("⚙️ Настройки\nДействуют на каждую следующую генерацию.")
-    assert "Ниша: маркетинг\n↳ из неё подбираются Темы" in text
+    assert "Ниша: не задана\n↳ из неё подбираются Темы" in text  # not the default
     assert "Стиль автора: Маркетолог-практик\n↳ от чьего лица и каким тоном" in text
     assert "Аудитория: не задана\n↳ для кого пишутся Статьи и подбираются Темы" in text
     assert "Направления" not in text  # #128
@@ -142,7 +142,7 @@ async def test_change_niche_asks_with_an_example_and_the_current_value(env: Env)
 
     ((_, question, markup, _),) = env.bot.sent
     assert "Например: фитнес и здоровое питание" in question
-    assert "Сейчас: маркетинг" in question
+    assert "Сейчас: не задана" in question
     assert button_data(markup) == [[f"ci:{SETTING_INPUT_KIND}"]]
     assert env.pending.rows[(PRIVATE, OWNER)] == PendingInput(
         SETTING_INPUT_KIND, f"niche:{SCREEN}", 100
@@ -184,7 +184,7 @@ async def test_channel_or_site_asks_with_examples_and_dash_clears_it(env: Env) -
     assert "отправьте «-»" in question
 
     await env.reply("ftp://x Канал")
-    assert "Не получилось распознать ссылку. Примеры: @my_channel" in env.bot.edited[-1][2]
+    assert "Не получилось распознать ссылку. Подойдёт: @my_channel" in env.bot.edited[-1][2]
 
     await env.reply("t.me/my_channel")
     assert "Канал или сайт изменён: https://t.me/my_channel" in env.bot.edited[-1][2]

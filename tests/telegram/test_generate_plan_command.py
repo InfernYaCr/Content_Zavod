@@ -13,6 +13,7 @@ from content_zavod.domain import (
     PlanSummary,
     PlanView,
 )
+from content_zavod.settings import OwnerSettings
 from content_zavod.telegram import MessageGone
 from content_zavod.telegram.generate_plan_command import (
     handle_cancel_regenerate_plan,
@@ -23,6 +24,22 @@ from content_zavod.workspaces import Workspace
 from tests.tenancy import WS_A
 
 FIXED_NOW = datetime(2026, 8, 3, 6, 0, tzinfo=UTC)  # 2026-W32 Monday, 09:00 in Moscow
+
+
+class FakeSettings:
+    def __init__(self, *, niche_saved: bool = True) -> None:
+        self.niche_saved = niche_saved
+
+    async def read(self, workspace_id: int) -> OwnerSettings:
+        return OwnerSettings(
+            niche="кофейни",
+            directions=(),
+            persona=None,
+            custom_persona=None,
+            niche_saved=self.niche_saved,
+        )
+
+
 WORKSPACE = Workspace(WS_A, 1, None, "Europe/Moscow", None, None)
 
 
@@ -119,9 +136,16 @@ async def _run(
     *,
     workspace: Workspace = WORKSPACE,
     now: datetime = FIXED_NOW,
+    niche_saved: bool = True,
 ) -> None:
     await handle_generate_plan_command(
-        plan, gateway, workspace, 1, queue=queue or FakeQueue(), now=lambda: now
+        plan,
+        gateway,
+        workspace,
+        1,
+        queue=queue or FakeQueue(),
+        settings=FakeSettings(niche_saved=niche_saved),
+        now=lambda: now,
     )
 
 
@@ -131,11 +155,32 @@ async def test_unannounced_run_starts_the_generation_without_a_notice() -> None:
     plan, gateway = FakePlan(active=None), FakeGateway()
 
     await handle_generate_plan_command(
-        plan, gateway, WORKSPACE, 5, queue=FakeQueue(), now=lambda: FIXED_NOW, announce=False
+        plan,
+        gateway,
+        WORKSPACE,
+        5,
+        queue=FakeQueue(),
+        settings=FakeSettings(),
+        now=lambda: FIXED_NOW,
+        announce=False,
     )
 
     assert plan.requested == ["2026-W32"]
     assert gateway.sent_notices == [] and gateway.sent_messages == []
+
+
+@pytest.mark.asyncio
+async def test_without_a_niche_it_asks_for_one_instead_of_drafting_by_the_default() -> None:
+    """#118: a Plan by the default Ниша («маркетинг») would be about someone else's blog."""
+    plan, gateway = FakePlan(active=None), FakeGateway()
+
+    await _run(plan, gateway, niche_saved=False)
+
+    assert plan.requested == [] and gateway.sent_notices == []
+    ((chat_id, text, keyboard),) = gateway.sent_messages
+    assert chat_id == 1 and text.startswith("Сначала скажите, о чём ваш блог")
+    ((button,),) = keyboard.inline_keyboard
+    assert (button.text, button.callback_data) == ("✏️ Указать Нишу", "sa:niche")
 
 
 @pytest.mark.asyncio
@@ -303,22 +348,8 @@ async def test_cancel_leaves_the_plan_untouched() -> None:
     active = PlanView(id=PlanId("plan-1"), week_label="2026-W32", items=[])
     plan, gateway = FakePlan(active=active), FakeGateway()
 
-    await handle_cancel_regenerate_plan(
-        plan, gateway, WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-1")
-    )
+    await handle_cancel_regenerate_plan(gateway, chat_id=1, message_id=5)
 
     assert plan.archived == []
     assert plan.requested == []
     assert gateway.edited == [(1, 5, "Отменено.")]
-
-
-@pytest.mark.asyncio
-async def test_cancel_for_a_plan_the_workspace_does_not_have_is_stale() -> None:
-    plan, gateway = FakePlan(), FakeGateway()
-
-    with pytest.raises(PlanNotFound):
-        await handle_cancel_regenerate_plan(
-            plan, gateway, WS_A, chat_id=1, message_id=5, plan_id=PlanId("plan-b")
-        )
-
-    assert gateway.edited == []

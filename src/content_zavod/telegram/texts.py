@@ -312,6 +312,21 @@ PLAN_GENERATE_BUTTON = "🪄 Составить План"
 PLAN_STATE_PENDING = "ждёт согласования"
 PLAN_STATE_APPROVED = "утверждён"
 PLAN_SENT_BELOW = "Прислал его ниже 👇"
+# A Тема proposed into a Plan whose message is further up the chat: where to find it.
+TOPIC_ADDED_TEXT = f"Тема добавлена в План. Открыть его: /menu → {MENU_PLAN_BUTTON}"
+# What to do when a generated Plan came out empty (#84).
+TOPIC_PROPOSE_HINT = f"Предложите Тему сами: /menu → {MENU_TOPIC_BUTTON}"
+PLAN_EMPTY_TEXT = (
+    "📋 План на {week} пока пуст: все Темы из него убраны. Можно предложить свою Тему."
+)
+# No Ниша told yet (#118): no Plan is drafted by the default one, and the Расписание tick waits.
+NICHE_MISSING_TEXT = (
+    "Сначала скажите, о чём ваш блог: без Ниши я не подберу Темы. Укажите её — и составлю План."
+)
+NICHE_ASK_BUTTON = "✏️ Указать Нишу"
+NICHE_UNSET = "не задана"
+# The week's Plan is missing, but the Расписание won't make one either (the wizard isn't finished).
+PLAN_MISSING_MANUAL_TEXT = "📋 Плана на {week} пока нет. Можно составить его прямо сейчас."
 PLAN_MISSING_TEXT = (
     "📋 Плана на {week} пока нет.\n"
     "Новый План составляется автоматически по расписанию: {schedule}.\n"

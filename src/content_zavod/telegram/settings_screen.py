@@ -58,6 +58,7 @@ from .gateway import BotClient
 from .input_prompt import InputPrompt
 from .texts import (
     BACK_BUTTON,
+    NICHE_UNSET,
     PROJECT_EXAMPLES,
     SCHEDULE_CHANGE_BUTTON,
     SCHEDULE_DAY_SAVED,
@@ -154,7 +155,7 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
         label="Ниша",
         change_button="✏️ Изменить Нишу",
         purpose="из неё подбираются Темы",
-        show=lambda current: current.niche,
+        show=lambda current: current.niche if current.niche_saved else NICHE_UNSET,
         save=_save_niche,
         question=(
             "✏️ Напишите новую Нишу — тематику, в которой я подбираю Темы и пишу Статьи.\n\n"
@@ -224,11 +225,7 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
             "Можно через пробел добавить пару слов, что там. Чтобы убрать ссылку, отправьте «-»."
         ),
         invalid="Пришлите ссылку на канал или сайт.",
-        invalid_by_field={
-            "project_url": (
-                "Не получилось распознать ссылку. Примеры: @my_channel, t.me/my_channel, example.ru"
-            )
-        },
+        invalid_by_field={"project_url": f"Не получилось распознать ссылку. {PROJECT_EXAMPLES}"},
     ),
 )
 _FIELDS: dict[str, SettingField] = {setting.key: setting for setting in SETTING_FIELDS}

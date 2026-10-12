@@ -45,3 +45,38 @@ async def test_0013_drops_roles_and_the_team_note_and_blocks_the_team_workspace(
         (-100500, True),
         (7001, False),
     ]
+
+
+async def test_0013_keeps_a_team_workspace_on_a_private_chat_as_its_owners(
+    isolated_pool: asyncpg.Pool, tmp_path: Path
+) -> None:
+    """A bot whose TELEGRAM_NOTIFY_CHAT_ID was the owner's own private chat (a positive id - the
+    live install): that interim Workspace simply is the owner's from now on - unblocked, with its
+    data. Its stale Направления go: no screen shows or changes them any more (#128)."""
+    for path in SQL_DIR.glob("*.sql"):
+        if path.stem[:4] <= "0012":
+            shutil.copy(path, tmp_path / path.name)
+    await run_migrations(isolated_pool, tmp_path)
+    workspace_id = await isolated_pool.fetchval(
+        "INSERT INTO workspaces (owner_telegram_id, timezone) VALUES (7002, 'Europe/Moscow') "
+        "RETURNING id"
+    )
+    await isolated_pool.execute(
+        """
+        INSERT INTO workspace_settings (workspace_id, key, value) VALUES
+            ($1, 'niche', 'кофейни'), ($1, 'directions', 'кофе, чай'), ($1, 'onboarding', 'done');
+        INSERT INTO plans (id, workspace_id, week_label) VALUES ('p1', $1, '2026-W42');
+        """.replace("$1", str(workspace_id))
+    )
+
+    assert await run_migrations(isolated_pool) == ["0013_drop_roles"]
+
+    blocked = await isolated_pool.fetchval(
+        "SELECT bot_blocked_at FROM workspaces WHERE id = $1", workspace_id
+    )
+    keys = await isolated_pool.fetch(
+        "SELECT key FROM workspace_settings WHERE workspace_id = $1 ORDER BY key", workspace_id
+    )
+    assert blocked is None
+    assert [row["key"] for row in keys] == ["niche", "onboarding"]
+    assert await isolated_pool.fetchval("SELECT count(*) FROM plans") == 1

@@ -69,7 +69,6 @@ from ..telegram import (
     build_open_menu_keyboard,
     deliver_plan_hub,
     deliver_plan_message,
-    handle_generate_plan_command,
     handle_history_command,
     handle_topic_command,
     sync_admin_commands,
@@ -90,6 +89,7 @@ from ..telegram.texts import (
     NO_WORKSPACE_TEXT,
     OPEN_PRIVATE_CHAT_BUTTON,
     STALE_BUTTON,
+    TOPIC_PROPOSE_HINT,
     UNKNOWN_MESSAGE_TEXT,
     job_failure_text,
 )
@@ -397,7 +397,7 @@ def _build_router(
     @router.message(Command("generate_plan"))
     @in_workspace
     async def on_generate_plan(message: Message, workspace: Workspace) -> None:
-        await handle_generate_plan_command(plan, gateway, workspace, message.chat.id, queue=queue)
+        await main_menu.generate_plan(workspace, message.chat.id)
 
     @router.message(Command("history"))
     @in_workspace
@@ -458,16 +458,17 @@ def _build_router(
             await callback.answer()
             return
         if callback_input is None:
+            await callback.answer()  # nothing to act on, but no spinner left on the button
             return
-        # A private chat's id is its user's id. A button anywhere else - the old team chat - or
-        # from someone without a Пространство acts on nothing (ADR-0015).
-        workspace = (
-            await workspaces.get_by_owner(callback_input.user_id)
-            if callback_input.chat_id == callback_input.user_id
-            else None
-        )
-        if workspace is None:
+        if callback_input.chat_id != callback_input.user_id:
+            # A private chat's id is its user's id. A button anywhere else - the old team chat
+            # - acts on nothing (ADR-0015).
             await callback.answer(STALE_BUTTON, show_alert=True)
+            return
+        workspace = await workspaces.get_by_owner(callback_input.user_id)
+        if workspace is None:
+            # A button from before the Пространства (#118), pressed before any /start.
+            await callback.answer(NO_WORKSPACE_TEXT, show_alert=True)
             return
         await dispatcher.dispatch(workspace, callback_input, callback.answer)
 
@@ -565,10 +566,7 @@ def _empty_plan_text(week_label: str, empty_reason: str | None) -> str:
         why = "все подобранные Темы недавно уже были в Планах"
     else:
         why = "не нашлось подходящих Тем"
-    return (
-        f"План на {format_week_range(week_label)} не создан: {why}.\n"
-        "Предложите Тему сами: /topic <текст>"
-    )
+    return f"План на {format_week_range(week_label)} не создан: {why}.\n{TOPIC_PROPOSE_HINT}"
 
 
 async def _apply_failure(plan: Plan, article: Article, result: JobResult) -> list[_Delivery]:
@@ -732,6 +730,11 @@ def _make_notification_handler(
             logger.error("Job %s has no Workspace %s", result.job_id, result.workspace_id)
             return
         deliveries = await _apply_result(plan, article, result)
+        if workspace.blocked or workspace.owner_telegram_id < 0:
+            # Nobody would read it: the owner blocked the bot, or this is the interim team
+            # Workspace of a group chat (a Job from before 0013). The result is stored above.
+            logger.info("Job %s: Workspace %s is not delivered to", result.job_id, workspace.id)
+            return
         try:
             for delivery in deliveries:
                 await _deliver(
@@ -795,8 +798,17 @@ async def main(settings: Settings | None = None) -> None:
         settings_screen = SettingsScreen(
             settings_service, schedule_settings, workspaces, bot_client, prompts
         )
+        onboarding_state = OnboardingState(settings_store)
         main_menu = MainMenu(
-            plan, queue, schedule_settings, bot_client, gateway, prompts, photos=photos
+            plan,
+            queue,
+            schedule_settings,
+            bot_client,
+            gateway,
+            prompts,
+            settings=settings_service,
+            onboarding=onboarding_state,
+            photos=photos,
         )
         # Everyone's list (#95); a Глобальный администратор's own chat also lists /admin.
         await bot.set_my_commands(MENU_COMMANDS, scope=BotCommandScopeDefault())
@@ -805,7 +817,7 @@ async def main(settings: Settings | None = None) -> None:
         await bot.set_my_description(BOT_DESCRIPTION)
         await bot.set_my_short_description(BOT_SHORT_DESCRIPTION)
         onboarding = Onboarding(
-            OnboardingState(settings_store),
+            onboarding_state,
             settings_service,
             prompts,
             bot_client,

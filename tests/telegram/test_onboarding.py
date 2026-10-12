@@ -188,7 +188,7 @@ async def test_start_asks_for_the_niche_first_with_an_example_and_no_skip(env: E
     assert "Какая у вас Ниша" in question
     assert "Например: фитнес и здоровое питание" in question
     assert "новую" not in question  # the Экран Настроек's «Напишите новую Нишу»
-    assert "Сейчас: маркетинг" in question
+    assert "Сейчас: не задана" in question
     assert button_texts(markup) == [["◀ Назад"], ["Отмена"]]
     assert button_data(markup) == [["ob:intro"], [f"ci:{KIND}"]]
     assert env.wait == PendingInput(KIND, "niche", 101)
@@ -325,7 +325,7 @@ async def test_skipping_the_last_step_shows_the_review_card(env: Env) -> None:
     await env.press("review")
 
     _, text, markup, _ = env.last
-    assert text.startswith("🔎 Проверьте вводные\n\nНиша: маркетинг\nАудитория: ")
+    assert text.startswith("🔎 Проверьте вводные\n\nНиша: не задана\nАудитория: ")
     assert "Ваш канал или сайт: не задан" in text
     assert button_data(markup) == [
         ["og:"],
@@ -365,6 +365,7 @@ async def test_a_step_unknown_to_this_build_falls_back_to_the_review(env: Env) -
 
 async def test_launch_finishes_and_starts_the_first_plan_once(env: Env) -> None:
     await env.press("start")
+    await env.answer("фитнес")
 
     await env.onboarding.launch(WORKSPACE, PRIVATE, 77)
     await env.onboarding.launch(WORKSPACE, PRIVATE, 77)  # double tap
@@ -383,7 +384,8 @@ async def test_launch_finishes_and_starts_the_first_plan_once(env: Env) -> None:
     assert await env.state.needed(WS_A) is False
 
 
-async def test_a_review_card_left_after_later_still_launches(env: Env) -> None:
+async def test_a_review_card_left_after_later_still_launches() -> None:
+    env = Env({"niche": "фитнес"})
     await env.press("review")
     await env.onboarding.later(WORKSPACE, PRIVATE, 100)
 
@@ -478,6 +480,25 @@ async def test_with_pictures_the_intro_is_a_photo_with_the_same_text_and_buttons
     assert "4 коротких шага" in caption
     assert button_data(markup) == [["ob:start"], ["ox:"], ["gd:"]]
     assert env.bot.sent == []
+
+
+async def test_launch_without_a_niche_asks_for_it_and_finishes_nothing(env: Env) -> None:
+    """#118: no Plan by the default Ниша - and the wizard stays unfinished, so /start still
+    offers it and a later «🚀 Запустить» launches for real."""
+    await env.onboarding.launch(WORKSPACE, PRIVATE, 77)
+
+    assert env.menu.generated == []
+    assert "onboarding" not in env.store.values
+    ((_, message_id, text, markup),) = env.bot.edited
+    assert message_id == 77 and text.startswith("Сначала скажите, о чём ваш блог")
+    assert button_data(markup) == [["ob:niche:r"]]  # the wizard's step, back to the review
+
+
+async def test_the_niche_step_does_not_pass_the_default_off_as_told(env: Env) -> None:
+    await env.press("start")
+
+    assert "Сейчас: не задана" in env.last[1]
+    assert "маркетинг" not in env.last[1]
 
 
 async def test_one_workspaces_wizard_never_touches_anothers() -> None:

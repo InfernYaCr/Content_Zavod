@@ -12,7 +12,8 @@ With no active Plan, the week's Job is made to actually run again (#83):
 empty result, see #84) is followed by a fresh rerun keyed on it. The Plan itself lands in the
 Пространство owner's private chat via the notification handler. The week is counted in the
 Workspace's own time zone, like the Расписание tick does (ADR-0015). Replies show the week as
-a date range, never the raw `2026-W41` label.
+a date range, never the raw `2026-W41` label. A Пространство that hasn't told its Ниша yet gets
+asked for it instead: a Plan by the default Ниша would be about someone else's blog.
 """
 
 from __future__ import annotations
@@ -22,11 +23,16 @@ from datetime import UTC, datetime
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
 from ..domain import PlanId
 from ..job_queue import JobId, JobStatus
 from ..scheduling import week_label_for
+from ..settings import OwnerSettings
 from ..workspaces import Workspace, WorkspaceId
+from .callback_codec import SimpleAction, encode_callback_data
 from .gateway import MessageGone, TelegramGateway, build_confirm_keyboard, format_week_range
+from .texts import NICHE_ASK_BUTTON, NICHE_MISSING_TEXT
 from .types import PlanMessageRef, PlanSummary, PlanView
 
 
@@ -58,6 +64,18 @@ class GenerationJobs(Protocol):
     async def retry(self, workspace_id: WorkspaceId, job_id: JobId) -> bool: ...
 
 
+class NicheSource(Protocol):
+    async def read(self, workspace_id: WorkspaceId) -> OwnerSettings: ...
+
+
+def niche_button() -> InlineKeyboardButton:
+    """«✏️ Указать Нишу»: the Экран Настроек's own Ниша question."""
+    return InlineKeyboardButton(
+        text=NICHE_ASK_BUTTON,
+        callback_data=encode_callback_data(SimpleAction("ask_setting", "niche")),
+    )
+
+
 def workspace_week(workspace: Workspace, now: datetime) -> str:
     """This week's label in the Пространство's own time zone - the one its Расписание uses."""
     return week_label_for(now, ZoneInfo(workspace.timezone))
@@ -70,11 +88,19 @@ async def handle_generate_plan_command(
     chat_id: int,
     *,
     queue: GenerationJobs,
+    settings: NicheSource,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     announce: bool = True,
 ) -> None:
     """`announce=False`: the caller has already told the user what is happening (the
     onboarding's «🚀 Запускаю!», #96), so a started generation adds no «Генерирую План…»."""
+    if not (await settings.read(workspace.id)).niche_saved:
+        await gateway.send_message(
+            chat_id,
+            NICHE_MISSING_TEXT,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[niche_button()]]),
+        )
+        return
     week_label = workspace_week(workspace, now())
     week = format_week_range(week_label)
     active = await plan.find_active(workspace.id, week_label)
@@ -136,14 +162,6 @@ async def handle_confirm_regenerate_plan(
 
 
 async def handle_cancel_regenerate_plan(
-    plan: PlanGeneration,
-    gateway: TelegramGateway,
-    workspace_id: WorkspaceId,
-    chat_id: int,
-    message_id: int,
-    plan_id: PlanId,
+    gateway: TelegramGateway, chat_id: int, message_id: int
 ) -> None:
-    """«Отмена» under «Перегенерировать полностью?». The Plan is looked up first: a button
-    naming a Plan this Пространство doesn't have is a stale one (ADR-0015)."""
-    await plan.get_summary(workspace_id, plan_id)
     await gateway.edit_notice(chat_id, message_id, "Отменено.")

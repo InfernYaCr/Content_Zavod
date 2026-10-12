@@ -9,7 +9,8 @@ from typing import Any, cast
 
 import pytest
 from aiogram import Bot, Dispatcher
-from aiogram.types import Chat, Message, Update, User
+from aiogram.methods import AnswerCallbackQuery
+from aiogram.types import CallbackQuery, Chat, InaccessibleMessage, Message, Update, User
 
 from content_zavod.config import load_settings
 from content_zavod.entrypoints.bot import _build_router, answer_text
@@ -29,6 +30,7 @@ from content_zavod.telegram.texts import (
     ADMIN_PENDING_TEXT,
     GROUP_START_TEXT,
     NO_WORKSPACE_TEXT,
+    STALE_BUTTON,
     UNKNOWN_MESSAGE_TEXT,
 )
 from content_zavod.workspaces import Workspace, WorkspaceId
@@ -124,7 +126,14 @@ class Bot_:
         prompts = InputPrompt(self.bot, self.pending)
         settings = SettingsService(self.store)
         menu = MainMenu(
-            cast(Any, Unused()), cast(Any, Unused()), FakeSchedule(), self.bot, gateway, prompts
+            cast(Any, Unused()),
+            cast(Any, Unused()),
+            FakeSchedule(),
+            self.bot,
+            gateway,
+            prompts,
+            settings=settings,
+            onboarding=OnboardingState(self.store),
         )
         self.flows = dict(
             plan_review=PlanReview(NoPlanOps(), TelegramCommentPrompt(self.bot), self.pending),
@@ -173,6 +182,7 @@ class Bot_:
         )
         self.aiogram_bot = Bot(token="123456:test")
         self._update_id = 0
+        self.answers: list[tuple[str | None, bool | None]] = []
 
     async def message(self, text: str, *, user: int, chat: int | None = None) -> None:
         self._update_id += 1
@@ -188,13 +198,54 @@ class Bot_:
             self.aiogram_bot, Update(update_id=self._update_id, message=message)
         )
 
+    async def press(
+        self,
+        data: str,
+        *,
+        user: int,
+        chat: int | None = None,
+        inaccessible: bool = False,
+        no_message: bool = False,
+    ) -> list[tuple[str | None, bool | None]]:
+        """A button press; returns what the bot answered the callback with."""
+        self._update_id += 1
+        chat_id = user if chat is None else chat
+        chat_ = Chat(id=chat_id, type="private" if chat_id == user else "supergroup")
+        message: Message | InaccessibleMessage = (
+            InaccessibleMessage(chat=chat_, message_id=0, date=0)
+            if inaccessible
+            else Message(message_id=5, date=datetime.now(UTC), chat=chat_, text="…")
+        )
+        query = CallbackQuery(
+            id=str(self._update_id),
+            from_user=User(id=user, is_bot=False, first_name="U"),
+            chat_instance="c",
+            message=None if no_message else message,
+            inline_message_id="inline" if no_message else None,
+            data=data,
+        )
+        self.answers.clear()
+        await self.dispatcher.feed_update(
+            self.aiogram_bot, Update(update_id=self._update_id, callback_query=query)
+        )
+        return list(self.answers)
+
     def texts(self, chat: int) -> list[str]:
         return [text for chat_id, text, _, _ in self.bot.sent if chat_id == chat]
 
 
 @pytest.fixture
-def bot() -> Bot_:
-    return Bot_()
+def bot(monkeypatch: pytest.MonkeyPatch) -> Bot_:
+    tg = Bot_()
+    tg.answers = []
+
+    async def telegram_api(self: Bot, method: Any, request_timeout: int | None = None) -> Any:
+        if isinstance(method, AnswerCallbackQuery):
+            tg.answers.append((method.text, method.show_alert))
+        return True
+
+    monkeypatch.setattr(Bot, "__call__", telegram_api)
+    return tg
 
 
 async def test_admin_from_anyone_else_is_an_unknown_command(bot: Bot_) -> None:
@@ -263,3 +314,46 @@ async def test_a_text_of_a_does_not_close_bs_wait(bot: Bot_) -> None:
     await answer_text(workspace_b, USER, USER, "юристы", **bot.flows)
 
     assert bot.store.values == {(WS_B, "niche"): "юристы"}
+
+
+async def test_a_button_in_a_group_acts_on_nothing(bot: Bot_) -> None:
+    """The old team chat's buttons: the presser's own Пространство is not the group's."""
+    await bot.message("/start", user=USER)
+    bot.bot.sent.clear()
+
+    assert await bot.press("mn:", user=USER, chat=GROUP) == [(STALE_BUTTON, True)]
+    assert bot.bot.sent == [] and bot.bot.edited == []
+
+
+async def test_a_button_before_start_asks_for_start(bot: Bot_) -> None:
+    assert await bot.press("mn:", user=USER) == [(NO_WORKSPACE_TEXT, True)]
+    assert bot.workspaces.by_owner == {}
+
+
+async def test_a_button_on_a_message_telegram_no_longer_shows_is_still_answered(
+    bot: Bot_,
+) -> None:
+    """No spinner left on the button, even when there is no message to act on."""
+    await bot.message("/start", user=USER)
+
+    assert await bot.press("mn:", user=USER, inaccessible=True) == [(None, None)]
+    assert await bot.press("mn:", user=USER, no_message=True) == [(None, None)]
+
+
+async def test_an_old_buttons_unknown_code_is_answered_silently(bot: Bot_) -> None:
+    await bot.message("/start", user=USER)
+
+    assert await bot.press("ra:7", user=USER) == [(None, None)]  # «Запросить доступ», #118
+
+
+async def test_through_the_router_a_text_of_a_does_not_close_bs_wait(bot: Bot_) -> None:
+    """A and B are two people: A's text reaches only A's Пространство."""
+    await bot.message("/start", user=USER)
+    await bot.message("/start", user=ADMIN)
+    workspace_b = bot.workspaces.by_owner[ADMIN]
+    await bot.flows["settings_screen"].ask(workspace_b, ADMIN, ADMIN, "niche", screen_message_id=5)
+
+    await bot.message("юристы", user=USER)
+
+    assert bot.pending.by_workspace[workspace_b.id][(ADMIN, ADMIN)].kind == SETTING_INPUT_KIND
+    assert (workspace_b.id, "niche") not in bot.store.values

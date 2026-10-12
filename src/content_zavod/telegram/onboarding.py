@@ -54,6 +54,8 @@ from .settings_screen import (
 )
 from .texts import (
     BACK_BUTTON,
+    NICHE_ASK_BUTTON,
+    NICHE_MISSING_TEXT,
     ONBOARDING_ALREADY_LAUNCHED,
     ONBOARDING_AUDIENCE_QUESTION,
     ONBOARDING_CANCELLED,
@@ -295,7 +297,25 @@ class Onboarding:
     async def launch(self, workspace: Workspace, chat_id: int, message_id: int) -> None:
         """«🚀 Запустить»: finish and start the first Plan. Only the press that actually
         finished the wizard starts it - a double tap or a stale card only hear it's already on
-        its way."""
+        its way. Without a Ниша nothing is launched yet: the card turns into its question."""
+        if not (await self._settings.read(workspace.id)).niche_saved:
+            await self._bot.edit_message_text(
+                chat_id,
+                message_id,
+                NICHE_MISSING_TEXT,
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            _button(
+                                NICHE_ASK_BUTTON,
+                                "onboarding_step",
+                                StepRef("niche", review=True).encode(),
+                            )
+                        ]
+                    ]
+                ),
+            )
+            return
         if not await self._state.finish(workspace.id):
             await self._bot.edit_message_text(
                 chat_id,

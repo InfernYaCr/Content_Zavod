@@ -414,6 +414,8 @@ class Fixtures:
             self.bot,
             self.gateway,
             self.prompts,
+            settings=SettingsService(self.owner_settings),
+            onboarding=OnboardingState(self.owner_settings),
         )
         self.onboarding = Onboarding(
             OnboardingState(self.owner_settings),
@@ -942,6 +944,8 @@ async def test_menu_redraws_the_main_menu_in_place(f: Fixtures) -> None:
 
 
 async def test_menu_plan_shows_the_plan_screen_in_place(f: Fixtures) -> None:
+    f.owner_settings.values["niche"] = "кофейни"
+
     await dispatch(f, SimpleAction("menu_plan", ""))
 
     ((_, message_id, text, _),) = f.bot.edited_messages
@@ -949,6 +953,8 @@ async def test_menu_plan_shows_the_plan_screen_in_place(f: Fixtures) -> None:
 
 
 async def test_menu_generate_plan_requests_the_weeks_plan(f: Fixtures) -> None:
+    f.owner_settings.values["niche"] = "кофейни"
+
     await dispatch(f, SimpleAction("menu_generate_plan", ""))
 
     assert len(f.plan.requested_weeks) == 1
@@ -1040,6 +1046,7 @@ async def test_onboarding_pick_saves_the_preset(f: Fixtures) -> None:
 
 
 async def test_onboarding_launch_starts_the_first_plan_once(f: Fixtures) -> None:
+    f.owner_settings.values["niche"] = "кофейни"
     await dispatch(f, SimpleAction("onboarding_launch", ""))
     await dispatch(f, SimpleAction("onboarding_launch", ""))
 

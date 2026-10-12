@@ -9,9 +9,11 @@ over them - and is one exhaustive `match` over the five composite payload shapes
 
 There are no Roles (ADR-0015): `dispatch` gets the `Workspace` of whoever pressed the button,
 resolved by the bot from `from_user.id` - never from `callback_data`. Every branch that carries
-an id (План, Тема, Статья, Версия, Задача) looks it up in that Workspace first; «not found» -
-deleted, another Workspace's or never existed - is the same alert, «Кнопка устарела», so the
-answer never hints that an id exists elsewhere.
+an id (План, Тема, Статья, Версия, Задача) looks it up in that Workspace first, before it
+answers the callback; «not found» - deleted, another Workspace's or never existed - is the same
+alert, «Кнопка устарела», so the answer never hints that an id exists elsewhere. Telegram takes
+only the first answer to a callback: a branch that answered before its lookup would leave the
+alert unseen.
 """
 
 from __future__ import annotations
@@ -285,9 +287,10 @@ class CallbackDispatcher:
                 await answer()
                 await self._onboarding.launch(workspace, chat_id, message_id)
             case Page(plan_id=plan_id, page=page):
+                summary = await self._plan.get_summary(ws, PlanId(plan_id))
                 await answer()
                 # A stale page button pressed after approval redraws the Хаб, not the review list.
-                if (await self._plan.get_summary(ws, PlanId(plan_id))).status == "approved":
+                if summary.status == "approved":
                     hub = await self._plan.get_hub(ws, PlanId(plan_id))
                     await self._gateway.edit_hub(chat_id, message_id, hub)
                     return
@@ -299,30 +302,35 @@ class CallbackDispatcher:
                     self._plan, self._gateway, ws, chat_id, message_id, int(id_)
                 )
             case HistoryWeek():
+                await self._plan.get_summary(ws, PlanId(payload.plan_id))
                 await answer()
                 await handle_history_week(
                     self._plan, self._article, self._gateway, ws, chat_id, message_id, payload
                 )
             case HistoryVersions():
+                await self._article.get_summary(ws, ArticleId(payload.article_id))
                 await answer()
                 await handle_history_versions(
                     self._article, self._gateway, ws, chat_id, message_id, payload
                 )
             case HistoryVersion():
+                await self._article.get_version(
+                    ws, ArticleId(payload.article_id), payload.version_id
+                )
                 await answer()
                 await handle_history_version(
                     self._article, self._gateway, ws, chat_id, message_id, payload
                 )
             case SimpleAction(action="confirm_regenerate_plan", id_=id_):
+                await self._plan.get_summary(ws, PlanId(id_))
                 await answer()
                 await handle_confirm_regenerate_plan(
                     self._plan, self._gateway, ws, chat_id, message_id, PlanId(id_)
                 )
             case SimpleAction(action="cancel_regenerate_plan", id_=id_):
+                await self._plan.get_summary(ws, PlanId(id_))
                 await answer()
-                await handle_cancel_regenerate_plan(
-                    self._plan, self._gateway, ws, chat_id, message_id, PlanId(id_)
-                )
+                await handle_cancel_regenerate_plan(self._gateway, chat_id, message_id)
             case SimpleAction(action="retry", id_=id_):
                 # «🔁 Повторить» under an old cover failure must not draw (and bill) a cover
                 # after `YANDEX_COVERS=off` (#123).
@@ -367,8 +375,8 @@ class CallbackDispatcher:
                 # By hand, from a Статья card: the result comes back here as a photo (#91).
                 await self._plan.request_cover(ws, PlanItemId(id_), manual=True)
             case ExportArticle(article_id=article_id, article_format=article_format):
-                await answer()
                 view = await self._article.get(ws, ArticleId(article_id))
+                await answer()
                 await self._gateway.send_article_document(chat_id, view, article_format)
             case SimpleAction(action="regenerate", id_=id_):
                 plan_item_id = PlanItemId(id_)
@@ -391,6 +399,7 @@ class CallbackDispatcher:
                 ):
                     await self._article_regeneration.cancel(ws, chat_id, user_id, ArticleId(id_))
             case SimpleAction(action="approve_all", id_=id_):
+                await self._plan.get_summary(ws, PlanId(id_))
                 await answer()
                 await self._plan_review.handle_action(ws, chat_id, user_id, id_, "approve_all")
                 await _generate_articles_for_approved_plan(
@@ -402,11 +411,12 @@ class CallbackDispatcher:
                 hub = await self._plan.get_hub(ws, PlanId(id_))
                 await self._gateway.edit_hub(chat_id, message_id, hub)
             case SimpleAction(action="hub_topic", id_=id_):
-                await answer()
                 plan_id = await self._plan.get_plan_id_for_item(ws, PlanItemId(id_))
+                await answer()
                 await self._plan.set_hub_view(ws, plan_id, PlanItemId(id_))
                 await self._redraw_hub(ws, chat_id, message_id, plan_id)
             case SimpleAction(action="hub_back", id_=id_):
+                await self._plan.get_summary(ws, PlanId(id_))
                 await answer()
                 await self._plan.set_hub_view(ws, PlanId(id_), None)
                 await self._redraw_hub(ws, chat_id, message_id, PlanId(id_))
@@ -438,11 +448,11 @@ class CallbackDispatcher:
                 await self._retry_failed(ws, [t for t in hub.topics if t.id == id_], answer)
                 await self._redraw_hub(ws, chat_id, message_id, plan_id)
             case SimpleAction(action="delete", id_=id_):
+                plan_id = await self._plan.get_plan_id_for_item(ws, PlanItemId(id_))
                 await answer()
                 await self._plan_review.handle_action(ws, chat_id, user_id, id_, "delete")
                 # #81: the Plan message itself shows the Тема as removed, no separate notice -
                 # redrawn on the page that holds the Тема, so a press on page 2 stays there.
-                plan_id = await self._plan.get_plan_id_for_item(ws, PlanItemId(id_))
                 view = await self._plan.get(ws, plan_id)
                 index = next((i for i, item in enumerate(view.items) if item.id == id_), 0)
                 await self._gateway.edit_plan(
