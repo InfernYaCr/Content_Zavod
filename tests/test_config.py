@@ -151,3 +151,11 @@ def test_yandex_models_default_to_explicit_names_and_are_configurable() -> None:
     env = {**_BASE_ENV, "YANDEX_TEXT_MODEL": "yandexgpt-5-lite", "YANDEX_IMAGE_MODEL": "art-x"}
     models = load_settings(env).yandex_models
     assert (models.text, models.image) == ("yandexgpt-5-lite", "art-x")
+
+
+def test_signup_daily_limit_defaults_to_50_and_is_configurable() -> None:
+    assert load_settings(_BASE_ENV).signup_daily_limit == 50
+    assert load_settings({**_BASE_ENV, "SIGNUP_DAILY_LIMIT": "0"}).signup_daily_limit == 0
+    for bad in ("-1", "many", "1.5"):
+        with pytest.raises(ConfigError):
+            load_settings({**_BASE_ENV, "SIGNUP_DAILY_LIMIT": bad})

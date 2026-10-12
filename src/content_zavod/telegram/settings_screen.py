@@ -41,7 +41,10 @@ from ..domain.errors import InvalidSettingValue
 from ..scheduling import DEFAULT_SCHEDULE, ScheduleConfig
 from ..settings import (
     AUDIENCE_MAX_LENGTH,
+    NICHE_MAX_LENGTH,
+    PERSONA_MAX_LENGTH,
     PERSONAS,
+    PROJECT_MAX_LENGTH,
     OwnerSettings,
     SettingsService,
     audience_detail_text,
@@ -78,6 +81,7 @@ from .texts import (
     SETTINGS_CURRENT,
     SETTINGS_SAVED,
     SETTINGS_TITLE,
+    SETTINGS_TOO_LONG,
     TIMEZONES,
     WEEKDAYS,
     parse_weekday,
@@ -162,6 +166,7 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
             "Например: фитнес и здоровое питание"
         ),
         invalid="Ниша не может быть пустой.",
+        invalid_by_field={"niche_too_long": SETTINGS_TOO_LONG.format(limit=NICHE_MAX_LENGTH)},
     ),
     SettingField(
         key="persona",
@@ -180,6 +185,7 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
             "Запрещено: выдуманные кейсы"
         ),
         invalid="Не нашёл строку «Роль: …» — без неё стиль не сохранить.",
+        invalid_by_field={"persona_too_long": SETTINGS_TOO_LONG.format(limit=PERSONA_MAX_LENGTH)},
         presets=tuple(
             (persona.title, persona_setting_value(persona.key)) for persona in PERSONAS.values()
         ),
@@ -225,7 +231,10 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
             "Можно через пробел добавить пару слов, что там. Чтобы убрать ссылку, отправьте «-»."
         ),
         invalid="Пришлите ссылку на канал или сайт.",
-        invalid_by_field={"project_url": f"Не получилось распознать ссылку. {PROJECT_EXAMPLES}"},
+        invalid_by_field={
+            "project_url": f"Не получилось распознать ссылку. {PROJECT_EXAMPLES}",
+            "project_too_long": SETTINGS_TOO_LONG.format(limit=PROJECT_MAX_LENGTH),
+        },
     ),
 )
 _FIELDS: dict[str, SettingField] = {setting.key: setting for setting in SETTING_FIELDS}

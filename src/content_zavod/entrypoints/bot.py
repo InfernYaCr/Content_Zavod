@@ -4,7 +4,9 @@ Every update is served in the Пространство of whoever sent it (ADR-0
 chat creates the Workspace (`Workspaces.get_or_create`), every other update resolves it by
 `from_user.id`, and that `Workspace` is passed down to every flow - never taken from
 `callback_data`, text or a Job payload. The bot works in private chats only: in a group it
-answers `/start` with a pointer to the private chat and ignores the rest. Runs
+answers `/start` with a pointer to the private chat and ignores the rest. `/start` is answered
+at most once per 3 seconds per id (`StartGuard`), and past `SIGNUP_DAILY_LIMIT` new Workspaces
+in 24 hours it creates none - existing ones are served as usual. Runs
 `run_notifications` (#2) to deliver each finished Job's result to the private chat of the
 Workspace that owns the Job (a 403 marks it `bot_blocked_at`), and the Расписание tick
 (`schedule_weekly_plan_tick`, #7, ADR-0015) via APScheduler in the same process. Never runs a
@@ -80,6 +82,7 @@ from ..telegram.gateway import SentPhoto, format_week_range
 from ..telegram.guide import Guide
 from ..telegram.onboarding import Onboarding
 from ..telegram.pending_inputs import PendingInputs
+from ..telegram.start_guard import StartGuard
 from ..telegram.texts import (
     ADMIN_PENDING_TEXT,
     BOT_DESCRIPTION,
@@ -88,6 +91,8 @@ from ..telegram.texts import (
     HELP_TEXT,
     NO_WORKSPACE_TEXT,
     OPEN_PRIVATE_CHAT_BUTTON,
+    SIGNUP_CLOSED_TEXT,
+    SIGNUP_LIMIT_ADMIN_TEXT,
     STALE_BUTTON,
     TOPIC_PROPOSE_HINT,
     UNKNOWN_MESSAGE_TEXT,
@@ -233,6 +238,8 @@ class WorkspaceDirectory(Protocol):
 
     async def get_by_owner(self, owner_telegram_id: int) -> Workspace | None: ...
 
+    async def count_created_last_day(self) -> int: ...
+
     async def mark_blocked(self, workspace_id: WorkspaceId) -> None: ...
 
 
@@ -298,9 +305,11 @@ def _build_router(
     *,
     publisher: ArticlePagePublisher | None = None,
     bot_username: str | None = None,
+    start_guard: StartGuard | None = None,
 ) -> Router:
     router = Router()
     admin_ids: Collection[int] = settings.global_admin_telegram_ids
+    guard = start_guard or StartGuard()
 
     async def private_workspace(message: Message) -> Workspace | None:
         """The sender's Пространство for a private-chat update; `None` (and nothing done) in a
@@ -332,6 +341,22 @@ def _build_router(
 
         return wrapper
 
+    async def signups_closed(chat_id: int) -> None:
+        """Past `SIGNUP_DAILY_LIMIT`: no new Пространство; the admins hear it once a day."""
+        await gateway.send_notice(chat_id, SIGNUP_CLOSED_TEXT)
+        if not guard.signup_alert_due():
+            return
+        logger.warning("SIGNUP_DAILY_LIMIT=%s reached", settings.signup_daily_limit)
+        alert = SIGNUP_LIMIT_ADMIN_TEXT.format(limit=settings.signup_daily_limit)
+        for admin_id in admin_ids:
+            try:
+                await gateway.send_notice(admin_id, alert)
+            except Exception:
+                # An admin who never pressed /start can't be written to; the log has it.
+                logger.warning("could not alert admin %s", admin_id, exc_info=True)
+            else:
+                guard.signup_alert_sent()
+
     @router.message(Command("start"))
     async def on_start(message: Message) -> None:
         if message.from_user is None:
@@ -341,6 +366,19 @@ def _build_router(
             await gateway.send_message(
                 chat_id, GROUP_START_TEXT, reply_markup=_private_chat_button(bot_username)
             )
+            return
+        # ADR-0015: one /start per id per 3 seconds; the rest are silently ignored.
+        if not guard.admit(message.from_user.id):
+            return
+        # ponytail: count-then-insert isn't atomic, so simultaneous newcomers can overshoot the
+        # cap by a few; lock `workspaces` in `get_or_create` if it must be exact. A Глобальный
+        # администратор is never locked out of their own bot.
+        if (
+            message.from_user.id not in admin_ids
+            and await workspaces.get_by_owner(message.from_user.id) is None
+            and await workspaces.count_created_last_day() >= settings.signup_daily_limit
+        ):
+            await signups_closed(chat_id)
             return
         workspace = await workspaces.get_or_create(
             message.from_user.id,

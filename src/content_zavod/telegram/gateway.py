@@ -24,9 +24,11 @@ from .callback_codec import (
     SimpleAction,
     encode_callback_data,
 )
+from .comment_gated_regeneration import COMMENT_MAX_LENGTH
 from .pending_inputs import PendingInput
 from .plan_hub import render_hub_screen
 from .texts import (
+    COMMENT_TOO_LONG_TEXT,
     COVER_CAPTION,
     HUB_BUTTON_COVER,
     READ_BUTTON,
@@ -779,3 +781,8 @@ class TelegramCommentPrompt:
 
     async def withdraw(self, chat_id: int, pending: PendingInput) -> None:
         await self._bot.delete_message(chat_id, pending.prompt_message_id)
+
+    async def reject_too_long(self, chat_id: int) -> None:
+        await self._bot.send_message(
+            chat_id, COMMENT_TOO_LONG_TEXT.format(limit=COMMENT_MAX_LENGTH)
+        )

@@ -23,6 +23,9 @@ PERSONA_KEY = "voice"
 DEFAULT_PERSONA_KEY = "practical_marketer"
 DEFAULT_PERSONA_TITLE = "маркетолог-практик"
 PERSONA_VALUE_PREFIX = "preset:"
+# A custom Персона is the one Настройка that goes into the system prompt (ADR-0010), so it is
+# capped (ADR-0015); checked by `SettingsService.set_persona`.
+PERSONA_MAX_LENGTH = 1500
 
 
 @dataclass(frozen=True)

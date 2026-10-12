@@ -56,3 +56,17 @@ async def test_a_403_marks_the_workspace_blocked_until_the_next_start(pool: asyn
 
     assert blocked is not None
     assert after_start is None
+
+
+async def test_count_created_last_day_counts_only_the_last_24_hours(pool: asyncpg.Pool) -> None:
+    workspaces = Workspaces(pool)
+    created = await workspaces.get_or_create(5004, timezone="Europe/Moscow")
+    await pool.execute("UPDATE workspaces SET created_at = now() WHERE id = $1", created.id)
+    recent = await workspaces.count_created_last_day()
+
+    await pool.execute(
+        "UPDATE workspaces SET created_at = now() - interval '25 hours' WHERE id = $1", created.id
+    )
+
+    assert recent >= 1
+    assert await workspaces.count_created_last_day() == recent - 1

@@ -17,6 +17,8 @@ from urllib.parse import urlsplit, urlunsplit
 PROJECT_KEY = "project"
 # `/set_project -` removes the Проект; stored as an empty value, which reads back as `None`.
 CLEAR_PROJECT = "-"
+# The whole `/set_project` input - link and description together (ADR-0015).
+PROJECT_MAX_LENGTH = 500
 
 _TELEGRAM_USERNAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")
 _TELEGRAM_HOSTS = frozenset({"t.me", "www.t.me", "telegram.me", "www.telegram.me"})

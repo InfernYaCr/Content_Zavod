@@ -6,6 +6,9 @@ from typing import Protocol, cast
 from ..workspaces import WorkspaceId
 from .pending_inputs import PendingInput
 
+# A comment goes into the regeneration's prompt, so it is capped (ADR-0015, «Безопасность»).
+COMMENT_MAX_LENGTH = 1000
+
 type RegenerateOp[Id] = Callable[[WorkspaceId, Id, str | None], Awaitable[None]]
 
 
@@ -21,6 +24,10 @@ class CommentPrompt[Id](Protocol):
     async def withdraw(self, chat_id: int, pending: PendingInput) -> None:
         """The wait closed without a regeneration (Отмена, superseded, another action):
         remove its message, so no dead prompt is left in the chat."""
+        ...
+
+    async def reject_too_long(self, chat_id: int) -> None:
+        """The comment is over `COMMENT_MAX_LENGTH`: say so; the wait stays open."""
         ...
 
 
@@ -94,11 +101,19 @@ class CommentGatedRegeneration[Id: str]:
     async def handle_comment_reply(
         self, workspace_id: WorkspaceId, chat_id: int, user_id: int, text: str
     ) -> bool:
-        """Any text resolves this Пространство's wait, if it has one."""
+        """Any text resolves this Пространство's wait, if it has one - except one over
+        `COMMENT_MAX_LENGTH`: that is refused, nothing is regenerated, and the wait stays."""
+        comment = text.strip()
+        if len(comment) > COMMENT_MAX_LENGTH:
+            current = await self._pending.get(workspace_id, chat_id, user_id)
+            if current is None or current.kind != self._kind:
+                return False
+            await self._prompt.reject_too_long(chat_id)
+            return True
         pending = await self._pending.take(workspace_id, chat_id, user_id, self._kind)
         if pending is None:
             return False
-        await self._regenerate(workspace_id, cast(Id, pending.target_id), text)
+        await self._regenerate(workspace_id, cast(Id, pending.target_id), comment)
         await self._prompt.mark_generating(chat_id, pending)
         return True
 
