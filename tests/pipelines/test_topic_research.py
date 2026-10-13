@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -20,6 +20,7 @@ from tests.tenancy import WS_A
 
 from .research_fakes import FakePageFetcher, FakeSearch, InMemoryResearchCache, page
 
+TODAY = date(2026, 10, 6)
 _BRIEF = TopicBrief(title="Как выбрать CRM", summary="обзор CRM", keywords=("crm",))
 _PAGE_A = "https://media.example/crm-2026"
 _PAGE_B = "https://blog.example/crm-tips"
@@ -76,7 +77,7 @@ async def test_research_keeps_only_facts_quoted_verbatim_from_the_page() -> None
     )
 
     research = await _researcher(search, pages).prepare(
-        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=None, steps=steps
     )
 
     bundle = research.bundle
@@ -103,7 +104,7 @@ async def test_page_text_is_delimited_input_data_with_an_untrusted_data_rule() -
     steps = ScriptedSteps(["[]", "аутлайн"])
 
     await _researcher(FakeSearch([_PAGE_A]), pages).prepare(
-        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=None, steps=steps
     )
 
     system, user = steps.calls[0][1]
@@ -119,7 +120,7 @@ async def test_without_verified_facts_the_bundle_has_no_evidence() -> None:
     steps = ScriptedSteps(["не JSON вовсе", "аутлайн"])
 
     research = await _researcher(FakeSearch([_PAGE_A]), pages).prepare(
-        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=None, steps=steps
     )
 
     assert research.bundle.status == "no_evidence"
@@ -135,7 +136,7 @@ async def test_failed_search_degrades_to_search_unavailable_and_is_not_cached() 
     steps = ScriptedSteps(["аутлайн"])
 
     research = await _researcher(FakeSearch(error=RuntimeError("403")), cache=cache).prepare(
-        _BRIEF, workspace_id=WS_A, plan_item_id=PlanItemId("item-1"), steps=steps
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=PlanItemId("item-1"), steps=steps
     )
 
     assert research.bundle.status == "search_unavailable"
@@ -148,7 +149,7 @@ async def test_no_search_provider_means_search_unavailable() -> None:
     steps = ScriptedSteps(["аутлайн"])
 
     research = await _researcher(None).prepare(
-        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=None, steps=steps
     )
 
     assert research.bundle.status == "search_unavailable"
@@ -163,11 +164,11 @@ async def test_research_is_cached_per_topic_and_reused() -> None:
     first_steps = ScriptedSteps([_facts(("42% компаний", _TEXT_A)), "аутлайн"])
 
     first = await researcher.prepare(
-        _BRIEF, workspace_id=WS_A, plan_item_id=PlanItemId("item-1"), steps=first_steps
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=PlanItemId("item-1"), steps=first_steps
     )
     second_steps = ScriptedSteps([])
     second = await researcher.prepare(
-        _BRIEF, workspace_id=WS_A, plan_item_id=PlanItemId("item-1"), steps=second_steps
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=PlanItemId("item-1"), steps=second_steps
     )
 
     assert second == first
@@ -182,11 +183,11 @@ async def test_an_edited_topic_is_researched_again() -> None:
     researcher = _researcher(search, cache=cache)
 
     await researcher.prepare(
-        _BRIEF, workspace_id=WS_A, plan_item_id=PlanItemId("i"), steps=ScriptedSteps(["a"])
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=PlanItemId("i"), steps=ScriptedSteps(["a"])
     )
     edited = TopicBrief(title="Как выбрать CRM в 2027", summary="", keywords=())
     await researcher.prepare(
-        edited, workspace_id=WS_A, plan_item_id=PlanItemId("i"), steps=ScriptedSteps(["b"])
+        edited, workspace_id=WS_A, today=TODAY, plan_item_id=PlanItemId("i"), steps=ScriptedSteps(["b"])
     )
 
     assert len(search.queries) == 2
@@ -200,7 +201,7 @@ async def test_extraction_failure_on_one_page_skips_only_that_page() -> None:
     )
 
     research = await _researcher(FakeSearch([_PAGE_A, _PAGE_B]), pages).prepare(
-        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=None, steps=steps
     )
 
     assert [s.url for s in research.bundle.sources] == [_PAGE_B]
@@ -218,7 +219,7 @@ async def test_tiny_stale_and_unfetchable_pages_are_skipped() -> None:
     steps = ScriptedSteps(["аутлайн"])
 
     research = await _researcher(FakeSearch([tiny, stale, missing]), pages).prepare(
-        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=None, steps=steps
     )
 
     assert research.bundle.status == "no_evidence"
@@ -284,6 +285,16 @@ def test_verified_facts_checks_quote_and_numbers(fact, quote, kept) -> None:
             "5 ошибок при выборе CRM для малого бизнеса системы",
         ),
         (TopicBrief("  Налоговый   вычет  ", "", ()), "Налоговый вычет"),
+        # #145: a year the editor model made up must not pin the search to that year.
+        (
+            TopicBrief(
+                "Инструменты для тестирования AI: что использовать в 2024 году",
+                "",
+                ("тестирование ai 2024",),
+            ),
+            "Инструменты для тестирования AI: что использовать",
+        ),
+        (TopicBrief("Тренды 2026: что нового в CRM", "", ()), "Тренды: что нового в CRM"),
     ],
 )
 def test_search_query_adds_new_words_of_the_top_two_keywords(brief, query) -> None:
@@ -302,7 +313,7 @@ async def test_stale_page_is_recognised_by_a_russian_date_too() -> None:
     )
 
     research = await _researcher(search, pages).prepare(
-        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=None, steps=steps
     )
 
     assert [source.url for source in research.bundle.sources] == [_PAGE_B]
@@ -321,7 +332,7 @@ async def test_a_hanging_search_is_cut_off_and_degrades_to_search_unavailable(
     steps = ScriptedSteps(["аутлайн"])
 
     research = await _researcher(_HangingSearch()).prepare(
-        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=None, steps=steps
     )
 
     assert research.bundle.status == "search_unavailable"
@@ -355,8 +366,52 @@ async def test_facts_are_extracted_from_the_pages_in_parallel_keeping_page_order
     )
 
     research = await _researcher(search, pages).prepare(
-        _BRIEF, workspace_id=WS_A, plan_item_id=None, steps=steps
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=None, steps=steps
     )
 
     assert steps.max_running == 2
     assert [(e.id, e.url) for e in research.bundle.evidence] == [("E1", _PAGE_A), ("E2", _PAGE_B)]
+
+
+@pytest.mark.asyncio
+async def test_an_undated_page_is_dated_by_modtime_or_a_past_year_in_its_title() -> None:
+    """#145: most pages carry no publication date. Then the search's `<modtime>` stands in for
+    it, and a year before last in the title («ТОП-10… в 2024») marks the page as old even when
+    the index touched it recently; a dated page older than `MAX_SOURCE_AGE_YEARS` is out too."""
+    old_modtime = "https://old-modtime.example/a"
+    old_title = "https://old-title.example/a"
+    old_date = "https://old-date.example/a"
+    fresh = "https://fresh.example/a"
+    search = FakeSearch(
+        [old_modtime, old_title, old_date, fresh],
+        modtimes={old_modtime: "2022-01-10", old_title: "2026-10-01", fresh: "2026-09-01"},
+    )
+    pages = {
+        old_modtime: page(old_modtime, _TEXT_A),
+        old_title: page(old_title, _TEXT_A, title="ТОП-10 инструментов для тестирования в 2024"),
+        old_date: page(old_date, _TEXT_A, published_at="2023-12-31"),
+        fresh: page(fresh, _TEXT_A, title="Итоги 2025 года в CRM"),
+    }
+    steps = ScriptedSteps([_facts(("42% малых компаний используют CRM", _TEXT_A)), "аутлайн"])
+
+    research = await _researcher(search, pages).prepare(
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=None, steps=steps
+    )
+
+    assert [source.url for source in research.bundle.sources] == [fresh]
+    # `<modtime>` is when the index saw the page, not when it was published: never shown.
+    assert research.bundle.sources[0].published_at is None
+
+
+@pytest.mark.asyncio
+async def test_research_search_is_sent_without_a_period() -> None:
+    """#145: with `period` an evergreen Тема finds almost nothing; freshness is the page
+    filter's job. (`FakeSearch.search` takes no `period` - passing one would fail the search.)"""
+    search = FakeSearch([])
+
+    research = await _researcher(search).prepare(
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=None, steps=ScriptedSteps(["а"])
+    )
+
+    assert research.bundle.status == "no_evidence"
+    assert search.queries == ["Как выбрать CRM"]
