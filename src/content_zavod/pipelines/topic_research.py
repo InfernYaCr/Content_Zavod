@@ -25,7 +25,7 @@ import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -38,8 +38,14 @@ from ..domain import (
     topic_fingerprint,
 )
 from ..workspaces import WorkspaceId
-from ..yandex import Message, SearchResults
-from .article_prompts import PAGE_TEXT_LIMIT, outline_messages, research_extract_messages
+from ..yandex import Message, SearchHit, SearchResults
+from .article_prompts import (
+    PAGE_TEXT_LIMIT,
+    has_past_year,
+    outline_messages,
+    research_extract_messages,
+    strip_years,
+)
 from .page_fetcher import FetchedPage, PageFetcher
 from .provenance import StepRecord, prompt_hash
 
@@ -53,9 +59,11 @@ MIN_PAGE_CHARS = 800
 MIN_QUOTE_CHARS = 25
 MAX_FACTS_PER_PAGE = 5
 MAX_EVIDENCE = 15
-# A source older than this many years is skipped when its date is known: stale numbers are
-# worse than none (docs/plans/2026-08-12-technical-hardening-and-saas.md, E2).
-MAX_SOURCE_AGE_YEARS = 3
+# A source older than this many years is skipped: stale numbers are worse than none
+# (docs/plans/2026-08-12-technical-hardening-and-saas.md, E2). Its date is the page's own, or
+# else the search's `<modtime>`; an undated page with a year before last in its title
+# («ТОП-10… в 2024») is skipped too (#145).
+MAX_SOURCE_AGE_YEARS = 2
 # Time budget of the search call (Yandex web search takes 20-90s; the client retries
 # connection errors) - past it the Тема is written in "no evidence" mode rather than the
 # Job hanging. Pages are fetched in parallel, each under the fetcher's own total deadline,
@@ -165,19 +173,25 @@ class TopicResearcher:
         workspace_id: WorkspaceId,
         plan_item_id: PlanItemId | None,
         steps: StepRunner,
+        today: date,
     ) -> TopicResearch:
         """The Тема's Исследование and shared outline - from the cache when this Тема (with
-        this exact brief) was already researched, otherwise built and cached now."""
+        this exact brief) was already researched, otherwise built and cached now. `today` is
+        the Пространство's date (#145)."""
         fingerprint = topic_fingerprint(brief.title, brief.summary, brief.keywords)
         if self._cache is not None and plan_item_id is not None:
             cached = await self._cache.get(workspace_id, plan_item_id, fingerprint)
             if cached is not None:
                 return cached
-        bundle = await self._research(brief, steps)
+        bundle = await self._research(brief, steps, today)
         outline = await steps.llm(
             "outline",
             outline_messages(
-                title=brief.title, summary=brief.summary, keywords=brief.keywords, bundle=bundle
+                today=today,
+                title=brief.title,
+                summary=brief.summary,
+                keywords=brief.keywords,
+                bundle=bundle,
             ),
         )
         research = TopicResearch(bundle=bundle, outline=outline)
@@ -189,7 +203,7 @@ class TopicResearcher:
             await self._cache.put(workspace_id, plan_item_id, fingerprint, research)
         return research
 
-    async def _research(self, brief: TopicBrief, steps: StepRunner) -> ResearchBundle:
+    async def _research(self, brief: TopicBrief, steps: StepRunner, today: date) -> ResearchBundle:
         query = search_query(brief)
         if self._search is None:
             return ResearchBundle(query=query, status="search_unavailable")
@@ -217,9 +231,11 @@ class TopicResearcher:
                 quantity=1,
             )
         )
-        pages = await self._fetch_pages([hit.url for hit in results.hits])
+        pages = await self._fetch_pages(results.hits, today)
         titles = {hit.url: hit.title for hit in results.hits}
-        extracted = await asyncio.gather(*(self._extract(brief, page, steps) for page in pages))
+        extracted = await asyncio.gather(
+            *(self._extract(brief, page, steps, today) for page in pages)
+        )
         evidence: list[Evidence] = []
         sources: list[ResearchSource] = []
         for page, facts in zip(pages, extracted, strict=True):
@@ -248,15 +264,17 @@ class TopicResearcher:
             evidence=tuple(evidence),
         )
 
-    async def _fetch_pages(self, urls: Sequence[str]) -> list[FetchedPage]:
-        candidates = select_candidates(urls)
+    async def _fetch_pages(self, hits: Sequence[SearchHit], today: date) -> list[FetchedPage]:
+        candidates = select_candidates([hit.url for hit in hits])
         fetched = await asyncio.gather(*(self._fetcher.fetch(url) for url in candidates))
+        # By the searched URL: a fetched page carries its final one, after redirects.
+        by_url = {hit.url: hit for hit in hits}
         pages: list[FetchedPage] = []
         seen_domains: set[str] = set()
-        for page in fetched:
+        for url, page in zip(candidates, fetched, strict=True):
             if page is None or len(page.text) < MIN_PAGE_CHARS:
                 continue
-            if self._is_stale(page.published_at):
+            if _is_stale(page, by_url.get(url), today):
                 continue
             domain = _domain(page.url)
             if domain in seen_domains or not _passes_url_policy(page.url):
@@ -267,21 +285,15 @@ class TopicResearcher:
                 break
         return pages
 
-    def _is_stale(self, published_at: str | None) -> bool:
-        # ISO dates ("2022-03-01T...") and Russian ones ("01.03.2022") alike.
-        match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", published_at or "")
-        if match is None:
-            return False
-        return int(match.group(1)) < self._now().year - MAX_SOURCE_AGE_YEARS
-
     async def _extract(
-        self, brief: TopicBrief, page: FetchedPage, steps: StepRunner
+        self, brief: TopicBrief, page: FetchedPage, steps: StepRunner, today: date
     ) -> list[tuple[str, str]]:
         page_text = page.text[:PAGE_TEXT_LIMIT]
         try:
             answer = await steps.llm(
                 "research_extract",
                 research_extract_messages(
+                    today=today,
                     title=brief.title,
                     summary=brief.summary,
                     keywords=brief.keywords,
@@ -296,6 +308,19 @@ class TopicResearcher:
         return verified_facts(answer, page_text)[:MAX_FACTS_PER_PAGE]
 
 
+def _is_stale(page: FetchedPage, hit: SearchHit | None, today: date) -> bool:
+    """Older than `MAX_SOURCE_AGE_YEARS` by the page's date, else by `<modtime>`; an undated
+    page also by a year before last in its title - the index may have touched an old «ТОП-10…
+    в 2024» yesterday, so a fresh `<modtime>` doesn't clear it."""
+    # ISO dates ("2022-03-01T...") and Russian ones ("01.03.2022") alike.
+    dated = page.published_at or (hit.modtime if hit is not None else None)
+    match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", dated or "")
+    if match is not None and int(match.group(1)) < today.year - MAX_SOURCE_AGE_YEARS:
+        return True
+    title = page.title or (hit.title if hit is not None else "")
+    return not page.published_at and has_past_year(title, date(today.year - 1, 1, 1))
+
+
 # Top Wordstat keywords of the Тема whose words are added to the search query.
 MAX_QUERY_KEYWORDS = 2
 _WORD_RE = re.compile(r"\w+")
@@ -303,13 +328,14 @@ _WORD_RE = re.compile(r"\w+")
 
 def search_query(brief: TopicBrief) -> str:
     """The one search request of a Тема: its title plus the words of its top keywords that
-    the title doesn't already contain.
+    the title doesn't already contain, without any year (#145).
 
     Titles are headlines ("5 ошибок при выборе CRM, которые стоят денег") - their catchy
     words dilute the search; the Wordstat keywords are what people actually search for on
     the subject, so they pull results towards real material. A word already in the title
     (compared by its first 5 letters, to absorb Russian inflection) is not repeated. The
-    summary is left out: it is a whole sentence and would only blur the query."""
+    summary is left out: it is a whole sentence and would only blur the query. A year - the
+    editor model's guess, «…в 2024 году» - would pin the results to that year."""
     seen = {word[:5].lower() for word in _WORD_RE.findall(brief.title)}
     extra: list[str] = []
     for keyword in brief.keywords[:MAX_QUERY_KEYWORDS]:
@@ -318,7 +344,7 @@ def search_query(brief: TopicBrief) -> str:
             if stem not in seen:
                 seen.add(stem)
                 extra.append(word)
-    return " ".join([" ".join(brief.title.split()), *extra])
+    return strip_years(" ".join([brief.title, *extra]))
 
 
 def select_candidates(urls: Sequence[str]) -> list[str]:

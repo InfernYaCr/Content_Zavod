@@ -19,13 +19,20 @@ untrusted text twice over, so it never enters the system message either: PERSONA
 points at the rule, and the traits, the voice snippets (`<voice_examples>`) and the Владелец's
 corrections go to draft and rewrite as INPUT_DATA, with a rule not to take topics, facts or
 phrases from the snippets.
+
+The model doesn't know what year it is (#145): every generation prompt - these, the Plan
+editor, «Поправить» and the Карта Ниши - gets `today` (the Пространство's date) in INPUT_DATA
+and `TODAY_RULE` right after `IMMUTABLE_RULES`, never in PERSONA, so a Стиль автора can't
+override it.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import asdict
+from datetime import date
 
 from ..domain import ResearchBundle
 from ..personas import PlatformProfile
@@ -44,6 +51,41 @@ IMMUTABLE_RULES = """Ты — редактор Content Zavod.
 Не выдумывай факты, цифры, цитаты, ссылки, личный опыт или результаты кейсов.
 Если evidence недостаточно, явно обозначь ограничение; не маскируй предположение под факт.
 Сохраняй смысл подтверждённых фактов при редактуре."""
+
+TODAY_RULE = (
+    "Сегодня — поле today в INPUT_DATA. Пиши для читателя на эту дату. Не называй прошедший год "
+    "текущим и не ставь год в заголовок, если повод не привязан к дате. Факты из источников "
+    "старше 12 месяцев подавай с датой, а не как «сейчас»."
+)
+
+_YEAR = r"(?<!\d)(20\d{2})(?!\d)"
+# «…: что использовать в 2024 году» - the tail a model sticks on a title (#145).
+_YEAR_TAIL = re.compile(rf"\s*[:,]?\s*\b(?:в|на)\s+{_YEAR}(?:\s+году)?\s*$", re.IGNORECASE)
+# A year with what goes with it: «в 2024 году», «с 2024 года», «2024 г.», «2024-2025», «2020-х».
+_ANY_YEAR = re.compile(
+    r"\s*(?:\b(?:в|на|с|за|к)\s+)?(?<!\d)20\d{2}(?:\s*[-–]\s*20\d{2})?(?:-х)?(?!\d)"
+    r"(?:\s+(?:году|года|год|г\.?)(?!\w))?",
+    re.IGNORECASE,
+)
+_DANGLING_PREPOSITION = re.compile(r"\s+\b(?:в|на|с|за|к)$", re.IGNORECASE)
+
+
+def has_past_year(text: str, today: date) -> bool:
+    """Whether `text` names a year before `today`'s - a title the model dated by itself."""
+    return any(int(year) < today.year for year in re.findall(_YEAR, text))
+
+
+def strip_past_year_tail(title: str, today: date) -> str:
+    """«…: что использовать в 2024 году» -> «…: что использовать»; any other title as is."""
+    match = _YEAR_TAIL.search(title)
+    if match is None or int(match.group(1)) >= today.year:
+        return title
+    return title[: match.start()]
+
+
+def strip_years(text: str) -> str:
+    """Every year out of a search query, with its «в … году» (#145)."""
+    return _DANGLING_PREPOSITION.sub("", " ".join(_ANY_YEAR.sub("", text).split()))
 
 
 # With a Проект set, its closing invitation is the Статья's only CTA (#133): the PERSONA and
@@ -99,6 +141,10 @@ def _platform_block(profile: PlatformProfile, cta: str | None = None) -> str:
     )
 
 
+def _head(task: str) -> str:
+    return f"{IMMUTABLE_RULES}\n{TODAY_RULE}\n\nЗАДАЧА\n{task}"
+
+
 def _system(
     task: str,
     persona: Persona | None,
@@ -109,7 +155,7 @@ def _system(
 ) -> str:
     cta = _PROJECT_CTA if project is not None else None
     return (
-        f"{IMMUTABLE_RULES}\n\nЗАДАЧА\n{task}"
+        f"{_head(task)}"
         f"\n\nPERSONA\n{_persona_block(persona, custom_persona, cta, style_profile)}"
         f"\n\nPLATFORM_PROFILE\n{_platform_block(profile, cta)}"
     )
@@ -245,6 +291,7 @@ _EXTRACT_TASK = (
 
 def research_extract_messages(
     *,
+    today: date,
     title: str,
     summary: str,
     keywords: Sequence[str],
@@ -253,10 +300,11 @@ def research_extract_messages(
     page_text: str,
 ) -> list[Message]:
     return [
-        Message("system", f"{IMMUTABLE_RULES}\n\nЗАДАЧА\n{_EXTRACT_TASK}"),
+        Message("system", _head(_EXTRACT_TASK)),
         Message(
             "user",
             _input_data(
+                today=today.isoformat(),
                 topic={"title": title, "summary": summary, "keywords": list(keywords)},
                 page={"url": page_url, "title": page_title, "text": page_text[:PAGE_TEXT_LIMIT]},
             ),
@@ -321,6 +369,7 @@ def _evidence_rules(bundle: ResearchBundle, *, sensitive: bool) -> str:
 
 def outline_messages(
     *,
+    today: date,
     title: str,
     summary: str,
     keywords: Sequence[str],
@@ -343,10 +392,11 @@ def outline_messages(
         f"{evidence_rule}"
     )
     return [
-        Message("system", f"{IMMUTABLE_RULES}\n\nЗАДАЧА\n{task}"),
+        Message("system", _head(task)),
         Message(
             "user",
             _input_data(
+                today=today.isoformat(),
                 title=title,
                 summary=summary,
                 keywords=list(keywords),
@@ -358,6 +408,7 @@ def outline_messages(
 
 def draft_messages(
     *,
+    today: date,
     title: str,
     summary: str,
     outline: str,
@@ -399,6 +450,7 @@ def draft_messages(
         Message(
             "user",
             _input_data(
+                today=today.isoformat(),
                 title=title,
                 summary=summary,
                 approved_outline=outline,
@@ -415,6 +467,7 @@ def draft_messages(
 
 def rewrite_messages(
     *,
+    today: date,
     draft: str,
     comment: str | None,
     persona: Persona | None,
@@ -446,6 +499,7 @@ def rewrite_messages(
         Message(
             "user",
             _input_data(
+                today=today.isoformat(),
                 draft=draft,
                 editor_comment=comment,
                 **_audience_input(audience),

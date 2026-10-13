@@ -42,7 +42,7 @@ from ..pipelines import (
     make_regenerate_topic_handler,
 )
 from ..settings import SettingsService
-from ..workspaces import WorkspaceId
+from ..workspaces import WorkspaceId, Workspaces
 from ..yandex import ImageGenerator, KeywordStats, TextGenerator, WebSearch
 from ._process import register_shutdown
 
@@ -158,6 +158,13 @@ async def main(settings: Settings | None = None) -> None:
         )
         page_fetcher = HttpxPageFetcher()
         researcher = TopicResearcher(web_search, page_fetcher, TopicResearchStore(pool))
+        workspaces = Workspaces(pool)
+        default_timezone = settings.timezone.key
+
+        async def workspace_timezone(workspace_id: WorkspaceId) -> str:
+            # «Сегодня» for the prompts is the Пространство's date, not UTC's (#145).
+            workspace = await workspaces.get(workspace_id)
+            return workspace.timezone if workspace is not None else default_timezone
 
         handlers: dict[str, JobHandler] = {
             "generate_plan": make_generate_plan_handler(
@@ -167,16 +174,25 @@ async def main(settings: Settings | None = None) -> None:
                 owner_settings_service,
                 workspace_settings,
                 web_search,
+                workspace_timezone=workspace_timezone,
             ),
             "generate_article": make_generate_article_handler(
-                text_generator, researcher, owner_settings_service
+                text_generator,
+                researcher,
+                owner_settings_service,
+                workspace_timezone=workspace_timezone,
             ),
             "regenerate_article": make_regenerate_article_handler(
-                article, plan, text_generator, researcher, owner_settings_service
+                article,
+                plan,
+                text_generator,
+                researcher,
+                owner_settings_service,
+                workspace_timezone=workspace_timezone,
             ),
             "generate_cover": make_generate_cover_handler(image_generator),
             "regenerate_topic": make_regenerate_topic_handler(
-                plan, text_generator, owner_settings_service
+                plan, text_generator, owner_settings_service, workspace_timezone=workspace_timezone
             ),
             # The Профиль стиля from the Владелец's Образцы (#134).
             ANALYZE_STYLE_JOB: make_analyze_style_handler(text_generator, page_fetcher),

@@ -4,14 +4,16 @@ line from code - and regenerate_topic, on fakes (no network)."""
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
 from content_zavod.domain.plan import PlanItemDetail
 from content_zavod.job_queue import JobPartialFailure
+from content_zavod.pipelines.article_prompts import TODAY_RULE
 from content_zavod.pipelines.niche_map import NICHE_MAP_KEY, MapPhrase, NicheMap, load_niche_map
 from content_zavod.pipelines.plan_pipeline import (
+    _Candidate,
     _top_up,
     make_generate_plan_handler,
     make_regenerate_topic_handler,
@@ -177,7 +179,7 @@ async def test_the_first_plan_builds_the_map_and_marks_what_it_used() -> None:
     assert marks["как открыть кофейню"] == (None, "2026-10-19")
     assert [s["step_name"] for s in output["steps"]][:1] == ["niche_map"]
     assert output["steps"][-1]["step_name"] == "plan_editor"
-    assert output["steps"][-1]["prompt_template_version"] == "plan-editor-v1"
+    assert output["steps"][-1]["prompt_template_version"] == "plan-editor-v2"
 
 
 @pytest.mark.asyncio
@@ -434,7 +436,7 @@ async def test_a_one_query_map_and_a_garbage_answer_still_give_three() -> None:
 
 def test_only_an_empty_niche_with_nothing_else_fails() -> None:
     with pytest.raises(RuntimeError):
-        _top_up([], [], [], [], "")
+        _top_up([], [], [], [], "", date(2026, 10, 19))
 
 
 @pytest.mark.asyncio
@@ -668,7 +670,7 @@ async def test_regenerate_topic_handler_redrafts_using_current_item_and_comment(
         ["new kw"],
     )
     assert [step["step_name"] for step in output["steps"]] == ["topic_regenerate"]
-    assert output["steps"][0]["prompt_template_version"] == "topic-regenerate-v4"
+    assert output["steps"][0]["prompt_template_version"] == "topic-regenerate-v5"
     # The Тема (possibly from web snippets) and the comment are data, never instructions.
     data = _input_data(text_generator.calls[0][1])
     assert data["current_topic"] == {
@@ -728,3 +730,121 @@ async def test_regenerate_topic_handler_failure_raises_partial_failure() -> None
 
     assert excinfo.value.partial_output["plan_item_id"] == "item-1"
     assert excinfo.value.partial_output["steps"] == []
+
+
+# --- today (#145) ---
+
+
+async def _vladivostok(workspace_id: int) -> str:
+    return "Asia/Vladivostok"
+
+
+@pytest.mark.asyncio
+async def test_the_editor_gets_today_in_the_workspace_time_zone_and_the_date_rule() -> None:
+    llm = FakeLLM(editor_answers=["Title: A\nSource: 0\nTitle: B\nSource: 0\nTitle: C\nSource: 0"])
+    store = _store()
+    handler = make_generate_plan_handler(
+        FakeWordstat(),
+        llm,
+        _no_history,
+        SettingsService(store),
+        store,
+        # Sunday night in UTC is already Monday in Vladivostok (UTC+10).
+        now=lambda: datetime(2026, 10, 18, 20, tzinfo=UTC),
+        workspace_timezone=_vladivostok,
+    )
+
+    output = await handler(WS_A, {"week_label": "w"})
+
+    system, user = llm.editor_calls()[0]
+    assert TODAY_RULE in system.text
+    assert _input_data(user)["today"] == "2026-10-19"
+    editor_step = next(s for s in output["steps"] if s["step_name"] == "plan_editor")
+    assert editor_step["prompt_template_version"] == "plan-editor-v2"
+
+
+@pytest.mark.asyncio
+async def test_a_tema_titled_with_a_past_year_is_dropped_and_the_editor_asked_again() -> None:
+    llm = FakeLLM(
+        editor_answers=[
+            "Title: Инструменты для тестирования AI: что использовать в 2024 году\nSource: 0\n"
+            "Title: B\nSource: 0\nTitle: Итоги 2026 года в кофейнях\nSource: 0",
+            "Title: D\nSource: 0",
+        ]
+    )
+
+    output = await _handler(FakeWordstat(), llm, _store())(WS_A, {"week_label": "w"})
+
+    assert [t["title"] for t in output["topics"]] == ["B", "Итоги 2026 года в кофейнях", "D"]
+    assert _input_data(llm.editor_calls()[1][1])["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_regenerate_topic_cuts_a_past_year_tail_off_the_title_and_gets_today() -> None:
+    current = PlanItemDetail(
+        id="item-1",
+        title="Инструменты для тестирования AI: что использовать в 2024 году",
+        summary="",
+        keywords=[],
+    )
+    text_generator = FakeTextGenerator(
+        "Title: Тестирование AI: какие инструменты выбрать в 2025 году\nSummary: s\nKeywords: k"
+    )
+    handler = make_regenerate_topic_handler(
+        FakePlanItemReader(current),
+        text_generator,
+        _settings(),
+        now=lambda: datetime(2026, 10, 13, 9, tzinfo=UTC),
+    )
+
+    output = await handler(WS_A, {"plan_item_id": "item-1", "comment": None})
+
+    assert output["title"] == "Тестирование AI: какие инструменты выбрать"
+    system, user = text_generator.calls[0]
+    assert TODAY_RULE in system.text
+    assert _input_data(user)["today"] == "2026-10-13"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_topic_with_a_past_year_inside_falls_back_to_the_cleaned_title() -> None:
+    current = PlanItemDetail(
+        id="item-1", title="Инструменты AI: что использовать в 2024 году", summary="", keywords=[]
+    )
+    handler = make_regenerate_topic_handler(
+        FakePlanItemReader(current),
+        FakeTextGenerator("Title: 2024 — год AI-инструментов\nSummary: s\nKeywords: k"),
+        _settings(),
+        now=lambda: datetime(2026, 10, 13, 9, tzinfo=UTC),
+    )
+
+    output = await handler(WS_A, {"plan_item_id": "item-1", "comment": None})
+
+    assert output["title"] == "Инструменты AI: что использовать"
+
+
+def test_top_up_skips_candidates_naming_a_past_year() -> None:
+    old = _Candidate("question", "итоги 2025 года для кофеен", "why", map_phrase="old")
+    fresh = _Candidate("question", "как открыть кофейню", "why", map_phrase="fresh")
+
+    chosen = _top_up([], [], [old, fresh], [], "кофейни", date(2026, 10, 19))
+
+    titles = [draft.title for draft, _ in chosen]
+    assert titles[0] == "Как открыть кофейню"
+    assert not any("2025" in title for title in titles)
+
+
+@pytest.mark.asyncio
+async def test_the_plan_week_comes_from_the_week_label_not_the_clock() -> None:
+    """A Plan for W43 asked on Sunday of W42 rotates and marks the Map for W43's Monday."""
+    llm = FakeLLM(editor_answers=[EDITOR.format(q=0)])
+    store = _store()
+    wordstat = FakeWordstat(dynamics={"кофе на вынос": growing()})
+
+    await _handler(wordstat, llm, store, now=datetime(2026, 10, 18, 12, tzinfo=UTC))(
+        WS_A, {"week_label": "2026-W43"}
+    )
+
+    stored = load_niche_map(store.values[WS_A][NICHE_MAP_KEY])
+    assert stored is not None
+    marks = {p.phrase: (p.checked, p.used) for p in stored.phrases}
+    assert marks["кофе на вынос"] == ("2026-10-19", "2026-10-19")
