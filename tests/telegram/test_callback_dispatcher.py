@@ -869,6 +869,22 @@ async def test_hub_article_publishes_a_missing_reading_page_before_the_redraw(
     assert len(f.bot.edited_messages) == 1
 
 
+async def test_hub_article_whose_page_fails_to_publish_does_not_point_at_it(
+    f: Fixtures,
+) -> None:
+    class Publisher:
+        async def publish(self, workspace_id, article):
+            return None  # Telegraph is down
+
+    f.dispatcher._publisher = Publisher()
+
+    await dispatch(f, SimpleAction("hub_article", "article-1"))
+
+    _, _, text, keyboard = f.bot.edited_messages[-1]
+    assert "Читать полностью" not in text
+    assert all(b.url is None for r in keyboard.inline_keyboard for b in r)
+
+
 async def test_hub_article_with_a_published_page_does_not_publish_again(f: Fixtures) -> None:
     class Publisher:
         async def publish(self, workspace_id, article):

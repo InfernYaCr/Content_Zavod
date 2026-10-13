@@ -20,7 +20,12 @@ _QUOTE_RE = re.compile(r"^>\s?")
 _RULE_RE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\((?:[^)]+)\)")
 _EMPHASIS_RE = re.compile(r"(\*\*|__|`)(.+?)\1|(?<![\w*])\*([^\s*](?:.*?[^\s*])?)\*(?![\w*])")
-_SENTENCE_END_RE = re.compile(r"(?<=[.!?…])\s+")
+_SENTENCE_END_RE = re.compile(r"[.!?…]\s+")
+_LAST_WORD_RE = re.compile(r"(\w+)$")
+# «т. е.», «2024 г.», «5 тыс. руб.» - a dot after these doesn't end a sentence.
+_ABBREVIATIONS = frozenset(
+    {"т", "е", "д", "г", "гг", "руб", "тыс", "млн", "млрд", "др", "пр", "см", "им", "ул"}
+)
 
 
 def opening_text(markdown: str, *, title: str = "", limit: int = OPENING_LIMIT) -> str:
@@ -42,11 +47,30 @@ def opening_text(markdown: str, *, title: str = "", limit: int = OPENING_LIMIT) 
     )
     if paragraph is None:  # nothing but headings and lists: their text, flattened
         paragraph = plain_text_preview(markdown, title=title, limit=limit).replace("\n", " ")
-    sentences = _SENTENCE_END_RE.split(paragraph)
+    sentences = _sentences(paragraph)
     text = sentences[0]
     if len(sentences) > 1 and len(text) + 1 + len(sentences[1]) <= limit:
         text += " " + sentences[1]
     return plain_text_preview(text, limit=limit)
+
+
+def _sentences(paragraph: str) -> list[str]:
+    """Split after .!?… - but not after an abbreviation or an initial («А. С. Пушкин»), and not
+    before a lowercase word, which no sentence starts with («т. е. база»)."""
+    sentences: list[str] = []
+    start = 0
+    for match in _SENTENCE_END_RE.finditer(paragraph):
+        word = _LAST_WORD_RE.search(paragraph[start : match.start()])
+        token = word.group(1).casefold() if word else ""
+        following = paragraph[match.end() : match.end() + 1]
+        if match.group().startswith(".") and (
+            token in _ABBREVIATIONS or (len(token) == 1 and token.isalpha()) or following.islower()
+        ):
+            continue
+        sentences.append(paragraph[start : match.start() + 1])
+        start = match.end()
+    sentences.append(paragraph[start:])
+    return [sentence for sentence in sentences if sentence] or [""]
 
 
 def plain_text_preview(markdown: str, *, title: str = "", limit: int = PREVIEW_LIMIT) -> str:

@@ -825,8 +825,10 @@ async def _deliver(
         await gateway.send_notice(chat_id, delivery.text)
     elif isinstance(delivery, _RewrittenArticleDelivery):
         view = await article.get(workspace_id, delivery.article_id)
-        if publisher is not None:  # the page shows the new Версия too (#92)
-            await publisher.publish(workspace_id, view)
+        # The page shows the new Версия too (#92); one that couldn't be updated is forgotten,
+        # so «📖» doesn't open the old text and the next open of the Статья publishes afresh.
+        if publisher is not None and await publisher.publish(workspace_id, view) is None:
+            await article.clear_telegraph_path(workspace_id, view.id)
         if (await plan.get_summary(workspace_id, delivery.plan_id)).status != "approved":
             return  # an archived Plan's Хаб is left alone, like `deliver_plan_hub` does
         await plan.set_hub_view(workspace_id, delivery.plan_id, view.plan_item_id, view.id)

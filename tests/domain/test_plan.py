@@ -884,6 +884,20 @@ async def test_set_hub_view_opens_an_article_and_a_topic_closes_it(
     assert hub.open_item_id == items[0].id and hub.open_article_id is None
 
 
+async def test_set_hub_view_refuses_an_article_of_another_plan(
+    plan: Plan, article: Article
+) -> None:
+    plan_id, items = await _approved_with_fan_out(plan, article, titles=("Topic A",))
+    zen = (await plan.get_hub(WS_A, plan_id)).topics[0].articles[0]
+    other_plan_id = await plan.add_topics(WS_A, "Week 2", [TopicDraft(title="Topic B")])
+
+    with pytest.raises(PlanNotFound):
+        await plan.set_hub_view(WS_A, other_plan_id, items[0].id, zen.article_id)
+    with pytest.raises(PlanNotFound):
+        await plan.set_hub_view(WS_A, plan_id, items[0].id, "missing")
+    assert (await plan.get_hub(WS_A, plan_id)).open_article_id is None
+
+
 async def test_get_hub_raises_for_unknown_plan(plan: Plan) -> None:
     with pytest.raises(PlanNotFound):
         await plan.get_hub(WS_A, "missing")

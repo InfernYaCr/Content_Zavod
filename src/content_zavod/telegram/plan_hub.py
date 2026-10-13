@@ -26,6 +26,7 @@ from .texts import (
     ARTICLE_CARD_NO_EVIDENCE,
     HUB_ARTICLE_HEADER,
     HUB_ARTICLE_NEXT,
+    HUB_ARTICLE_NEXT_NO_PAGE,
     HUB_ARTICLE_OPENING,
     HUB_ARTICLE_SIZE,
     HUB_ARTICLE_STATUS,
@@ -55,6 +56,7 @@ from .texts import (
     HUB_TOPIC_NEXT,
     HUB_TOPIC_NEXT_DONE,
     HUB_TOPIC_NEXT_RETRY,
+    HUB_TOPIC_NEXT_REWRITING,
     HUB_TOPIC_NEXT_WRITING,
     HUB_TOPIC_NO_EVIDENCE,
     format_week_range,
@@ -139,6 +141,8 @@ def _topic_next(topic: HubTopic) -> str:
         return HUB_TOPIC_NEXT_DONE
     writing = any(c.state == "pending" for c in articles)
     if writing and all(c.state == "pending" for c in articles):
+        if any(c.has_content for c in articles):
+            return HUB_TOPIC_NEXT_REWRITING
         return HUB_TOPIC_NEXT_WRITING
     if not any(c.has_content for c in articles):  # nothing to open yet
         return HUB_TOPIC_NEXT_WRITING if writing else HUB_TOPIC_NEXT_RETRY
@@ -209,8 +213,9 @@ def render_hub_article_text(topic: HubTopic, cell: HubArticleCell) -> str:
     """The Статья screen (#143): what state it is in, how long it is, and its opening - a
     summary to decide what to do next, not a cut-off text."""
     status = _article_status(cell)
-    chars = max(100, round(cell.chars, -2))
-    minutes = max(1, math.ceil(cell.chars / _CHARS_PER_MINUTE))
+    # Both numbers from the one shown: half rounds up («6 250» → «6 300»).
+    chars = max(100, int(cell.chars / 100 + 0.5) * 100)
+    minutes = math.ceil(chars / _CHARS_PER_MINUTE)
     lines = [
         HUB_ARTICLE_HEADER.format(platform=platform_genitive(cell.platform)),
         f"«{_shorten(topic.title, _TITLE_LIMIT)}»",
@@ -224,7 +229,10 @@ def render_hub_article_text(topic: HubTopic, cell: HubArticleCell) -> str:
     opening = opening_text(cell.opening, title=topic.title)
     if opening:
         lines += ["", HUB_ARTICLE_OPENING.format(opening=opening)]
-    lines += ["", HUB_ARTICLE_NEXT[status]]
+    next_line = HUB_ARTICLE_NEXT[status]
+    if status == "ready" and not cell.telegraph_path:
+        next_line = HUB_ARTICLE_NEXT_NO_PAGE
+    lines += ["", next_line]
     return _fit("\n".join(lines))
 
 

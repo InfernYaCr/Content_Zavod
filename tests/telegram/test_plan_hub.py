@@ -119,7 +119,7 @@ def test_finished_topic_gets_a_button_while_others_are_still_generating() -> Non
 def test_all_done_hub_is_a_table_of_contents() -> None:
     hub = _hub(_topic(1), _topic(2))
 
-    assert "✅ Всё готово" in render_hub_text(hub)
+    assert "\n✅ Всё готово.\n" in render_hub_text(hub)  # the advice is «Что дальше»
     assert [action for _, action in _buttons(build_hub_keyboard(hub))] == [
         SimpleAction("hub_topic", "item-1"),
         SimpleAction("hub_topic", "item-2"),
@@ -193,7 +193,7 @@ def test_topic_being_redone_keeps_its_button_and_shows_the_kept_version() -> Non
         SimpleAction("hub_topic", "item-1"),
     )
     text = render_hub_topic_text(hub, topic)
-    assert "• Дзен — ⏳ пишется" in text
+    assert "• Дзен — ⏳ переписывается" in text
     assert "• VC.ru — ❌ не получилась, открыта прежняя версия" in text
     assert ("📄 Статья для VC.ru ›", SimpleAction("hub_article", "vc-1")) in _buttons(
         build_hub_topic_keyboard(hub, topic)
@@ -340,7 +340,8 @@ def _topic_with(*cells: HubArticleCell, cover: HubCellState | None = "ready") ->
 
 def test_topic_next_line_follows_the_state_of_its_articles() -> None:
     writing = _topic_with(
-        _cell(state="pending", has_content=False), _cell(platform="vc", state="pending")
+        _cell(state="pending", has_content=False),
+        _cell(platform="vc", state="pending", has_content=False),
     )
     done = _topic_with(_cell(exported=True), _cell(platform="vc", exported=True))
     failed = _topic_with(
@@ -429,7 +430,9 @@ def test_reading_time_is_rounded_up_and_size_to_hundreds() -> None:
         return render_hub_article_text(topic, topic.articles[0]).splitlines()[4]
 
     assert size_line(1300) == "≈ 1\u00a0300 знаков · 1 мин чтения"
-    assert size_line(1301) == "≈ 1\u00a0300 знаков · 2 мин чтения"
+    assert size_line(1349) == "≈ 1\u00a0300 знаков · 1 мин чтения"  # the shown number
+    assert size_line(1350) == "≈ 1\u00a0400 знаков · 2 мин чтения"
+    assert size_line(6250) == "≈ 6\u00a0300 знаков · 5 мин чтения"  # half rounds up
     assert size_line(30) == "≈ 100 знаков · 1 мин чтения"
 
 
@@ -453,3 +456,25 @@ def test_every_hub_callback_fits_telegram_limit() -> None:
         for row in keyboard.inline_keyboard:
             for button in row:
                 assert button.url or len(button.callback_data.encode()) <= 64
+
+
+def test_rewriting_topic_says_the_result_comes_below_not_that_it_updates_itself() -> None:
+    topic = _topic_with(_cell(state="pending"), _cell(platform="vc", state="pending"))
+
+    text = render_hub_topic_text(_hub(topic), topic)
+
+    assert "• Дзен — ⏳ переписывается" in text
+    assert text.endswith("Что дальше: Статьи переписываются — пришлю, как будут готовы.")
+
+
+def test_article_screen_without_a_reading_page_does_not_point_at_it() -> None:
+    """The page couldn't be published: no «📖», and «Что дальше» doesn't name it."""
+    topic = _topic_with(_cell(telegraph_path=None))
+
+    text, keyboard = render_hub_screen(_hub(topic, open_item_id="item-1", open_article_id="zen-1"))
+
+    assert "Читать полностью" not in text
+    assert text.endswith(
+        "Что дальше: скачайте Word и прочитайте → если всё хорошо, «Готово, публикую»."
+    )
+    assert all(b.url is None for r in keyboard.inline_keyboard for b in r)

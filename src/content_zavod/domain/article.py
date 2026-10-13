@@ -216,6 +216,17 @@ class Article:
         if result == "UPDATE 0":
             raise ArticleNotFound(article_id)
 
+    async def clear_telegraph_path(self, workspace_id: WorkspaceId, article_id: ArticleId) -> None:
+        """Forgets a page that couldn't be updated to the latest Версия (#143), so «📖» never
+        opens an outdated text and the next open of the Статья publishes it afresh."""
+        result = await self._pool.execute(
+            "UPDATE articles SET telegraph_path = NULL WHERE id = $1 AND workspace_id = $2",
+            article_id,
+            workspace_id,
+        )
+        if result == "UPDATE 0":
+            raise ArticleNotFound(article_id)
+
     async def list_versions(
         self, workspace_id: WorkspaceId, article_id: ArticleId
     ) -> list[ArticleVersionSummary]:

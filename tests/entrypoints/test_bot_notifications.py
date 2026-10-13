@@ -141,6 +141,7 @@ class FakeArticle:
         self.application = "applied"
         self.plan_id_for_article = PlanId("plan-1")
         self.articles_for_plan: list[ArticleView] = []
+        self.cleared_pages: list[str] = []
 
     async def record_version(self, workspace_id, article_id: str, version: GeneratedVersion) -> str:
         self.recorded_versions.append((article_id, version))
@@ -160,6 +161,9 @@ class FakeArticle:
 
     async def get_plan_id(self, workspace_id, article_id: str) -> PlanId:
         return self.plan_id_for_article
+
+    async def clear_telegraph_path(self, workspace_id, article_id: str) -> None:
+        self.cleared_pages.append(article_id)
 
     async def list_for_plan(self, workspace_id, plan_id: PlanId) -> list[ArticleView]:
         return self.articles_for_plan
@@ -542,6 +546,22 @@ async def test_rewritten_article_republishes_its_page_and_moves_the_hub_down_ope
     assert gateway.hub_redraws == [(42, None, "plan-1")]
     assert plan.message_refs[PlanId("plan-1")] == PlanMessageRef(chat_id=42, message_id=1)
     assert gateway.deleted == [(42, 5)]
+    assert article.cleared_pages == []
+
+
+async def test_rewritten_article_whose_page_fails_to_update_forgets_the_old_page() -> None:
+    """«📖» must not open the previous text: the page is forgotten, the Хаб shows no «📖», and
+    opening the Статья next time publishes it afresh."""
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    publisher = FakePublisher({"article-1": None})
+    handle = _make_notification_handler(
+        plan, article, gateway, FakeWorkspaces(), publisher=publisher
+    )
+
+    await handle(_article_result())
+
+    assert article.cleared_pages == ["article-1"]
+    assert gateway.hub_redraws == [(42, None, "plan-1")]
 
 
 async def test_rewritten_article_of_an_archived_plan_moves_no_hub() -> None:

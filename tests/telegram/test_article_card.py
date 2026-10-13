@@ -68,3 +68,18 @@ def test_opening_of_a_list_only_text_falls_back_to_its_items() -> None:
 
 def test_opening_of_an_empty_text_is_empty() -> None:
     assert opening_text("") == ""
+
+
+def test_opening_does_not_split_on_abbreviations() -> None:
+    assert opening_text("Это CRM, т. е. база клиентов. Второе. Третье.") == (
+        "Это CRM, т. е. база клиентов. Второе."
+    )
+    assert opening_text("В 2024 г. Рынок вырос. Дальше. Ещё.") == "В 2024 г. Рынок вырос. Дальше."
+    assert opening_text("Бюджет 5 тыс. руб. в месяц хватит. Проверим. Ещё.") == (
+        "Бюджет 5 тыс. руб. в месяц хватит. Проверим."
+    )
+    assert opening_text("Пишет А. С. Пушкин. Второе. Третье.") == "Пишет А. С. Пушкин. Второе."
+
+
+def test_a_sentence_ending_on_a_short_word_still_ends() -> None:
+    assert opening_text("Купите это. Второе. Третье.") == "Купите это. Второе."

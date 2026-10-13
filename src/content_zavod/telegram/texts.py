@@ -141,12 +141,14 @@ HUB_ARTICLE_STATES = {
     "failed": "не получилась",
 }
 HUB_ARTICLE_EXPORTED = "отмечена готовой"
+# ✏️ / 🔁 on a Статья that already has a Версия.
+HUB_ARTICLE_REWRITING = "переписывается"
 # A Статья whose redo (✏️ / 🔁 Повторить) failed still has its previous Версия.
 HUB_ARTICLE_FAILED_KEPT = "не получилась, открыта прежняя версия"
 HUB_COVER_STATES = {"pending": "рисуется", "ready": "готова", "failed": "не получилась"}
 HUB_COVER_SHORT = "🖼"
 HUB_PROGRESS = "⏳ В работе: готово {done} из {total}"
-HUB_DONE = "✅ Всё готово. Откройте Тему кнопкой ниже."
+HUB_DONE = "✅ Всё готово."
 HUB_DONE_WITH_FAILURES = "⚠️ Готово, но не всё получилось ({failed} из {total}). Можно повторить."
 HUB_EMPTY = "В Плане не осталось Тем."
 HUB_NEXT = "Что дальше: откройте Тему кнопкой ниже — внутри её Статьи."
@@ -166,6 +168,8 @@ HUB_TOPIC_NEXT_WRITING = "Что дальше: Статьи ещё пишутс�
 HUB_TOPIC_NEXT_DONE = (
     "Что дальше: все Статьи Темы готовы к публикации. Вернитесь к Плану за следующей Темой."
 )
+# A rewrite's result moves the Хаб down the chat (#143) - this message won't update itself.
+HUB_TOPIC_NEXT_REWRITING = "Что дальше: Статьи переписываются — пришлю, как будут готовы."
 HUB_TOPIC_NEXT_RETRY = "Что дальше: Статьи не получились — нажмите «🔁 Повторить»."
 # The Статья screen: a summary instead of a cut-off text.
 HUB_ARTICLE_HEADER = "📄 Статья для {platform}"
@@ -187,6 +191,10 @@ HUB_ARTICLE_NEXT = {
     "pending": "Что дальше: пришлю новую версию, как будет готова.",
     "failed": "Что дальше: попросите доработать ещё раз или скачайте прежнюю версию.",
 }
+# A ready Статья whose Страница для чтения couldn't be published: no «📖» to point at.
+HUB_ARTICLE_NEXT_NO_PAGE = (
+    "Что дальше: скачайте Word и прочитайте → если всё хорошо, «Готово, публикую»."
+)
 HUB_BUTTON_COVER = "🖼 Обложка"
 HUB_BUTTON_REDRAW_COVER = "🎨 Перерисовать"
 HUB_BUTTON_ARTICLE = "📄 Статья для {platform} ›"
@@ -333,6 +341,8 @@ def hub_article_state(state: str, *, has_content: bool = False, exported: bool =
         return HUB_ARTICLE_EXPORTED
     if state == "failed" and has_content:
         return HUB_ARTICLE_FAILED_KEPT
+    if state == "pending" and has_content:
+        return HUB_ARTICLE_REWRITING
     return HUB_ARTICLE_STATES.get(state, state)
 
 

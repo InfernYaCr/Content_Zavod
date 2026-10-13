@@ -313,10 +313,17 @@ class Plan:
     ) -> None:
         """Which screen the Хаб message shows: a Тема (`plan_item_id`), a Статья inside it
         (`article_id`, #143), or the checklist (both `None`) - so a later notification
-        re-renders the same screen instead of throwing the reader back (#91)."""
+        re-renders the same screen instead of throwing the reader back (#91). A Статья must be
+        this Plan's, else nothing changes and it is `PlanNotFound` («Кнопка устарела»)."""
         result = await self._pool.execute(
-            "UPDATE plans SET hub_item_id = $2, hub_article_id = $4 "
-            "WHERE id = $1 AND workspace_id = $3",
+            """
+            UPDATE plans SET hub_item_id = $2, hub_article_id = $4
+            WHERE id = $1 AND workspace_id = $3
+              AND ($4::text IS NULL OR EXISTS (
+                  SELECT 1 FROM articles a
+                  WHERE a.id = $4 AND a.plan_id = $1 AND a.workspace_id = $3
+              ))
+            """,
             plan_id,
             plan_item_id,
             workspace_id,
