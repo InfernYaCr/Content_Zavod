@@ -535,7 +535,7 @@ class BotClient(Protocol):
         caption: str | None = None,
         reply_markup: InlineKeyboardMarkup | None = None,
     ) -> str | None:
-        """Swap a photo message's picture and caption in place (the Инструкция carousel, #114).
+        """Swap a photo message's picture and caption in place (the Инструкция, #114).
         Returns the new photo's `file_id` when Telegram reports one. An unchanged redraw is
         success; a message that's gone raises `MessageGone`."""
         ...

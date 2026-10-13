@@ -1,4 +1,4 @@
-"""AssetPhotos: the bot's own pictures - Инструкция slides and banners (#114) - sent from
+"""AssetPhotos: the bot's own pictures - the Инструкция's and banners (#114) - sent from
 `content_zavod/assets/guide/*.png` and cached by Telegram `file_id`.
 
 A picture is uploaded once; the `file_id` Telegram hands back is stored in the Настройки
@@ -62,7 +62,7 @@ class AssetPhotos:
         text_markup: InlineKeyboardMarkup | None = None,
     ) -> int:
         """Send picture `name` with `caption`; plain text if the picture can't go - with
-        `text_markup` when given (a carousel's buttons that remember it went out as text),
+        `text_markup` when given (the Инструкция's buttons that remember it went out as text),
         else the same `reply_markup`. Returns the sent message's id either way."""
         data = self._read(name)
         if data is not None:

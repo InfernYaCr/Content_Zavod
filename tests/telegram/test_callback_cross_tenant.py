@@ -230,7 +230,7 @@ _ACTIONS_WITHOUT_A_DOMAIN_ID: set[Action] = {
     "onboarding_later",
     "onboarding_launch",
     "guide",
-    "guide_slide",
+    "guide_screen",
     "style_start",
     "style_done",
     "style_presets",

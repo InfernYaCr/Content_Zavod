@@ -1,87 +1,62 @@
-"""Инструкция (#114): the «📖 Как пользоваться» carousel.
+"""Инструкция (#114, #152): «📖 Как пользоваться» - a short start in 3 steps and question
+buttons, each opening a short answer.
 
-The carousel is one photo message: a picture per slide (`assets/guide/<slide key>.png`) with
-the slide's text as its caption (≤ 1024 characters - Telegram's caption limit), turned with
-◀ ▶ through `editMessageMedia`, «N/M» in between and «🏠 В меню» below. Every button carries
-the slide's index, never a session, and an index out of range is clamped - so a button on an
-old carousel (one with more slides than today's) still lands on a real slide.
+All of it is one photo message: the first screen and most answers show `welcome.png`, «🗓 Как
+проходит неделя» and «📄 Что делать со Статьёй» their own picture (`assets/guide/<key>.png`).
+A photo message can't become a text one, so every screen is a picture with the text as its
+caption (≤ 1024 characters - Telegram's caption limit), switched with `editMessageMedia`. An
+answer has «◀ К вопросам» and «🏠 В меню»; the first screen has the questions and «🏠 В меню».
 
-Everyone sees the same slides: there are no Roles, every user is the Владелец of their own
-Пространство (ADR-0015). Each Настройка's slide takes its label, what it drives, its example
-and its «Изменить …» button from `SETTING_FIELDS` and the onboarding questions - the Инструкция
-shows exactly what the bot asks - and adds a bad example and why.
+Every button carries the screen's key, never a session. Any other key - a button of the old
+11-slide carousel («gs:3») included - opens the first screen.
 
-The carousel opens from the Главное меню, /help, the onboarding intro and «Проверьте вводные».
-A carousel opened from the menu replaces it, and «🏠 В меню» replaces the carousel with the
-menu again.
+The Инструкция opens from the Главное меню, /help, the onboarding intro and «Проверьте вводные».
+Opened from the menu it replaces it, and «🏠 В меню» replaces it with the menu again.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from ..domain import PLATFORMS
 from ..scheduling import DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE
-from ..settings import PERSONAS
+from ..workspaces import TrialLimits
 from .asset_photos import AssetPhotos
 from .callback_codec import Action, SimpleAction, encode_callback_data
 from .gateway import BotClient
 from .guide_texts import (
-    GUIDE_ABOUT,
-    GUIDE_ABOUT_TITLE,
     GUIDE_ARTICLE,
-    GUIDE_ARTICLE_TITLE,
-    GUIDE_AUDIENCE_BAD,
-    GUIDE_AUDIENCE_BAD_WHY,
-    GUIDE_AUDIENCE_TITLE,
-    GUIDE_AUDIENCE_WHY,
+    GUIDE_ARTICLE_BUTTON,
     GUIDE_BUTTON,
-    GUIDE_COUNTER,
     GUIDE_FAQ,
-    GUIDE_FAQ_TITLE,
-    GUIDE_NEXT_BUTTON,
-    GUIDE_NICHE_BAD,
-    GUIDE_NICHE_BAD_WHY,
-    GUIDE_NICHE_TITLE,
-    GUIDE_NICHE_WHY,
-    GUIDE_PERSONA_BAD,
-    GUIDE_PERSONA_BAD_WHY,
-    GUIDE_PERSONA_TITLE,
-    GUIDE_PERSONA_WHY,
-    GUIDE_PREV_BUTTON,
-    GUIDE_PROJECT_BAD,
-    GUIDE_PROJECT_BAD_WHY,
-    GUIDE_PROJECT_GOOD,
-    GUIDE_PROJECT_TITLE,
-    GUIDE_PROJECT_WHY,
-    GUIDE_PROPOSE,
-    GUIDE_PROPOSE_TITLE,
-    GUIDE_SCHEDULE_BAD,
-    GUIDE_SCHEDULE_BAD_WHY,
-    GUIDE_SCHEDULE_GOOD_SUFFIX,
-    GUIDE_SCHEDULE_TITLE,
-    GUIDE_SCHEDULE_WHY,
-    GUIDE_SETTING,
-    GUIDE_SETTING_OPTIONAL,
-    GUIDE_SOURCING,
-    GUIDE_SOURCING_TITLE,
+    GUIDE_FAQ_BUTTON,
+    GUIDE_LIMIT,
+    GUIDE_LIMIT_BUTTON,
+    GUIDE_LIMIT_CONTACT,
+    GUIDE_LINK,
+    GUIDE_LINK_BUTTON,
+    GUIDE_NICHE,
+    GUIDE_NICHE_BUTTON,
+    GUIDE_SCHEDULE,
+    GUIDE_SCHEDULE_BUTTON,
+    GUIDE_START,
+    GUIDE_STYLE,
+    GUIDE_STYLE_BUTTON,
     GUIDE_TO_MENU_BUTTON,
+    GUIDE_TO_QUESTIONS_BUTTON,
     GUIDE_WEEK,
-    GUIDE_WEEK_TITLE,
+    GUIDE_WEEK_BUTTON,
 )
-from .settings_screen import SETTING_FIELDS, SettingField
+from .settings_screen import SETTING_FIELDS
 from .texts import (
     ARTICLE_CARD_NO_EVIDENCE,
     HUB_BUTTON_APPROVE,
     HUB_BUTTON_ARTICLE,
-    HUB_BUTTON_COVER,
     HUB_BUTTON_DOCX,
-    HUB_BUTTON_MD,
     HUB_BUTTON_READ_FULL,
-    HUB_BUTTON_REDRAW_COVER,
     HUB_BUTTON_REFINE,
     HUB_BUTTON_RETRY_TOPIC,
     MENU_HISTORY_BUTTON,
@@ -89,10 +64,12 @@ from .texts import (
     MENU_SCHEDULE_BUTTON,
     MENU_SETTINGS_BUTTON,
     MENU_TOPIC_BUTTON,
-    ONBOARDING_AUDIENCE_QUESTION,
     ONBOARDING_NICHE_QUESTION,
-    PLAN_GENERATE_BUTTON,
-    SCHEDULE_PURPOSE,
+    STYLE_ARTICLES_BUTTON,
+    STYLE_POSTS_BUTTON,
+    STYLE_PRESETS_BUTTON,
+    articles_text,
+    plans_text,
     platform_genitive,
     schedule_text,
 )
@@ -103,25 +80,29 @@ CAPTION_LIMIT = 1024
 """Telegram's limit on a photo caption."""
 
 FROM_MENU = "m"
-"""`guide` id: opened from the Главное меню, which the carousel replaces."""
+"""`guide` id: opened from the Главное меню, which the Инструкция replaces."""
 FROM_GUIDE = "g"
-"""`menu` id: «🏠 В меню» pressed on the carousel, which the menu replaces."""
+"""`menu` id: «🏠 В меню» pressed on the Инструкция, which the menu replaces."""
 _MENU = "🏠 Меню"
+
+START = "start"
+"""The first screen's key."""
+WELCOME = "welcome"
+"""The picture of the first screen and of every answer without its own."""
 
 
 @dataclass(frozen=True)
-class Slide:
+class Screen:
     key: str
-    """Stable name: the picture is `assets/guide/<key>.png`."""
     title: str
+    """The question button's label, and the answer's first line; empty on the first screen."""
     body: str
-    optional: bool = False
-    """A Настройка the bot works without - the title says «(необязательно)»."""
+    picture: str = WELCOME
+    """`assets/guide/<picture>.png`."""
 
     @property
     def caption(self) -> str:
-        suffix = GUIDE_SETTING_OPTIONAL if self.optional else ""
-        return f"{self.title}{suffix}\n\n{self.body}"
+        return f"{self.title}\n\n{self.body}" if self.title else self.body
 
 
 def example_of(question: str) -> str:
@@ -132,190 +113,120 @@ def example_of(question: str) -> str:
     return rest.strip().split("\n\n")[0].strip()
 
 
-def _capitalized(text: str) -> str:
-    return text[:1].upper() + text[1:]
+def _settings_path(key: str) -> str:
+    field = next(field for field in SETTING_FIELDS if field.key == key)
+    return f"{_MENU} → {MENU_SETTINGS_BUTTON} → {field.change_button}"
 
 
-def _setting_slide(
-    field: SettingField,
-    title: str,
-    *,
-    why: str,
-    good: str,
-    bad: str,
-    bad_why: str,
-    optional: bool = False,
-) -> Slide:
-    return Slide(
-        key=field.key,
-        title=title,
-        body=GUIDE_SETTING.format(
-            purpose=_capitalized(field.purpose),
-            why=why,
-            good=good,
-            bad=bad,
-            bad_why=bad_why,
-            where=f"{_MENU} → {MENU_SETTINGS_BUTTON} → {field.change_button}",
-        ),
-        optional=optional,
+_TRIAL = TrialLimits()
+"""The Лимит by default (no env) - what the tests and the pictures see."""
+
+
+def build_answers(trial: TrialLimits = _TRIAL) -> tuple[Screen, ...]:
+    """The question screens, in the first screen's button order."""
+    article = HUB_BUTTON_ARTICLE.format(platform=platform_genitive(PLATFORMS[0]))
+    persona = next(field for field in SETTING_FIELDS if field.key == "persona")
+    limit = GUIDE_LIMIT.format(
+        plans=plans_text(trial.plans),
+        articles=articles_text(trial.articles),
+        refine=HUB_BUTTON_REFINE,
+        regenerate="🔄",
+        menu=_MENU,
     )
-
-
-def _settings_slides(fields: Sequence[SettingField]) -> list[Slide]:
-    """One slide per Настройка, in the onboarding's order; a key `fields` lacks is skipped."""
-    by_key = {field.key: field for field in fields}
-    slides: list[Slide] = []
-    if field := by_key.get("niche"):
-        slides.append(
-            _setting_slide(
-                field,
-                GUIDE_NICHE_TITLE,
-                why=GUIDE_NICHE_WHY,
-                good=example_of(ONBOARDING_NICHE_QUESTION),
-                bad=GUIDE_NICHE_BAD,
-                bad_why=GUIDE_NICHE_BAD_WHY,
-            )
-        )
-    if field := by_key.get("audience"):
-        slides.append(
-            _setting_slide(
-                field,
-                GUIDE_AUDIENCE_TITLE,
-                why=GUIDE_AUDIENCE_WHY,
-                good=example_of(ONBOARDING_AUDIENCE_QUESTION),
-                bad=GUIDE_AUDIENCE_BAD,
-                bad_why=GUIDE_AUDIENCE_BAD_WHY,
-                optional=True,
-            )
-        )
-    if field := by_key.get("persona"):
-        presets = ", ".join(f"«{persona.title}»" for persona in PERSONAS.values())
-        slides.append(
-            _setting_slide(
-                field,
-                GUIDE_PERSONA_TITLE,
-                why=GUIDE_PERSONA_WHY.format(presets=presets),
-                good=example_of(field.question),
-                bad=GUIDE_PERSONA_BAD,
-                bad_why=GUIDE_PERSONA_BAD_WHY,
-            )
-        )
-    if field := by_key.get("project"):
-        slides.append(
-            _setting_slide(
-                field,
-                GUIDE_PROJECT_TITLE,
-                why=GUIDE_PROJECT_WHY,
-                good=GUIDE_PROJECT_GOOD,
-                bad=GUIDE_PROJECT_BAD,
-                bad_why=GUIDE_PROJECT_BAD_WHY,
-                optional=True,
-            )
-        )
-    # Расписание isn't a Настройка, but it lives next to them.
-    slides.append(
-        Slide(
-            key="schedule",
-            title=GUIDE_SCHEDULE_TITLE,
-            body=GUIDE_SETTING.format(
-                purpose=_capitalized(SCHEDULE_PURPOSE),
-                why=GUIDE_SCHEDULE_WHY,
-                good=schedule_text(DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE)
-                + GUIDE_SCHEDULE_GOOD_SUFFIX,
-                bad=GUIDE_SCHEDULE_BAD,
-                bad_why=GUIDE_SCHEDULE_BAD_WHY,
-                where=f"{_MENU} → {MENU_SCHEDULE_BUTTON}",
-            ),
-        )
-    )
-    return slides
-
-
-def build_slides(fields: Sequence[SettingField] = SETTING_FIELDS) -> tuple[Slide, ...]:
+    if trial.contact:
+        limit += GUIDE_LIMIT_CONTACT.format(contact=trial.contact)
     return (
-        Slide("about", GUIDE_ABOUT_TITLE, GUIDE_ABOUT),
-        Slide(
-            "sourcing",
-            GUIDE_SOURCING_TITLE,
-            GUIDE_SOURCING.format(regenerate="🔄", topic=MENU_TOPIC_BUTTON),
-        ),
-        Slide(
+        Screen(
             "week",
-            GUIDE_WEEK_TITLE,
+            GUIDE_WEEK_BUTTON,
             GUIDE_WEEK.format(
                 regenerate="🔄",
                 delete="🗑",
                 approve_all="✅ Утвердить всё",
                 retry=HUB_BUTTON_RETRY_TOPIC,
-                article=HUB_BUTTON_ARTICLE.format(platform=platform_genitive("zen")),
-                approve=HUB_BUTTON_APPROVE,
-                menu=_MENU,
-                topic=MENU_TOPIC_BUTTON,
+                article=article,
             ),
+            picture="week",
         ),
-        *_settings_slides(fields),
-        Slide(
-            "propose",
-            GUIDE_PROPOSE_TITLE,
-            GUIDE_PROPOSE.format(menu=_MENU, topic=MENU_TOPIC_BUTTON),
-        ),
-        Slide(
+        Screen(
             "article",
-            GUIDE_ARTICLE_TITLE,
+            GUIDE_ARTICLE_BUTTON,
             GUIDE_ARTICLE.format(
+                article=article,
                 read=HUB_BUTTON_READ_FULL,
-                approve=HUB_BUTTON_APPROVE,
-                refine=HUB_BUTTON_REFINE,
                 docx=HUB_BUTTON_DOCX,
-                md=HUB_BUTTON_MD,
-                cover=HUB_BUTTON_COVER,
-                redraw=HUB_BUTTON_REDRAW_COVER,
-                # «⚠️ Источники не найдены» - the card's own words, without the advice part.
-                no_evidence=ARTICLE_CARD_NO_EVIDENCE["no_evidence"].split(" — ")[0],
+                refine=HUB_BUTTON_REFINE,
+                approve=HUB_BUTTON_APPROVE,
+            ),
+            picture="article",
+        ),
+        Screen(
+            "niche",
+            GUIDE_NICHE_BUTTON,
+            GUIDE_NICHE.format(
+                niche_good=example_of(ONBOARDING_NICHE_QUESTION),
+                where=f"{_MENU} → {MENU_SETTINGS_BUTTON}",
             ),
         ),
-        Slide(
+        Screen(
+            "style",
+            GUIDE_STYLE_BUTTON,
+            GUIDE_STYLE.format(
+                purpose=persona.purpose[:1].upper() + persona.purpose[1:],
+                articles=STYLE_ARTICLES_BUTTON,
+                posts=STYLE_POSTS_BUTTON,
+                presets=STYLE_PRESETS_BUTTON,
+                where=_settings_path("persona"),
+            ),
+        ),
+        Screen("link", GUIDE_LINK_BUTTON, GUIDE_LINK.format(where=_settings_path("project"))),
+        Screen(
+            "schedule",
+            GUIDE_SCHEDULE_BUTTON,
+            GUIDE_SCHEDULE.format(
+                default=schedule_text(DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE),
+                where=f"{_MENU} → {MENU_SCHEDULE_BUTTON}",
+                menu=_MENU,
+            ),
+        ),
+        Screen("limit", GUIDE_LIMIT_BUTTON, limit),
+        Screen(
             "faq",
-            GUIDE_FAQ_TITLE,
+            GUIDE_FAQ_BUTTON,
             GUIDE_FAQ.format(
-                topic=MENU_TOPIC_BUTTON,
-                plan=MENU_PLAN_BUTTON,
-                generate=PLAN_GENERATE_BUTTON,
                 regenerate="🔄",
                 refine=HUB_BUTTON_REFINE,
                 menu=_MENU,
+                plan=MENU_PLAN_BUTTON,
                 history=MENU_HISTORY_BUTTON,
+                # «⚠️ Источники не найдены» - the card's own words, without the advice part.
+                no_evidence=ARTICLE_CARD_NO_EVIDENCE["no_evidence"].split(" — ")[0],
+                topic=MENU_TOPIC_BUTTON,
             ),
         ),
     )
 
 
-GUIDE_SLIDES: tuple[Slide, ...] = build_slides()
+START_SCREEN = Screen(START, "", GUIDE_START)
+GUIDE_ANSWERS: tuple[Screen, ...] = build_answers()
 
-# Every picture the bot sends besides the slides; `scripts/render_guide_assets.py` draws them.
-BANNERS: tuple[str, ...] = ("welcome", "onboarding")
-
-
-def clamp_index(index: int, total: int) -> int:
-    return min(max(index, 0), max(total - 1, 0))
+# Every picture the bot sends besides the Инструкция's own; `scripts/render_guide_assets.py`
+# draws them.
+BANNERS: tuple[str, ...] = (WELCOME, "onboarding")
 
 
-TEXT_MODE = "t"
-"""Suffix on a `guide_slide` id: this carousel went out as text (its picture couldn't be
-sent), so its pages are turned with `editMessageText` straight away."""
+TEXT_MODE = ".t"
+"""Suffix on a `guide_screen` id: this Инструкция went out as text (its picture couldn't be
+sent), so its screens are switched with `editMessageText` straight away."""
 
 
-def slide_id(index: int, *, text_mode: bool = False) -> str:
-    return f"{index}{TEXT_MODE if text_mode else ''}"
+def screen_id(key: str, *, text_mode: bool = False) -> str:
+    return f"{key}{TEXT_MODE if text_mode else ''}"
 
 
-def parse_slide_id(text: str) -> tuple[int, bool]:
-    """`guide_slide` id -> (slide index, text mode); anything unparsable is the first slide."""
-    text_mode = text.endswith(TEXT_MODE)
-    try:
-        return int(text.removesuffix(TEXT_MODE)), text_mode
-    except ValueError:
-        return 0, text_mode
+def parse_screen_id(text: str) -> tuple[str, bool]:
+    """`guide_screen` id -> (screen key, text mode)."""
+    return text.removesuffix(TEXT_MODE), text.endswith(TEXT_MODE)
 
 
 def _button(text: str, action: Action, id_: str = "") -> InlineKeyboardButton:
@@ -324,76 +235,76 @@ def _button(text: str, action: Action, id_: str = "") -> InlineKeyboardButton:
     )
 
 
-def build_guide_keyboard(
-    index: int, total: int, *, text_mode: bool = False
+def _to_menu() -> InlineKeyboardButton:
+    return _button(GUIDE_TO_MENU_BUTTON, "menu", FROM_GUIDE)
+
+
+def build_start_keyboard(
+    answers: tuple[Screen, ...] = GUIDE_ANSWERS, *, text_mode: bool = False
 ) -> InlineKeyboardMarkup:
-    """◀ N/M ▶ (wrapping round) and «🏠 В меню»; «N/M» redraws the slide it shows."""
+    """The questions, two in a row, and «🏠 В меню»."""
+    buttons = [
+        _button(answer.title, "guide_screen", screen_id(answer.key, text_mode=text_mode))
+        for answer in answers
+    ]
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    return InlineKeyboardMarkup(inline_keyboard=[*rows, [_to_menu()]])
 
-    def turn(to: int) -> str:
-        return slide_id(to % total, text_mode=text_mode)
 
-    counter = _button(
-        GUIDE_COUNTER.format(number=index + 1, total=total), "guide_slide", turn(index)
-    )
-    nav = [counter]
-    if total > 1:
-        nav = [
-            _button(GUIDE_PREV_BUTTON, "guide_slide", turn(index - 1)),
-            counter,
-            _button(GUIDE_NEXT_BUTTON, "guide_slide", turn(index + 1)),
-        ]
-    return InlineKeyboardMarkup(
-        inline_keyboard=[nav, [_button(GUIDE_TO_MENU_BUTTON, "menu", FROM_GUIDE)]]
-    )
+def build_answer_keyboard(*, text_mode: bool = False) -> InlineKeyboardMarkup:
+    back = _button(GUIDE_TO_QUESTIONS_BUTTON, "guide_screen", screen_id(START, text_mode=text_mode))
+    return InlineKeyboardMarkup(inline_keyboard=[[back, _to_menu()]])
 
 
 def guide_button(*, from_menu: bool = False) -> InlineKeyboardButton:
-    """«📖 Как пользоваться» for any keyboard: sends the carousel as a new message (in place
+    """«📖 Как пользоваться» for any keyboard: sends the first screen as a new message (in place
     of the pressed one, `from_menu`)."""
     return _button(GUIDE_BUTTON, "guide", FROM_MENU if from_menu else "")
 
 
 class Guide:
-    def __init__(
-        self, photos: AssetPhotos, bot: BotClient, *, slides: Sequence[Slide] = GUIDE_SLIDES
-    ) -> None:
+    def __init__(self, photos: AssetPhotos, bot: BotClient, *, trial: TrialLimits = _TRIAL) -> None:
         self._photos = photos
         self._bot = bot
-        self._slides = tuple(slides)
+        self._answers = build_answers(trial)
+        self._by_key = {answer.key: answer for answer in self._answers}
 
-    def _screen(self, index: int) -> tuple[Slide, InlineKeyboardMarkup, InlineKeyboardMarkup]:
-        """The slide, its photo-mode keyboard and its text-mode one."""
-        index = clamp_index(index, len(self._slides))
-        return (
-            self._slides[index],
-            build_guide_keyboard(index, len(self._slides)),
-            build_guide_keyboard(index, len(self._slides), text_mode=True),
-        )
+    def _screen(self, key: str) -> tuple[Screen, InlineKeyboardMarkup, InlineKeyboardMarkup]:
+        """The screen (the first one for an unknown key), its photo-mode keyboard and its
+        text-mode one."""
+        answer = self._by_key.get(key)
+        if answer is None:
+            return (
+                START_SCREEN,
+                build_start_keyboard(self._answers),
+                build_start_keyboard(self._answers, text_mode=True),
+            )
+        return answer, build_answer_keyboard(), build_answer_keyboard(text_mode=True)
 
-    async def send(self, chat_id: int, index: int = 0) -> None:
-        """The carousel as a new message, on slide `index`."""
-        slide, keyboard, text_keyboard = self._screen(index)
+    async def send(self, chat_id: int) -> None:
+        """The first screen as a new message."""
+        screen, keyboard, text_keyboard = self._screen(START)
         await self._photos.send(
-            chat_id, slide.key, slide.caption, keyboard, text_markup=text_keyboard
+            chat_id, screen.picture, screen.caption, keyboard, text_markup=text_keyboard
         )
 
     async def show(self, chat_id: int, message_id: int, id_: str) -> None:
-        """Turn the carousel `message_id` to the slide a `guide_slide` id names. A photo
-        carousel swaps its picture; one that went out as text (its buttons say so) is turned
-        as text; one that can't be edited at all is sent anew."""
-        index, text_mode = parse_slide_id(id_)
-        slide, keyboard, text_keyboard = self._screen(index)
+        """Switch the Инструкция `message_id` to the screen a `guide_screen` id names. A photo
+        message swaps its picture and caption; one that went out as text (its buttons say so)
+        is redrawn as text; one that can't be edited at all is sent anew."""
+        key, text_mode = parse_screen_id(id_)
+        screen, keyboard, text_keyboard = self._screen(key)
         if not text_mode and await self._photos.edit(
-            chat_id, message_id, slide.key, slide.caption, keyboard
+            chat_id, message_id, screen.picture, screen.caption, keyboard
         ):
             return
         try:
             await self._bot.edit_message_text(
-                chat_id, message_id, slide.caption, reply_markup=text_keyboard
+                chat_id, message_id, screen.caption, reply_markup=text_keyboard
             )
             return
         except Exception:
-            logger.info("could not turn guide message %s", message_id, exc_info=True)
+            logger.info("could not switch guide message %s", message_id, exc_info=True)
         await self._photos.send(
-            chat_id, slide.key, slide.caption, keyboard, text_markup=text_keyboard
+            chat_id, screen.picture, screen.caption, keyboard, text_markup=text_keyboard
         )

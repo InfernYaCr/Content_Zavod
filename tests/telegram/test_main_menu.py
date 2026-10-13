@@ -199,7 +199,7 @@ def test_everyone_gets_the_same_menu() -> None:
         ["🕘 Расписание"],
         ["📖 Как пользоваться"],
     ]
-    # The carousel takes the menu's place (#114).
+    # The Инструкция takes the menu's place (#114).
     assert button_data(markup) == [["mp:"], ["mt:"], ["mh:"], ["st:"], ["sc:m"], ["gd:m"]]
 
 
