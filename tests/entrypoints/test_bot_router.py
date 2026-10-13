@@ -120,6 +120,13 @@ class Unused:
         raise AssertionError(f"unexpected call: {name}")
 
 
+class NoWeekPlan(Unused):
+    """The menu's text reads the week's Plan (#149); nothing else of the Plan is reached."""
+
+    async def find_active(self, workspace_id: int, week_label: str) -> None:
+        return None
+
+
 class FakeAdmin:
     def __init__(self) -> None:
         self.limits_set: list[tuple[int, int, int, int]] = []
@@ -167,7 +174,7 @@ class Bot_:
         prompts = InputPrompt(self.bot, self.pending)
         settings = SettingsService(self.store)
         menu = MainMenu(
-            cast(Any, Unused()),
+            cast(Any, NoWeekPlan()),
             cast(Any, Unused()),
             FakeSchedule(),
             self.bot,

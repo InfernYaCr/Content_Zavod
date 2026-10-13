@@ -68,15 +68,19 @@ class TrialLimits:
             plan_limit=self.plans if plan_limit is None else plan_limit,
             articles_used=articles_used,
             article_limit=self.articles if article_limit is None else article_limit,
+            custom=plan_limit is not None or article_limit is not None,
         )
 
 
 @dataclass(frozen=True)
 class Usage:
+    """`custom` - a Лимит an administrator set for this Workspace (`/admin`), not the trial."""
+
     plans_used: int
     plan_limit: int
     articles_used: int
     article_limit: int
+    custom: bool = False
 
     @property
     def plans_left(self) -> int:
@@ -208,8 +212,13 @@ class Limits:
         self._pool = pool
         self._trial = trial
 
+    @property
+    def contact(self) -> str | None:
+        """`LIMIT_CONTACT`: whom to ask for more."""
+        return self._trial.contact
+
     async def usage(self, workspace_id: WorkspaceId) -> Usage:
-        """Charged and Лимит, for the menu's «Осталось» line and `/admin`."""
+        """Charged and Лимит, for the Главное меню and `/admin`."""
         return (await self._quota(self._pool, _READ, workspace_id)).usage
 
     async def precheck(self, workspace_id: WorkspaceId, job_type: str) -> None:

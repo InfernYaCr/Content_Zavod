@@ -10,8 +10,11 @@ chat (a private chat has no link to an earlier message), or - with no Plan yet -
 next one is due and offers «🪄 Составить План» (the same path as /generate_plan). The week is
 counted in the Пространство's own time zone, like its Расписание. «✍️ Предложить Тему» asks for
 the Тема through `InputPrompt` and hands the answer to the same handler as /topic. «🗂 История»
-turns the menu message into its screen, whose «🏠 В меню» row turns it back. Under the
-buttons' prompt the menu shows what is left of the Лимит: «Осталось: 1 План, 8 Статей».
+turns the menu message into its screen, whose «🏠 В меню» row turns it back.
+
+The menu's text (#149) sums up the Пространство: this week's Plan and how far its Статьи are
+(from the Хаб's own `get_hub`), when the Расписание makes the next Plan (the tick's
+`next_deadline`, in the Пространство's time zone), the Лимит, and the Ниша.
 """
 
 from __future__ import annotations
@@ -20,11 +23,18 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from ..scheduling import DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE
-from ..workspaces import Limits, Workspace, WorkspaceId
+from ..scheduling import (
+    DEFAULT_DAY_OF_WEEK,
+    DEFAULT_HOUR,
+    DEFAULT_MINUTE,
+    DEFAULT_SCHEDULE,
+    next_deadline,
+)
+from ..workspaces import Limits, Usage, Workspace, WorkspaceId
 from .asset_photos import AssetPhotos
 from .callback_codec import Action, SimpleAction, encode_callback_data
 from .gateway import BotClient, TelegramGateway, format_week_range
@@ -43,11 +53,18 @@ from .settings_screen import BACK_TO_MENU, ScheduleStore
 from .texts import (
     BACK_BUTTON,
     MENU_HISTORY_BUTTON,
+    MENU_NICHE,
+    MENU_NICHE_UNSET,
     MENU_PLAN_BUTTON,
     MENU_SCHEDULE_BUTTON,
     MENU_SETTINGS_BUTTON,
-    MENU_TEXT,
+    MENU_TITLE,
     MENU_TOPIC_BUTTON,
+    MENU_WEEK,
+    MENU_WEEK_ARTICLES,
+    MENU_WEEK_MORE,
+    MENU_WEEK_NONE,
+    MENU_WEEK_PENDING,
     NICHE_MISSING_TEXT,
     OPEN_MENU_BUTTON,
     PLAN_EMPTY_TEXT,
@@ -60,15 +77,20 @@ from .texts import (
     TOPIC_QUESTION,
     TOPIC_TOO_LONG_TEXT,
     WELCOME_TEXT,
-    remaining_text,
+    menu_limit_text,
+    next_plan_text,
     schedule_text,
+    topics_text,
 )
 from .topic_command import TOPIC_MAX_LENGTH, PlanProposal, handle_topic_command
-from .types import PlanItemView, PlanView
+from .types import PlanHubView, PlanItemView, PlanView
 
 logger = logging.getLogger(__name__)
 
 TOPIC_INPUT_KIND = "topic_input"
+# The menu names at most this many of the week's Темы, each cut to this length (#149).
+MENU_TOPICS_SHOWN = 3
+MENU_TOPIC_MAX_LENGTH = 40
 
 
 class OnboardingNeed(Protocol):
@@ -120,6 +142,55 @@ def render_plan_status_text(view: PlanView) -> str:
     )
 
 
+def _short_title(title: str) -> str:
+    if len(title) <= MENU_TOPIC_MAX_LENGTH:
+        return title
+    return f"{title[: MENU_TOPIC_MAX_LENGTH - 1].rstrip()}…"
+
+
+def _week_text(view: PlanView | None, hub: PlanHubView | None) -> str:
+    """«📋 Эта неделя (…)», its Темы and Статьи; a Plan still waiting for approval in one line."""
+    live = [] if view is None else _live_items(view)
+    if not live:
+        return MENU_WEEK_NONE
+    if hub is None:
+        return MENU_WEEK_PENDING.format(topics=topics_text(len(live)))
+    lines = [MENU_WEEK.format(week=format_week_range(hub.week_label, year=False))]
+    titles = [f"«{_short_title(topic.title)}»" for topic in hub.topics]
+    if titles:
+        more = len(titles) - MENU_TOPICS_SHOWN
+        tail = MENU_WEEK_MORE.format(count=more) if more > 0 else ""
+        lines.append(", ".join(titles[:MENU_TOPICS_SHOWN]) + tail)
+    cells = [cell for topic in hub.topics for cell in topic.articles]
+    if any(cell.article_id is not None for cell in cells):
+        lines.append(
+            MENU_WEEK_ARTICLES.format(
+                ready=sum(cell.state == "ready" for cell in cells),
+                total=len(cells),
+                exported=sum(cell.exported for cell in cells),
+            )
+        )
+    return "\n".join(lines)
+
+
+def render_menu_text(
+    *,
+    view: PlanView | None,
+    hub: PlanHubView | None,
+    next_plan: datetime | None,
+    usage: Usage,
+    contact: str | None,
+    niche: str | None,
+) -> str:
+    """The Главное меню's text (#149). `hub` - the week's Plan once approved; `next_plan` -
+    `None` when the Расписание won't make one by itself; `niche` - `None` until it is told."""
+    week = _week_text(view, hub)
+    if next_plan is not None:
+        week = f"{week}\n\n{next_plan_text(next_plan)}"
+    niche_line = MENU_NICHE_UNSET if niche is None else MENU_NICHE.format(niche=niche)
+    return "\n\n".join([MENU_TITLE, week, menu_limit_text(usage, contact), niche_line])
+
+
 class MainMenu:
     def __init__(
         self,
@@ -152,8 +223,30 @@ class MainMenu:
         self._now = now
 
     async def _text(self, workspace: Workspace) -> str:
-        usage = await self._limits.usage(workspace.id)
-        return f"{MENU_TEXT}\n\n{remaining_text(usage)}"
+        """Every read is by this Пространство's id; the Хаб and the Расписание only when the
+        text needs them - the menu opens often."""
+        now = self._now()
+        view = await self._plan.find_active(workspace.id, workspace_week(workspace, now))
+        live = [] if view is None else _live_items(view)
+        hub = None
+        if view is not None and live and all(item.status == "approved" for item in live):
+            hub = await self._plan.get_hub(workspace.id, view.id)
+        owner = await self._settings.read(workspace.id)
+        next_plan = None
+        # The tick's own conditions (#118): no Plan without a Ниша or mid-wizard.
+        if owner.niche_saved and not await self._onboarding.needed(workspace.id):
+            schedule = await self._schedule.get(workspace.id) or DEFAULT_SCHEDULE
+            next_plan = next_deadline(
+                now, ZoneInfo(workspace.timezone), schedule, week_has_plan=view is not None
+            )
+        return render_menu_text(
+            view=view,
+            hub=hub,
+            next_plan=next_plan,
+            usage=await self._limits.usage(workspace.id),
+            contact=self._limits.contact,
+            niche=owner.niche if owner.niche_saved else None,
+        )
 
     async def send(self, workspace: Workspace, chat_id: int, *, welcome: bool = False) -> None:
         """The menu as a new message. `welcome` (/start) puts the greeting above it - as its own
