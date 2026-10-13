@@ -47,13 +47,8 @@ from content_zavod.scheduling import (
     ScheduleConfig,
 )
 from content_zavod.settings import SettingsService
-from content_zavod.telegram.article_card import render_article_card_text
 from content_zavod.telegram.asset_photos import ASSETS_DIR
-from content_zavod.telegram.gateway import (
-    build_article_keyboard,
-    build_plan_keyboard,
-    render_plan_text,
-)
+from content_zavod.telegram.gateway import build_plan_keyboard, render_plan_text
 from content_zavod.telegram.guide import BANNERS, GUIDE_SLIDES, Slide, example_of
 from content_zavod.telegram.input_prompt import build_cancel_input_keyboard, question_text
 from content_zavod.telegram.main_menu import TOPIC_INPUT_KIND, build_main_menu_keyboard
@@ -82,7 +77,7 @@ from content_zavod.telegram.texts import (
     schedule_text,
     steps_count_text,
 )
-from content_zavod.telegram.types import ArticleView, PlanItemView, PlanView
+from content_zavod.telegram.types import PlanItemView, PlanView
 from content_zavod.workspaces import Workspace, WorkspaceId
 
 SLIDE_SIZE = (1280, 960)
@@ -224,25 +219,10 @@ async def _slide_mockup(slide: Slide) -> Mockup:
             ),
         ]
     elif slide.key == "article":
-        article = ArticleView(
-            id="a",
-            plan_item_id="1",
-            title="Как посчитать окупаемость рекламы",
-            platform="zen",
-            content=(
-                "# Как посчитать окупаемость рекламы\n\n"
-                "Реклама окупается, когда каждый вложенный рубль возвращается с прибылью. "
-                "Разберём на примере кофейни: сколько стоил гость, сколько он принёс и когда "
-                "кампанию пора остановить."
-            ).encode(),
-            research_status="no_evidence",
-        )
-        keyboard = build_article_keyboard(
-            "a", "1", read_url="https://telegra.ph/example", covers=False
-        )
+        text, keyboard = render_hub_screen(_sample_hub(open_article=True))
         bubbles = [
-            Bubble("Готовая Статья приходит карточкой", service=True),
-            Bubble(render_article_card_text(article), _buttons(keyboard)),
+            Bubble("Хаб → Тема → «📄 Статья для Дзена ›»", service=True),
+            Bubble(text, _buttons(keyboard)),
         ]
     elif slide.key == "propose":
         keyboard = build_cancel_input_keyboard(TOPIC_INPUT_KIND)
@@ -266,9 +246,28 @@ async def _slide_mockup(slide: Slide) -> Mockup:
     return Mockup(slide.title, note, bubbles)
 
 
-def _sample_hub() -> PlanHubView:
+def _sample_hub(*, open_article: bool = False) -> PlanHubView:
+    """The week slide's checklist, or (`open_article`) the first Тема's Статья для Дзена open."""
+
     def cells(zen: str, vc: str) -> list[HubArticleCell]:
-        return [HubArticleCell("zen", zen, has_content=zen == "ready"), HubArticleCell("vc", vc)]
+        return [
+            HubArticleCell(
+                "zen",
+                zen,
+                article_id="a",
+                has_content=zen == "ready",
+                telegraph_path="example" if zen == "ready" else None,
+                research_status="no_evidence",
+                chars=6230,
+                opening=(
+                    "# Как посчитать окупаемость рекламы\n\n"
+                    "Реклама окупается, когда каждый вложенный рубль возвращается с прибылью. "
+                    "Разберём на примере кофейни: сколько стоил гость, сколько он принёс и "
+                    "когда кампанию пора остановить."
+                ),
+            ),
+            HubArticleCell("vc", vc, exported=vc == "ready"),
+        ]
 
     return PlanHubView(
         id="plan",
@@ -287,6 +286,8 @@ def _sample_hub() -> PlanHubView:
                 cells("ready", "pending"),
             ),
         ],
+        open_item_id="1" if open_article else None,
+        open_article_id="a" if open_article else None,
     )
 
 

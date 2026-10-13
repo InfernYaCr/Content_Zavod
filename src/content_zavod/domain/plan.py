@@ -218,7 +218,7 @@ class Plan:
         «Повторить» or a manual re-request can never double-count. Rejected Темы are left out
         and the rest renumbered 1..N, since nothing is generated for them."""
         plan_row = await self._pool.fetchrow(
-            "SELECT id, week_label, status, hub_item_id FROM plans "
+            "SELECT id, week_label, status, hub_item_id, hub_article_id FROM plans "
             "WHERE id = $1 AND workspace_id = $2",
             plan_id,
             workspace_id,
@@ -241,14 +241,16 @@ class Plan:
         article_rows = await self._pool.fetch(
             """
             SELECT a.id, a.plan_item_id, a.platform, a.status, a.active_generation_job_id,
-                   a.telegraph_path, j.status AS job_status,
+                   a.telegraph_path, a.status = 'exported' AS exported, j.status AS job_status,
                    latest.id IS NOT NULL AS has_content,
-                   latest.research_status
+                   latest.research_status, latest.chars, latest.opening
             FROM articles a
             LEFT JOIN jobs j
                 ON j.workspace_id = a.workspace_id AND j.id = a.active_generation_job_id
             LEFT JOIN LATERAL (
-                SELECT v.id, v.research_status FROM article_versions v
+                SELECT v.id, v.research_status, length(v.content) AS chars,
+                       left(v.content, 1000) AS opening
+                FROM article_versions v
                 WHERE v.workspace_id = a.workspace_id AND v.article_id = a.id
                 ORDER BY v.created_at DESC, v.id DESC LIMIT 1
             ) latest ON true
@@ -267,6 +269,9 @@ class Plan:
                 job_id=row["active_generation_job_id"],
                 telegraph_path=row["telegraph_path"],
                 research_status=row["research_status"],
+                exported=row["exported"],
+                chars=row["chars"] or 0,
+                opening=row["opening"] or "",
             )
         topics = []
         for number, row in enumerate(item_rows, start=1):
@@ -289,24 +294,33 @@ class Plan:
                 )
             )
         hub_item_id = plan_row["hub_item_id"]
+        hub_article_id = plan_row["hub_article_id"]
         return PlanHubView(
             id=PlanId(plan_row["id"]),
             week_label=plan_row["week_label"],
             status=plan_row["status"],
             topics=topics,
             open_item_id=PlanItemId(hub_item_id) if hub_item_id is not None else None,
+            open_article_id=ArticleId(hub_article_id) if hub_article_id is not None else None,
         )
 
     async def set_hub_view(
-        self, workspace_id: WorkspaceId, plan_id: PlanId, plan_item_id: PlanItemId | None
+        self,
+        workspace_id: WorkspaceId,
+        plan_id: PlanId,
+        plan_item_id: PlanItemId | None,
+        article_id: ArticleId | None = None,
     ) -> None:
-        """Which Тема's result card the Хаб message shows (`None` = the checklist), so a later
-        notification re-renders the same screen instead of throwing the reader back (#91)."""
+        """Which screen the Хаб message shows: a Тема (`plan_item_id`), a Статья inside it
+        (`article_id`, #143), or the checklist (both `None`) - so a later notification
+        re-renders the same screen instead of throwing the reader back (#91)."""
         result = await self._pool.execute(
-            "UPDATE plans SET hub_item_id = $2 WHERE id = $1 AND workspace_id = $3",
+            "UPDATE plans SET hub_item_id = $2, hub_article_id = $4 "
+            "WHERE id = $1 AND workspace_id = $3",
             plan_id,
             plan_item_id,
             workspace_id,
+            article_id,
         )
         if result != "UPDATE 1":
             raise PlanNotFound(plan_id)

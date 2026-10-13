@@ -92,7 +92,7 @@ def test_slides_are_the_owners_feed_in_order() -> None:
         "🔗 Ваш канал или сайт",
         "🕘 Расписание",
         "✍️ Предложить Тему",
-        "📄 Карточка Статьи",
+        "📄 Экран Статьи",
         "❓ Частые вопросы",
     ]
     keys = [slide.key for slide in GUIDE_SLIDES]

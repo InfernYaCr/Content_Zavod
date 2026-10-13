@@ -38,6 +38,7 @@ async def test_run_pending_applies_every_migration_once_and_is_idempotent(
         "0013_drop_roles",
         "0014_plan_item_why",
         "0015_jobs_workspace_created_at",
+        "0016_plan_hub_article",
     ]
 
     applied_second_run = await run_migrations(isolated_pool)
@@ -60,6 +61,7 @@ async def test_run_pending_applies_every_migration_once_and_is_idempotent(
         "0013_drop_roles",
         "0014_plan_item_why",
         "0015_jobs_workspace_created_at",
+        "0016_plan_hub_article",
     ]
 
 
@@ -155,9 +157,10 @@ async def test_concurrent_run_pending_does_not_race_on_the_tracking_insert(
         "0013_drop_roles",
         "0014_plan_item_why",
         "0015_jobs_workspace_created_at",
+        "0016_plan_hub_article",
     }
     recorded = await isolated_pool.fetch("SELECT version FROM schema_migrations")
-    assert len(recorded) == 15
+    assert len(recorded) == 16
 
 
 async def test_rollback_of_0002_drops_only_the_index_without_losing_data(
@@ -242,4 +245,5 @@ async def test_0010_drops_the_batch_counter_and_adds_the_hub_view_column(
         "progress_telegram_message_id",
     }
     assert "hub_item_id" in plan_columns
+    assert "hub_article_id" in plan_columns
     assert "active_cover_job_id" in item_columns

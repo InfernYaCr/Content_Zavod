@@ -27,7 +27,7 @@ class FakePrompt:
     def __init__(self) -> None:
         self.prompted: list[tuple[int, PlanItemId]] = []
 
-    async def prompt_for_comment(self, chat_id: int, plan_item_id: PlanItemId) -> int:
+    async def prompt_for_comment(self, workspace_id, chat_id: int, plan_item_id: PlanItemId) -> int:
         self.prompted.append((chat_id, plan_item_id))
         return 100
 

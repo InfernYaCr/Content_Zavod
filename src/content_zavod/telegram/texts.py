@@ -85,8 +85,6 @@ TIMEZONES = {
     "Asia/Kamchatka": "МСК+9",
 }
 
-# The ready-Статья card (#92).
-ARTICLE_CARD_PLATFORM = "Площадка: {platform}"
 # #94: the Версия was written without verified evidence - the warning lives on the card,
 # never in the Статья text (that one is exported and published as is).
 ARTICLE_CARD_NO_EVIDENCE = {
@@ -96,8 +94,24 @@ ARTICLE_CARD_NO_EVIDENCE = {
         "или запросите Перегенерацию позже"
     ),
 }
+# The buttons of a Статья card sent before #143 - its ✅ still redraws them.
 READ_BUTTON = "📖 Читать"
 REFINE_BUTTON = "✏️ Доработать"
+
+# «✏️ Попросить доработать» (#143) and 🔄 on a Тема: the question sent below, with its buttons,
+# and what it turns into once the regeneration is queued (#80).
+TOPIC_COMMENT_QUESTION = (
+    "Комментарий к перегенерации? Напишите его следующим сообщением или нажмите «Пропустить»."
+)
+COMMENT_SKIP_BUTTON = "Пропустить"
+COMMENT_CANCEL_BUTTON = "Отмена"
+COMMENT_GENERATING = "⏳ Генерирую..."
+ARTICLE_COMMENT_QUESTION = (
+    "✏️ Что поправить в Статье для {platform}? Напишите следующим сообщением — например, "
+    "«короче» или «добавь пример из практики». Или нажмите «Переписать без пожеланий»."
+)
+ARTICLE_COMMENT_SKIP_BUTTON = "🔄 Переписать без пожеланий"
+ARTICLE_REWRITING = "⏳ Переписываю… пришлю, как будет готова"
 
 JOB_FAILURES = {
     "generate_plan": "Не удалось составить План.",
@@ -116,36 +130,81 @@ _ARTICLE_JOB_FAILURES = {
 }
 _COVER_JOB_FAILURE = "Не удалось сгенерировать обложку для Темы «{title}»"
 
-# The Хаб (#91): the approved Plan message as a checklist of each Тема's cover and Статьи,
-# then a table of contents into each Тема's result card.
+# The Хаб (#91, #143): the approved Plan message - the checklist of Темы, a Тема's screen and
+# a Статья's screen, all in that one message.
 HUB_MARKS = {"pending": "⏳", "ready": "✅", "failed": "❌"}
-HUB_ARTICLE_STATES = {"pending": "пишется", "ready": "готова", "failed": "не получилась"}
-# A Статья whose redo (✏️ Доработать / 🔁 Повторить) failed still has its previous Версия.
+# A Статья marked «Готово, публикую» (#143).
+HUB_MARK_EXPORTED = "👍"
+HUB_ARTICLE_STATES = {
+    "pending": "пишется",
+    "ready": "готова, ждёт проверки",
+    "failed": "не получилась",
+}
+HUB_ARTICLE_EXPORTED = "отмечена готовой"
+# A Статья whose redo (✏️ / 🔁 Повторить) failed still has its previous Версия.
 HUB_ARTICLE_FAILED_KEPT = "не получилась, открыта прежняя версия"
 HUB_COVER_STATES = {"pending": "рисуется", "ready": "готова", "failed": "не получилась"}
 HUB_COVER_SHORT = "🖼"
 HUB_PROGRESS = "⏳ В работе: готово {done} из {total}"
-HUB_PROGRESS_HINT = "Готовые Темы уже можно открыть кнопками ниже."
 HUB_DONE = "✅ Всё готово. Откройте Тему кнопкой ниже."
 HUB_DONE_WITH_FAILURES = "⚠️ Готово, но не всё получилось ({failed} из {total}). Можно повторить."
 HUB_EMPTY = "В Плане не осталось Тем."
+HUB_NEXT = "Что дальше: откройте Тему кнопкой ниже — внутри её Статьи."
+# The Тема screen.
 HUB_TOPIC_HEADER = "📂 Тема {number} из {total}"
-HUB_TOPIC_COVER_LINE = "🖼 Обложка — {mark} {state}"
-HUB_TOPIC_ARTICLE_LINE = "📄 {platform} — {mark} {state}"
-HUB_TOPIC_HINT = (
-    "📖 — прочитать Статью прямо в Telegram.\n"
-    "📄 — карточка Статьи отдельным сообщением: скачать .docx/.md, доработать, "
-    "отметить готовой."
+HUB_TOPIC_ARTICLE_LINE = "• {platform} — {mark} {state}"
+HUB_TOPIC_COVER_LINE = "• 🖼 Обложка — {mark} {state}"
+HUB_TOPIC_NO_EVIDENCE = {
+    "no_evidence": "⚠️ Источники не найдены — проверьте факты ({platform})",
+    "search_unavailable": "⚠️ Поиск источников был недоступен — проверьте факты ({platform})",
+}
+HUB_TOPIC_NEXT = (
+    "Что дальше: откройте Статью и прочитайте → если нравится, нажмите «Готово, публикую», "
+    "нужно поправить — «Попросить доработать»."
 )
+HUB_TOPIC_NEXT_WRITING = "Что дальше: Статьи ещё пишутся — это сообщение обновится само."
+HUB_TOPIC_NEXT_DONE = (
+    "Что дальше: все Статьи Темы готовы к публикации. Вернитесь к Плану за следующей Темой."
+)
+HUB_TOPIC_NEXT_RETRY = "Что дальше: Статьи не получились — нажмите «🔁 Повторить»."
+# The Статья screen: a summary instead of a cut-off text.
+HUB_ARTICLE_HEADER = "📄 Статья для {platform}"
+HUB_ARTICLE_STATUS = {
+    "ready": "✅ Готова — прочитайте и проверьте",
+    "exported": "👍 Отмечена готовой — можно публиковать",
+    "pending": "⏳ Переписываю — пока открыта прежняя версия",
+    "failed": "❌ Переписать не получилось — открыта прежняя версия",
+}
+# «мин», not «минута/минуты/минут»: no plural to get wrong.
+HUB_ARTICLE_SIZE = "≈ {chars} знаков · {minutes} мин чтения"
+HUB_ARTICLE_OPENING = "Начало: «{opening}»"
+HUB_ARTICLE_NEXT = {
+    "ready": (
+        "Что дальше: «Читать полностью» → если всё хорошо, «Готово, публикую». "
+        "Для публикации скачайте Word."
+    ),
+    "exported": "Что дальше: скачайте Word и публикуйте. Следующая Статья — «◀ К Теме».",
+    "pending": "Что дальше: пришлю новую версию, как будет готова.",
+    "failed": "Что дальше: попросите доработать ещё раз или скачайте прежнюю версию.",
+}
 HUB_BUTTON_COVER = "🖼 Обложка"
-HUB_BUTTON_ARTICLE = "📄 {platform}"
-HUB_BUTTON_READ = "📖 {platform}"
+HUB_BUTTON_REDRAW_COVER = "🎨 Перерисовать"
+HUB_BUTTON_ARTICLE = "📄 Статья для {platform} ›"
 HUB_BUTTON_RETRY_TOPIC = "🔁 Повторить"
 HUB_BUTTON_RETRY_ALL = "🔁 Повторить неудавшееся"
 HUB_BUTTON_BACK = "◀ К Плану"
+HUB_BUTTON_TO_TOPIC = "◀ К Теме"
+HUB_BUTTON_READ_FULL = "📖 Читать полностью ↗"
+HUB_BUTTON_APPROVE = "✅ Готово, публикую"
+HUB_BUTTON_APPROVED = "👍 Отмечено готовой"
+HUB_BUTTON_REFINE = "✏️ Попросить доработать"
+HUB_BUTTON_DOCX = "⬇️ Word (.docx)"
+HUB_BUTTON_MD = "⬇️ Текст (.md)"
 HUB_ALERT_NO_COVER = "Обложки пока нет."
 HUB_ALERT_RETRYING = "Повторяю..."
 HUB_ALERT_NOTHING_TO_RETRY = "Повторять нечего."
+HUB_ALERT_APPROVED = "Отмечено: готово к публикации"
+FILE_COMING = "Файл пришлю ниже ⬇️"
 COVER_CAPTION = "🖼 Обложка: {title}"
 COVER_REQUESTED = "Генерирую обложку — пришлю её сюда."
 COVERS_OFF = "Обложки сейчас выключены."
@@ -224,6 +283,11 @@ def platform_name(platform: str) -> str:
     return PLATFORMS.get(platform, platform)
 
 
+def platform_genitive(platform: str) -> str:
+    """«для Дзена», «для VC.ru»."""
+    return _PLATFORMS_GENITIVE.get(platform, platform_name(platform))
+
+
 def weekday_name(code: str) -> str:
     """Full Russian name for a stored day code, e.g. `mon` -> «понедельник»."""
     return WEEKDAYS[code][1] if code in WEEKDAYS else code
@@ -253,7 +317,7 @@ def job_failure_text(
     if title is not None:
         if platform is not None and job_type in _ARTICLE_JOB_FAILURES:
             return _ARTICLE_JOB_FAILURES[job_type].format(
-                platform=_PLATFORMS_GENITIVE.get(platform, platform_name(platform)), title=title
+                platform=platform_genitive(platform), title=title
             )
         if job_type == "generate_cover":
             return _COVER_JOB_FAILURE.format(title=title)
@@ -264,7 +328,9 @@ def hub_mark(state: str) -> str:
     return HUB_MARKS.get(state, state)
 
 
-def hub_article_state(state: str, *, has_content: bool = False) -> str:
+def hub_article_state(state: str, *, has_content: bool = False, exported: bool = False) -> str:
+    if state == "ready" and exported:
+        return HUB_ARTICLE_EXPORTED
     if state == "failed" and has_content:
         return HUB_ARTICLE_FAILED_KEPT
     return HUB_ARTICLE_STATES.get(state, state)

@@ -786,6 +786,29 @@ async def test_get_hub_derives_ready_from_applied_results(
     assert not topic.finished
 
 
+async def test_get_hub_carries_the_article_screens_size_opening_and_exported(
+    plan: Plan, article: Article
+) -> None:
+    """#143: the Статья screen's numbers come from the latest Версия, «👍» from `exported`."""
+    plan_id, _ = await _approved_with_fan_out(plan, article, titles=("Topic A",))
+    zen = (await plan.get_hub(WS_A, plan_id)).topics[0].articles[0]
+    content = "Начало. " + "я" * 1500
+    await article.record_version(
+        WS_A,
+        zen.article_id,
+        GeneratedVersion(
+            content=content, prompt="p", model="m", tokens=1, cost=0.0, source_job_id=zen.job_id
+        ),
+    )
+    await article.mark_exported(WS_A, zen.article_id)
+
+    cells = (await plan.get_hub(WS_A, plan_id)).topics[0].articles
+
+    assert (cells[0].chars, cells[0].opening) == (len(content), content[:1000])
+    assert cells[0].exported and cells[0].state == "ready"
+    assert (cells[1].chars, cells[1].opening, cells[1].exported) == (0, "", False)
+
+
 async def test_get_hub_shows_a_failed_job_as_failed_and_a_retried_one_as_pending(
     plan: Plan, article: Article, queue: JobQueue, pool: asyncpg.Pool
 ) -> None:
@@ -845,6 +868,20 @@ async def test_set_hub_view_round_trips(plan: Plan, article: Article) -> None:
 
     await plan.set_hub_view(WS_A, plan_id, None)
     assert (await plan.get_hub(WS_A, plan_id)).open_topic is None
+
+
+async def test_set_hub_view_opens_an_article_and_a_topic_closes_it(
+    plan: Plan, article: Article
+) -> None:
+    plan_id, items = await _approved_with_fan_out(plan, article, titles=("Topic A",))
+    zen = (await plan.get_hub(WS_A, plan_id)).topics[0].articles[0]
+
+    await plan.set_hub_view(WS_A, plan_id, items[0].id, zen.article_id)
+    assert (await plan.get_hub(WS_A, plan_id)).open_article_id == zen.article_id
+
+    await plan.set_hub_view(WS_A, plan_id, items[0].id)
+    hub = await plan.get_hub(WS_A, plan_id)
+    assert hub.open_item_id == items[0].id and hub.open_article_id is None
 
 
 async def test_get_hub_raises_for_unknown_plan(plan: Plan) -> None:
