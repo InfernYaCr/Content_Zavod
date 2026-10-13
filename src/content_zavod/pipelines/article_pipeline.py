@@ -263,22 +263,37 @@ def assemble_content(body: str, project: Project | None) -> str:
     included), `[E1]` markers out, the Проект link exactly once. Sources stay in the Тема's
     Исследование and are not shown in the Статья (#144); nothing about missing evidence goes
     into the text either: that is `research_status` metadata, shown on the Article card."""
-    body = _drop_foreign_urls(body, set(), project)
+    body = _drop_foreign_urls(body, project)
     body = _MARKER_RE.sub(_marker_gap, body)
+    # A list the model wrote around dropped URLs leaves empty items and maybe a bare heading.
+    body = _EMPTY_SOURCES_RE.sub(_empty_sources_gap, body)
+    body = _EMPTY_ITEM_RE.sub("", body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
     return _ensure_project_link(body, project)
 
 
 def _marker_gap(match: re.Match[str]) -> str:
-    """`продажи [E1].` -> `продажи.`, but `продажи[E1]и` -> `продажи и`: a space only where
-    the marker was the only thing between two words."""
+    """`продажи [E1].` -> `продажи.`, `[E1] Начало` -> `Начало`, `([E1])` -> nothing, but
+    `продажи[E1]и` -> `продажи и`: a space only where the markers stood between two words."""
+    before = match.string[match.start() - 1 : match.start()]
     after = match.string[match.end() : match.end() + 1]
-    return "" if not after or after.isspace() or after in _TRAILING_PUNCT + ")" else " "
+    if not before or before in "\n([«" or not after or after in "\n" + _CLOSING:
+        return ""
+    return " " if match.group("tail") or after.isalnum() or after == "«" else ""
+
+
+def _empty_sources_gap(match: re.Match[str]) -> str:
+    """A «Источники» heading goes when its items were all links (now empty) or nothing
+    follows it; a heading over real items stays."""
+    rest = match.string[match.end() :]
+    return "" if re.search(r"[-*•\d]", match.group(1)) or not rest.strip() else match.group(0)
 
 
 # Schemes are case-insensitive: `HTTPS://evil.com` is just as foreign (#133).
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]*)\]\((https?://[^)\s]+)\)", re.IGNORECASE)
 _BARE_URL_RE = re.compile(r"[ \t]*https?://[^\s<>()\[\]]+", re.IGNORECASE)
 _TRAILING_PUNCT = ".,;:!?»\"'"
+_CLOSING = _TRAILING_PUNCT + ")]…"
 
 
 def _normalized_link(url: str) -> str:
@@ -286,16 +301,14 @@ def _normalized_link(url: str) -> str:
     return url.removeprefix("www.").rstrip("/")
 
 
-def _drop_foreign_urls(body: str, allowed: set[str], project: Project | None) -> str:
-    """No URL outside the evidence bundle survives (docs/plans/...-saas.md, E2) - except
-    the Проект link in another spelling (`http://`, `www.`, case, trailing `/`), which is
-    rewritten into the exact `project.url` right here. Equality, not a prefix (#133):
-    `https://t.me/name_spam` and `https://example.ru.evil.com` are foreign."""
+def _drop_foreign_urls(body: str, project: Project | None) -> str:
+    """No URL survives but the Проект link (research pages included, #144) - also in another
+    spelling (`http://`, `www.`, case, trailing `/`), which is rewritten into the exact
+    `project.url` right here. Equality, not a prefix (#133): `https://t.me/name_spam` and
+    `https://example.ru.evil.com` are foreign."""
     project_link = _normalized_link(project.url) if project is not None else None
 
     def kept(url: str) -> str | None:
-        if url in allowed:
-            return url
         if project is not None and _normalized_link(url) == project_link:
             return project.url
         return None
@@ -321,7 +334,16 @@ def _drop_foreign_urls(body: str, allowed: set[str], project: Project | None) ->
 # Russian and slips into it) or in parentheses - whatever the spelling, no raw marker may
 # reach the published text.
 _E = "[EeЕе]"
-_MARKER_RE = re.compile(rf"[ \t]*[\[(]\s*({_E}\s*\d+(?:\s*[,;–—-]\s*{_E}?\s*\d+)*)\s*[\])]")
+_IDS = rf"{_E}\s*\d+(?:\s*[,;–—-]\s*{_E}?\s*\d+)*"
+# A run of markers (`[E1][E2]`, `([E1])`) is one match, so it leaves at most one gap.
+_ONE_MARKER = rf"[ \t]*(?:[\[(]\s*{_IDS}\s*[\])]|\(\s*(?:\[\s*{_IDS}\s*\]\s*)+\))"
+_MARKER_RE = re.compile(rf"(?:{_ONE_MARKER})+(?P<tail>[ \t]*)")
+_LINE_GAP = r"\n[ \t]*(?:(?:[-*•]|\d+[.)])[ \t]*)?"
+_EMPTY_ITEM_RE = re.compile(r"^[ \t]*(?:[-*•]|\d+[.)])[ \t]*(?:\n|\Z)", re.MULTILINE)
+_EMPTY_SOURCES_RE = re.compile(
+    rf"^[ \t]*(?:#{{1,6}}[ \t]+)?\**Источники:?\**[ \t]*((?:{_LINE_GAP})*)(?=\n[ \t]*\n|\s*\Z)",
+    re.MULTILINE | re.IGNORECASE,
+)
 
 
 def strip_generated_parts(content: str) -> str:

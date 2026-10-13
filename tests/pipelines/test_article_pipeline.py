@@ -5,6 +5,7 @@ import pytest
 from content_zavod.domain import ArticleId, ArticleView, PlanItemDetail, PlanItemId
 from content_zavod.job_queue import JobPartialFailure
 from content_zavod.pipelines.article_pipeline import (
+    assemble_content,
     make_generate_article_handler,
     make_regenerate_article_handler,
     strip_generated_parts,
@@ -840,6 +841,45 @@ async def test_links_to_research_pages_never_reach_the_text() -> None:
     )
 
     assert content == f"Опрос:. Советы — тут.\n\nСм. {_PROJECT_URL}"
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("Факт [E1][E2].", "Факт."),
+        ("Факт [E1] [E2], дальше.", "Факт, дальше."),
+        ("Факт[E1]… и всё", "Факт… и всё"),
+        ("Факт[E1]—рост", "Факт—рост"),
+        ("Факт [E1] — рост", "Факт — рост"),
+        ("[E1] Начало.\n\n[E2][E3] Второй абзац.", "Начало.\n\nВторой абзац."),
+        ("Факт ([E1]).", "Факт."),
+        ("Факт ([E1][E2]) и вывод.", "Факт и вывод."),
+        ("Список (см. [E1] и др.) тут.", "Список (см. и др.) тут."),
+        ("Факт ([E1] и опыт) тут.", "Факт (и опыт) тут."),
+    ],
+)
+def test_marker_removal_leaves_no_stray_spaces_or_brackets(body, expected) -> None:
+    assert assemble_content(body, None) == expected
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "Источники:\n- https://a.example/x\n- https://b.example/y",
+        "**Источники:**\n1. https://a.example/x\n2. https://b.example/y",
+        "## Источники\n\n• https://a.example/x",
+    ],
+)
+def test_a_source_list_written_by_the_model_disappears_with_its_links(tail) -> None:
+    assert assemble_content(f"Текст.\n\n{tail}\n\n\n\nВывод.", None) == "Текст.\n\nВывод."
+    assert assemble_content(f"Текст.\n\n{tail}", None) == "Текст."
+
+
+def test_a_sources_heading_with_real_items_and_markdown_lists_stay() -> None:
+    body = "Источники:\n- опыт автора\n\n- пункт\n---"
+    assert assemble_content(body, None) == body
+    body = "## Источники\n\n- опыт автора\n\nТекст."
+    assert assemble_content(body, None) == body
 
 
 def test_strip_generated_parts_keeps_bracketed_numbers_in_text_without_a_source_list() -> None:
