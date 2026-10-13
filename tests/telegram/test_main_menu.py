@@ -290,7 +290,7 @@ async def test_the_menu_sums_up_the_week_the_next_plan_the_limit_and_the_niche()
         exported=2,
     )
     env = approved_env(hub)
-    env.limits.usage_value = Usage(plans_used=1, plan_limit=1, articles_used=6, article_limit=8)
+    env.limits.usage_value = Usage(plans_used=1, plan_limit=2, articles_used=6, article_limit=8)
     env.limits.contact = "@owner"
     env.settings.niche = "домашняя выпечка"
 
@@ -301,7 +301,7 @@ async def test_the_menu_sums_up_the_week_the_next_plan_the_limit_and_the_niche()
         "Статьи: готово 4 из 8 · 👍 отмечено 2\n\n"
         "🕘 Следующий План — ср, 19 августа, 10:00\n\n"
         "🎁 Пробный доступ\n"
-        "• Планов: использован 1 из 1\n"
+        "• Планов: использован 1 из 2\n"
         "• Статей: осталось 2 из 8\n"
         "Одна Статья = одна площадка (Дзен или VC.ru).\n"
         "«✏️ Доработать» тоже тратит одну Статью.\n"
@@ -389,6 +389,27 @@ async def test_mid_wizard_promises_no_plan() -> None:
 
     assert "🕘" not in text
     assert text.endswith("🎯 Ниша: кофейни")
+
+
+async def test_used_up_plans_promise_no_next_plan_while_articles_are_left() -> None:
+    """The tick enqueues nothing once the Лимит of Планов is used up - no «🕘» line."""
+    env = Env()
+    env.limits.usage_value = Usage(plans_used=1, plan_limit=1, articles_used=2, article_limit=8)
+
+    text = await env.menu_text()
+
+    assert "🕘" not in text
+    assert "• Планов: использован 1 из 1\n• Статей: осталось 6 из 8" in text
+
+
+async def test_used_up_plans_and_articles_promise_no_next_plan() -> None:
+    env = Env()
+    env.limits.usage_value = Usage(plans_used=1, plan_limit=1, articles_used=8, article_limit=8)
+
+    text = await env.menu_text()
+
+    assert "🕘" not in text
+    assert "🎁 Пробный доступ закончился." in text
 
 
 async def test_a_used_up_limit_is_one_line_with_the_contact() -> None:

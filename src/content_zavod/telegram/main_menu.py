@@ -232,9 +232,16 @@ class MainMenu:
         if view is not None and live and all(item.status == "approved" for item in live):
             hub = await self._plan.get_hub(workspace.id, view.id)
         owner = await self._settings.read(workspace.id)
+        usage = await self._limits.usage(workspace.id)
         next_plan = None
-        # The tick's own conditions (#118): no Plan without a Ниша or mid-wizard.
-        if owner.niche_saved and not await self._onboarding.needed(workspace.id):
+        # The tick's own conditions (#118): no Plan without a Ниша, mid-wizard, or with the
+        # Лимит of Планов used up. Not mirrored: its `_week_requested` (the week's Job exists,
+        # its Plan archived or empty) - a narrow case not worth one more query per open.
+        if (
+            usage.plans_left > 0
+            and owner.niche_saved
+            and not await self._onboarding.needed(workspace.id)
+        ):
             schedule = await self._schedule.get(workspace.id) or DEFAULT_SCHEDULE
             next_plan = next_deadline(
                 now, ZoneInfo(workspace.timezone), schedule, week_has_plan=view is not None
@@ -243,7 +250,7 @@ class MainMenu:
             view=view,
             hub=hub,
             next_plan=next_plan,
-            usage=await self._limits.usage(workspace.id),
+            usage=usage,
             contact=self._limits.contact,
             niche=owner.niche if owner.niche_saved else None,
         )
