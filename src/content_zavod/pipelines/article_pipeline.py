@@ -34,12 +34,17 @@ foreign-URL filter keeps only spellings of that very link (#133).
 
 The Аудитория (#100) is read fresh like the Персона and goes to draft/rewrite only, as
 INPUT_DATA: the outline is cached per Тема and stays reader-neutral (see `article_prompts`).
+
+Every step gets today's date in the Пространство's time zone (#145). The Статья's text is never
+checked by regex for years - a true fact about the past stays; only a past-year tail on a `#`/`##`
+heading («…: что использовать в 2024 году») is cut, as the Тема title it came from would be.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from datetime import UTC, date, datetime
 from typing import Any, Protocol
 
 from ..domain import ArticleId, ArticleView, PlanItemId
@@ -48,8 +53,8 @@ from ..personas import platform_profile
 from ..settings import Project, SettingsReader
 from ..workspaces import WorkspaceId
 from ..yandex import DEFAULT_TEMPERATURE, Completion, Message, TextGenerator
-from .article_prompts import draft_messages, rewrite_messages
-from .plan_pipeline import PlanItemReader
+from .article_prompts import draft_messages, rewrite_messages, strip_past_year_tail
+from .plan_pipeline import PlanItemReader, WorkspaceTimezone, local_today, utc_timezone
 from .provenance import StepRecord, StepRecorder
 from .topic_research import TopicBrief, TopicResearcher
 
@@ -74,10 +79,10 @@ _SENSITIVE_KEYWORDS = frozenset(
 # provenance stays explainable without reading logs (#74). The LLM `sources` step is gone
 # (#94): «Источники» come from the evidence bundle.
 _PROMPT_VERSIONS = {
-    "research_extract": "research-extract-v1",
-    "outline": "outline-v4",
-    "draft": "draft-v8",
-    "rewrite": "rewrite-v8",
+    "research_extract": "research-extract-v2",
+    "outline": "outline-v5",
+    "draft": "draft-v9",
+    "rewrite": "rewrite-v9",
 }
 
 SOURCES_HEADING = "Источники:"
@@ -91,6 +96,9 @@ def make_generate_article_handler(
     text_generator: TextGenerator,
     researcher: TopicResearcher,
     settings: SettingsReader,
+    *,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    workspace_timezone: WorkspaceTimezone = utc_timezone,
 ) -> JobHandler:
     async def handle(workspace_id: WorkspaceId, payload: dict[str, Any]) -> dict[str, Any]:
         plan_item_id = payload.get("plan_item_id")
@@ -110,6 +118,7 @@ def make_generate_article_handler(
             brief=brief,
             title=payload["title"],
             platform=payload["platform"],
+            today=await local_today(now, workspace_timezone, workspace_id),
         )
 
     return handle
@@ -121,6 +130,9 @@ def make_regenerate_article_handler(
     text_generator: TextGenerator,
     researcher: TopicResearcher,
     settings: SettingsReader,
+    *,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    workspace_timezone: WorkspaceTimezone = utc_timezone,
 ) -> JobHandler:
     async def handle(workspace_id: WorkspaceId, payload: dict[str, Any]) -> dict[str, Any]:
         article_id = ArticleId(payload["article_id"])
@@ -140,6 +152,7 @@ def make_regenerate_article_handler(
             platform=view.platform,
             comment=payload.get("comment"),
             previous_content=strip_generated_parts(view.content.decode("utf-8")),
+            today=await local_today(now, workspace_timezone, workspace_id),
         )
 
     return handle
@@ -186,6 +199,7 @@ async def _run_pipeline(
     brief: TopicBrief,
     title: str,
     platform: str,
+    today: date,
     comment: str | None = None,
     previous_content: str | None = None,
 ) -> dict[str, Any]:
@@ -197,11 +211,12 @@ async def _run_pipeline(
         audience = owner_settings.audience
         profile = platform_profile(platform)
         research = await researcher.prepare(
-            brief, workspace_id=workspace_id, plan_item_id=plan_item_id, steps=steps
+            brief, workspace_id=workspace_id, plan_item_id=plan_item_id, steps=steps, today=today
         )
         draft = await steps.llm(
             "draft",
             draft_messages(
+                today=today,
                 title=title,
                 summary=brief.summary,
                 outline=research.outline,
@@ -220,6 +235,7 @@ async def _run_pipeline(
         rewrite = await steps.llm(
             "rewrite",
             rewrite_messages(
+                today=today,
                 draft=draft,
                 comment=comment,
                 persona=persona,
@@ -230,7 +246,7 @@ async def _run_pipeline(
                 style_profile=owner_settings.style_profile,
             ),
         )
-        content = assemble_content(rewrite, project)
+        content = assemble_content(_fresh_headings(rewrite, today), project)
     except Exception as exc:
         raise steps.recorder.fail(exc, article_id=article_id) from exc
 
@@ -251,6 +267,14 @@ async def _run_pipeline(
         "research_status": research.bundle.status,
         "steps": steps.recorder.as_output(),
     }
+
+
+_TOP_HEADING_RE = re.compile(r"^([ \t]*#{1,2}[ \t]+)(.+)$", re.MULTILINE)
+
+
+def _fresh_headings(body: str, today: date) -> str:
+    """`#`/`##` headings without a past-year tail (#145); the text itself is left alone."""
+    return _TOP_HEADING_RE.sub(lambda m: m.group(1) + strip_past_year_tail(m.group(2), today), body)
 
 
 def _is_money_or_legal(title: str, keywords: Sequence[str]) -> bool:

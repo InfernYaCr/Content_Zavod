@@ -61,6 +61,7 @@ from ..yandex import (
     SearchResults,
     TextGenerator,
 )
+from .article_prompts import TODAY_RULE, has_past_year, strip_past_year_tail
 from .niche_map import (
     NICHE_MAP_KEY,
     MapPhrase,
@@ -75,7 +76,6 @@ from .niche_map import (
     questions,
     rotation,
 )
-from .article_prompts import TODAY_RULE, has_past_year, strip_past_year_tail
 from .provenance import StepRecord, StepRecorder, prompt_hash
 from .topic_research import select_candidates
 

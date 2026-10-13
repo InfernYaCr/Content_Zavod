@@ -312,8 +312,8 @@ async def test_audience_reaches_draft_and_rewrite_as_input_data_but_not_the_cach
     for _system, user in (draft_2, rewrite_2):
         assert '"audience": "Студенты-маркетологи"' in user.text
     versions = {s["step_name"]: s["prompt_template_version"] for s in first["steps"]}
-    assert versions["outline"] == "outline-v4"  # unchanged: the outline takes no Аудитория
-    assert (versions["draft"], versions["rewrite"]) == ("draft-v8", "rewrite-v8")
+    assert versions["outline"] == "outline-v5"  # #145 bumped it; the outline takes no Аудитория
+    assert (versions["draft"], versions["rewrite"]) == ("draft-v9", "rewrite-v9")
     assert [s["step_name"] for s in second["steps"]] == ["draft", "rewrite"]
 
 

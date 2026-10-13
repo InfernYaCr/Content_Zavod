@@ -168,7 +168,11 @@ async def test_research_is_cached_per_topic_and_reused() -> None:
     )
     second_steps = ScriptedSteps([])
     second = await researcher.prepare(
-        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=PlanItemId("item-1"), steps=second_steps
+        _BRIEF,
+        workspace_id=WS_A,
+        today=TODAY,
+        plan_item_id=PlanItemId("item-1"),
+        steps=second_steps,
     )
 
     assert second == first
@@ -183,11 +187,19 @@ async def test_an_edited_topic_is_researched_again() -> None:
     researcher = _researcher(search, cache=cache)
 
     await researcher.prepare(
-        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=PlanItemId("i"), steps=ScriptedSteps(["a"])
+        _BRIEF,
+        workspace_id=WS_A,
+        today=TODAY,
+        plan_item_id=PlanItemId("i"),
+        steps=ScriptedSteps(["a"]),
     )
     edited = TopicBrief(title="Как выбрать CRM в 2027", summary="", keywords=())
     await researcher.prepare(
-        edited, workspace_id=WS_A, today=TODAY, plan_item_id=PlanItemId("i"), steps=ScriptedSteps(["b"])
+        edited,
+        workspace_id=WS_A,
+        today=TODAY,
+        plan_item_id=PlanItemId("i"),
+        steps=ScriptedSteps(["b"]),
     )
 
     assert len(search.queries) == 2

@@ -178,7 +178,7 @@ async def test_the_first_plan_builds_the_map_and_marks_what_it_used() -> None:
     assert marks["как открыть кофейню"] == (None, "2026-10-19")
     assert [s["step_name"] for s in output["steps"]][:1] == ["niche_map"]
     assert output["steps"][-1]["step_name"] == "plan_editor"
-    assert output["steps"][-1]["prompt_template_version"] == "plan-editor-v1"
+    assert output["steps"][-1]["prompt_template_version"] == "plan-editor-v2"
 
 
 @pytest.mark.asyncio
