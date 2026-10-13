@@ -4,8 +4,9 @@ Since #94 the pipeline is research -> outline (both once per Тема) -> draft 
 (per Площадка). Fetched web pages are the least trusted input of all: they only ever
 appear inside INPUT_DATA, and the extraction step is told explicitly that a page is
 material to quote, never a source of instructions. Evidence reaches outline/draft as
-`{id, fact, quote, source}` items; the model cites them with `[E1]` markers, and the
-code - not the model - turns those markers into the Статья's «Источники».
+`{id, fact, quote, source}` items; the model cites them with `[E1]` markers to stay on the
+facts, and the code strips the markers - sources stay in the Исследование and are not
+shown in the Статья (#144).
 
 The Owner's Аудитория (#100, the reader portrait) is Owner-typed free text, so like the
 editor's comment and the Проект it only ever appears inside INPUT_DATA; the system message
