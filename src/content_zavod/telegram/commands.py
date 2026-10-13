@@ -1,4 +1,4 @@
-"""commands: the Telegram command menu (setMyCommands) - just /menu and /help since #95.
+"""commands: the Telegram command menu (setMyCommands) - /start, /menu and /help.
 
 Everything else is a button in the Главное меню (`main_menu.py`). The old commands (`/topic`,
 `/history`, `/settings`, `/set_niche`, …) still work as hidden aliases for whoever has them in
@@ -18,7 +18,9 @@ from .gateway import BotClient
 
 logger = logging.getLogger(__name__)
 
+# /start is listed too: once the chat history is cleared, Telegram's «Начать» button is gone.
 MENU_COMMANDS: list[BotCommand] = [
+    BotCommand(command="start", description="Начать"),
     BotCommand(command="menu", description="Главное меню"),
     BotCommand(command="help", description="Как пользоваться ботом"),
 ]

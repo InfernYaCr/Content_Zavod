@@ -15,10 +15,11 @@ class FakeBot:
         self.calls.append((commands, scope))
 
 
-def test_command_menu_is_just_menu_and_help() -> None:
-    """#95: everything else is a button in the Главное меню; old commands are hidden aliases."""
-    assert [c.command for c in MENU_COMMANDS] == ["menu", "help"]
-    assert [c.command for c in ADMIN_COMMANDS] == ["menu", "help", "admin"]
+def test_command_menu_is_start_menu_and_help() -> None:
+    """#95: everything else is a button in the Главное меню; old commands are hidden aliases.
+    /start stays listed for a chat whose history (and «Начать» button) was cleared."""
+    assert [c.command for c in MENU_COMMANDS] == ["start", "menu", "help"]
+    assert [c.command for c in ADMIN_COMMANDS] == ["start", "menu", "help", "admin"]
 
 
 @pytest.mark.asyncio
