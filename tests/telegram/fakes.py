@@ -217,6 +217,7 @@ class FakeLimits:
         self.reserved: list[tuple[str | None, int]] = []
         self.required: list[tuple[str, int]] = []
         self.prechecked: list[str] = []
+        self.contact: str | None = None
 
     async def usage(self, workspace_id: int) -> Usage:
         return self.usage_value

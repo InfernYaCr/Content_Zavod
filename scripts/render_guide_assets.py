@@ -51,7 +51,11 @@ from content_zavod.telegram.asset_photos import ASSETS_DIR
 from content_zavod.telegram.gateway import build_plan_keyboard, render_plan_text
 from content_zavod.telegram.guide import BANNERS, GUIDE_SLIDES, Slide, example_of
 from content_zavod.telegram.input_prompt import build_cancel_input_keyboard, question_text
-from content_zavod.telegram.main_menu import TOPIC_INPUT_KIND, build_main_menu_keyboard
+from content_zavod.telegram.main_menu import (
+    TOPIC_INPUT_KIND,
+    build_main_menu_keyboard,
+    render_menu_text,
+)
 from content_zavod.telegram.onboarding import (
     ONBOARDING_INPUT_KIND,
     ONBOARDING_STEPS,
@@ -67,7 +71,6 @@ from content_zavod.telegram.settings_screen import (
 )
 from content_zavod.telegram.texts import (
     BACK_BUTTON,
-    MENU_TEXT,
     PLAN_GENERATE_BUTTON,
     PLAN_MISSING_TEXT,
     TOPIC_ADDED_TEXT,
@@ -78,7 +81,7 @@ from content_zavod.telegram.texts import (
     steps_count_text,
 )
 from content_zavod.telegram.types import PlanItemView, PlanView
-from content_zavod.workspaces import Workspace, WorkspaceId
+from content_zavod.workspaces import TrialLimits, Workspace, WorkspaceId
 
 SLIDE_SIZE = (1280, 960)
 BANNER_SIZE = (1280, 640)
@@ -126,6 +129,15 @@ class _MemoryStore:
 
     async def set(self, workspace_id: WorkspaceId, key: str, value: str) -> None:
         pass
+
+
+def _new_user_menu_text() -> str:
+    """The Главное меню right after /start: no Plan, no Ниша, the whole trial ahead."""
+    trial = TrialLimits()
+    usage = trial.usage(plan_limit=None, article_limit=None, plans_used=0, articles_used=0)
+    return render_menu_text(
+        view=None, hub=None, next_plan=None, usage=usage, contact=None, niche=None
+    )
 
 
 _SAMPLE_WORKSPACE = Workspace(WorkspaceId(1), 1, None, "Europe/Moscow", None, None)
@@ -184,7 +196,7 @@ async def _slide_mockup(slide: Slide) -> Mockup:
         bubbles = [
             Bubble("Вы нажали /start", service=True),
             Bubble(WELCOME_TEXT),
-            Bubble(MENU_TEXT, _buttons(build_main_menu_keyboard())),
+            Bubble(_new_user_menu_text(), _buttons(build_main_menu_keyboard())),
         ]
     elif slide.key == "sourcing":
         plan = _sample_plan("pending_review")

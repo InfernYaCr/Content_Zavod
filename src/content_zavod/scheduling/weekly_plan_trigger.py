@@ -89,16 +89,31 @@ def week_label_for(now: datetime, tz: ZoneInfo) -> str:
     return f"{iso_year}-W{iso_week:02d}"
 
 
-def due_week(now: datetime, tz: ZoneInfo, schedule: ScheduleConfig) -> str | None:
-    """This week's label (in `tz`) once its deadline has passed, `None` before it."""
+def week_deadline(now: datetime, tz: ZoneInfo, schedule: ScheduleConfig) -> datetime:
+    """This week's deadline (in `tz`): the scheduled day and time of `now`'s week there."""
     local_now = now.astimezone(tz)
     monday_of_this_week = local_now - timedelta(days=local_now.weekday())
-    deadline = (monday_of_this_week + timedelta(days=_WEEKDAY_INDEX[schedule.day_of_week])).replace(
+    return (monday_of_this_week + timedelta(days=_WEEKDAY_INDEX[schedule.day_of_week])).replace(
         hour=schedule.hour, minute=schedule.minute, second=0, microsecond=0
     )
-    if local_now < deadline:
+
+
+def due_week(now: datetime, tz: ZoneInfo, schedule: ScheduleConfig) -> str | None:
+    """This week's label (in `tz`) once its deadline has passed, `None` before it."""
+    if now < week_deadline(now, tz, schedule):
         return None
-    return week_label_for(local_now, tz)
+    return week_label_for(now, tz)
+
+
+def next_deadline(
+    now: datetime, tz: ZoneInfo, schedule: ScheduleConfig, *, week_has_plan: bool
+) -> datetime:
+    """When the tick next makes a Plan (in `tz`, for the Главное меню, #149): this week's
+    deadline while it is ahead and the week has no Plan yet, else next week's."""
+    deadline = week_deadline(now, tz, schedule)
+    if week_has_plan or now >= deadline:
+        deadline += timedelta(weeks=1)
+    return deadline
 
 
 async def schedulable_workspaces(pool: asyncpg.Pool) -> list[SchedulableWorkspace]:

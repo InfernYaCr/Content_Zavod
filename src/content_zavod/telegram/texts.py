@@ -9,7 +9,7 @@ have no raw-key fallback: their technical text goes to the log, never to the cha
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from ..domain.errors import (
     ArticleNotFound,
@@ -258,21 +258,23 @@ _MONTHS_RU_GENITIVE = (
 )
 
 
-def format_week_range(week_label: str) -> str:
+def format_week_range(week_label: str, *, year: bool = True) -> str:
     """Render an ISO week_label (e.g. "2026-W33") as a human date range, e.g.
-    "10–16 августа 2026". `week_label` itself stays the Plan's idempotency
-    key (see `week_label_for` in scheduling/weekly_plan_trigger.py) and is
+    "10–16 августа 2026" ("10–16 августа" without `year`). `week_label` itself stays the
+    Plan's idempotency key (see `week_label_for` in scheduling/weekly_plan_trigger.py) and is
     never shown to the Владелец directly."""
     year_part, _, week_part = week_label.partition("-W")
     monday = date.fromisocalendar(int(year_part), int(week_part), 1)
     sunday = date.fromisocalendar(int(year_part), int(week_part), 7)
     start_month = _MONTHS_RU_GENITIVE[monday.month - 1]
     end_month = _MONTHS_RU_GENITIVE[sunday.month - 1]
-    if monday.year != sunday.year:
+    if monday.year != sunday.year and year:
         return f"{monday.day} {start_month} {monday.year} – {sunday.day} {end_month} {sunday.year}"
     if monday.month != sunday.month:
-        return f"{monday.day} {start_month} – {sunday.day} {end_month} {sunday.year}"
-    return f"{monday.day}–{sunday.day} {end_month} {sunday.year}"
+        text = f"{monday.day} {start_month} – {sunday.day} {end_month}"
+    else:
+        text = f"{monday.day}–{sunday.day} {end_month}"
+    return f"{text} {sunday.year}" if year else text
 
 
 def article_status(status: str) -> str:
@@ -367,17 +369,38 @@ def _plural(count: int, one: str, few: str, many: str) -> str:
     return many
 
 
-def plans_text(count: int) -> str:
-    return f"{count} {_plural(count, 'План', 'Плана', 'Планов')}"
-
-
 def articles_text(count: int) -> str:
     return f"{count} {_plural(count, 'Статья', 'Статьи', 'Статей')}"
 
 
-def remaining_text(usage: Usage) -> str:
-    """The Главное меню's line: «Осталось: 1 План, 8 Статей»."""
-    return f"Осталось: {plans_text(usage.plans_left)}, {articles_text(usage.articles_left)}"
+def topics_text(count: int) -> str:
+    return f"{count} {_plural(count, 'Тема', 'Темы', 'Тем')}"
+
+
+def menu_limit_text(usage: Usage, contact: str | None) -> str:
+    """The Главное меню's Лимит block (#149): «Планов: использован 1 из 1», «Статей: осталось
+    2 из 8» - a number after a label, so no noun has to agree with it."""
+    title = MENU_ACCESS_CUSTOM if usage.custom else MENU_ACCESS_TRIAL
+    if usage.plans_left == 0 and usage.articles_left == 0:
+        over = f"{title} {MENU_ACCESS_OVER}"
+        return f"{over} — напишите {contact}" if contact else f"{over}."
+    used = _plural(usage.plans_used, "использован", "использовано", "использовано")
+    lines = [
+        title,
+        f"• Планов: {used} {usage.plans_used} из {usage.plan_limit}",
+        f"• Статей: осталось {usage.articles_left} из {usage.article_limit}",
+        MENU_LIMIT_NOTE,
+    ]
+    if contact:
+        lines.append(f"Нужно больше — напишите {contact}")
+    return "\n".join(lines)
+
+
+def next_plan_text(when: datetime) -> str:
+    """«🕘 Следующий План — пн, 20 октября, 09:00», `when` in the Пространство's time zone."""
+    day = list(WEEKDAYS.values())[when.weekday()][0]
+    month = _MONTHS_RU_GENITIVE[when.month - 1]
+    return f"🕘 Следующий План — {day}, {when.day} {month}, {when:%H:%M}"
 
 
 def _articles_accusative(count: int) -> str:
@@ -480,7 +503,22 @@ ADMIN_HINT = (
 ADMIN_LIMIT_SET = "✅ Лимит Пространства #{id}: Планов {plans}, Статей {articles}."
 ADMIN_LIMIT_DEFAULT = "✅ Лимит Пространства #{id} снова по конфигу."
 ADMIN_LIMIT_NOT_FOUND = "Пространства #{id} нет."
-MENU_TEXT = "🏠 Главное меню\nВыберите, что сделать:"
+# The Главное меню's text (#149): the week, the next Plan, the Лимит and the Ниша.
+MENU_TITLE = "🏠 Главное меню"
+MENU_WEEK = "📋 Эта неделя ({week})"
+MENU_WEEK_NONE = "📋 Плана на эту неделю пока нет"
+MENU_WEEK_PENDING = "📋 Эта неделя: План ждёт вашего утверждения ({topics})"
+MENU_WEEK_MORE = " и ещё {count}"
+MENU_WEEK_ARTICLES = "Статьи: готово {ready} из {total} · 👍 отмечено {exported}"
+MENU_ACCESS_TRIAL = "🎁 Пробный доступ"
+# A Лимит an administrator raised (`/admin`): no longer a trial.
+MENU_ACCESS_CUSTOM = "🎁 Доступ"
+MENU_ACCESS_OVER = "закончился"
+MENU_LIMIT_NOTE = (
+    "Одна Статья = одна площадка (Дзен или VC.ru).\n«✏️ Доработать» тоже тратит одну Статью."
+)
+MENU_NICHE = "🎯 Ниша: {niche}"
+MENU_NICHE_UNSET = "🎯 Ниша: не задана — укажите в ⚙️ Настройках"
 MENU_PLAN_BUTTON = "📋 План недели"
 MENU_TOPIC_BUTTON = "✍️ Предложить Тему"
 MENU_HISTORY_BUTTON = "🗂 История"
