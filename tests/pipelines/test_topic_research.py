@@ -427,3 +427,17 @@ async def test_research_search_is_sent_without_a_period() -> None:
 
     assert research.bundle.status == "no_evidence"
     assert search.queries == ["Как выбрать CRM"]
+
+
+@pytest.mark.asyncio
+async def test_modtime_applies_to_a_page_that_redirected_to_another_url() -> None:
+    """The fetched page carries its final URL; the fallback date belongs to the search hit."""
+    short = "https://short.example/a"
+    search = FakeSearch([short], modtimes={short: "2022-01-10"})
+    pages = {short: page("https://final.example/article", _TEXT_A)}
+
+    research = await _researcher(search, pages).prepare(
+        _BRIEF, workspace_id=WS_A, today=TODAY, plan_item_id=None, steps=ScriptedSteps(["а"])
+    )
+
+    assert research.bundle.sources == ()

@@ -267,13 +267,14 @@ class TopicResearcher:
     async def _fetch_pages(self, hits: Sequence[SearchHit], today: date) -> list[FetchedPage]:
         candidates = select_candidates([hit.url for hit in hits])
         fetched = await asyncio.gather(*(self._fetcher.fetch(url) for url in candidates))
+        # By the searched URL: a fetched page carries its final one, after redirects.
         by_url = {hit.url: hit for hit in hits}
         pages: list[FetchedPage] = []
         seen_domains: set[str] = set()
-        for page in fetched:
+        for url, page in zip(candidates, fetched, strict=True):
             if page is None or len(page.text) < MIN_PAGE_CHARS:
                 continue
-            if _is_stale(page, by_url.get(page.url), today):
+            if _is_stale(page, by_url.get(url), today):
                 continue
             domain = _domain(page.url)
             if domain in seen_domains or not _passes_url_policy(page.url):

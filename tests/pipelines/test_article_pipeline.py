@@ -963,3 +963,18 @@ async def test_today_in_the_workspace_zone_reaches_every_step_and_past_years_lea
         "draft": "draft-v9",
         "rewrite": "rewrite-v9",
     }
+
+
+@pytest.mark.asyncio
+async def test_a_heading_left_empty_is_dropped_and_code_blocks_are_not_headings() -> None:
+    rewrite = "## В 2024 году\n\nТекст.\n\n```\n# сборка в 2024 году\n```"
+    handler = make_generate_article_handler(
+        ScriptedTextGenerator(_plain_completions(rewrite)),
+        _no_evidence_researcher(),
+        SettingsService(FakeOwnerSettingsStore()),
+        now=lambda: datetime(2026, 10, 13, 9, tzinfo=UTC),
+    )
+
+    output = await handler(WS_A, _PAYLOAD)
+
+    assert output["content"] == "Текст.\n\n```\n# сборка в 2024 году\n```"

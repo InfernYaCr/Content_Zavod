@@ -262,7 +262,7 @@ def make_generate_plan_handler(
     async def handle(workspace_id: WorkspaceId, payload: dict[str, Any]) -> dict[str, Any]:
         current_time = now()
         today = await local_today(lambda: current_time, workspace_timezone, workspace_id)
-        monday = today - timedelta(days=today.weekday())
+        monday = _week_monday(payload.get("week_label"), today)
         week = monday.isoformat()
         for cache in (dynamics_cache, news_cache):
             for key in [key for key in cache if key[1] != week]:
@@ -292,7 +292,7 @@ def make_generate_plan_handler(
             picked, near = await _edit_plan(
                 text_generator, recorder, owner.niche, owner.audience, candidates, history, today
             )
-            picked = _top_up(picked, near, candidates, history, owner.niche)
+            picked = _top_up(picked, near, candidates, history, owner.niche, today)
             if niche_map.phrases:
                 used = [c.map_phrase for _, c in picked if c is not None and c.map_phrase]
                 checks = [p.phrase for p in checked if (p.phrase, week) in dynamics_cache]
@@ -318,6 +318,15 @@ def make_generate_plan_handler(
         }
 
     return handle
+
+
+def _week_monday(week_label: object, today: date) -> date:
+    """The Monday of the Plan's own week (`2026-W43`), so a Plan asked for next week on a
+    Sunday rotates the Map for that week; this week's Monday for any other label."""
+    match = re.fullmatch(r"(\d{4})-W(\d{2})", week_label if isinstance(week_label, str) else "")
+    if match is None:
+        return today - timedelta(days=today.weekday())
+    return date.fromisocalendar(int(match.group(1)), int(match.group(2)), 1)
 
 
 async def _current_map(
@@ -502,9 +511,9 @@ async def _edit_plan(
     today: date,
 ) -> tuple[list[_Picked], list[TopicDraft]]:
     """Up to `TOPICS_PER_PLAN` Темы from the editor, asking again for what a repeat or a title
-    with a past year (#145) took away (`EDITOR_ATTEMPTS` calls at most). A candidate counts once: a second Тема naming the same
-    `Source` is an evergreen one. Drafts dropped only as near repeats (shared word stems, not
-    the same title) come back second, for `_top_up`."""
+    with a past year (#145) took away (`EDITOR_ATTEMPTS` calls at most). A candidate counts
+    once: a second Тема naming the same `Source` is an evergreen one. Drafts dropped only as
+    near repeats (shared word stems, not the same title) come back second, for `_top_up`."""
     picked: list[_Picked] = []
     near: list[TopicDraft] = []
     taken: set[int] = set()
@@ -545,11 +554,13 @@ def _top_up(
     candidates: Sequence[_Candidate],
     history: Sequence[str],
     niche: str,
+    today: date,
 ) -> list[_Picked]:
     """Exactly `TOPICS_PER_PLAN` Темы with no more model calls (#128: a Plan always has 3):
     the editor's own Темы, then its near repeats, then candidates written as Темы themselves -
     a question, a growing or seasonal query, a plain one, a date - then evergreen templates on
-    the Ниша; each skipped if it repeats one already there. Fails only with no Ниша at all."""
+    the Ниша; each skipped if it repeats one already there or names a past year (#145: a Map
+    built before that check). Fails only with no Ниша at all."""
     chosen = list(picked)
     used = {id(c) for _, c in chosen if c is not None}
 
@@ -564,6 +575,8 @@ def _top_up(
             if len(chosen) >= TOPICS_PER_PLAN:
                 break
             if candidate.kind not in kind or id(candidate) in used:
+                continue
+            if has_past_year(candidate.phrase, today):
                 continue
             title = candidate.phrase[:1].upper() + candidate.phrase[1:]
             if repeats(title, [*history, *titles()]):

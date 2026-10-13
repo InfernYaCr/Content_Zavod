@@ -269,12 +269,26 @@ async def _run_pipeline(
     }
 
 
-_TOP_HEADING_RE = re.compile(r"^([ \t]*#{1,2}[ \t]+)(.+)$", re.MULTILINE)
+_TOP_HEADING_RE = re.compile(r"([ \t]*#{1,2}[ \t]+)(.+)")
+_FENCE = ("```", "~~~")
 
 
 def _fresh_headings(body: str, today: date) -> str:
-    """`#`/`##` headings without a past-year tail (#145); the text itself is left alone."""
-    return _TOP_HEADING_RE.sub(lambda m: m.group(1) + strip_past_year_tail(m.group(2), today), body)
+    """`#`/`##` headings without a past-year tail (#145), a heading left empty dropped; the
+    text and fenced code blocks are left alone."""
+    lines: list[str] = []
+    fenced = False
+    for line in body.split("\n"):
+        if line.lstrip().startswith(_FENCE):
+            fenced = not fenced
+        heading = None if fenced else _TOP_HEADING_RE.fullmatch(line)
+        if heading is None:
+            lines.append(line)
+            continue
+        text = strip_past_year_tail(heading.group(2), today)
+        if text.strip():
+            lines.append(heading.group(1) + text)
+    return "\n".join(lines)
 
 
 def _is_money_or_legal(title: str, keywords: Sequence[str]) -> bool:

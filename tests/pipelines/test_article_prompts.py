@@ -2,6 +2,8 @@ import inspect
 import json
 from datetime import date
 
+import pytest
+
 from content_zavod.domain import Evidence, ResearchBundle, ResearchSource
 from content_zavod.personas import platform_profile
 from content_zavod.pipelines.article_prompts import (
@@ -10,6 +12,7 @@ from content_zavod.pipelines.article_prompts import (
     outline_messages,
     research_extract_messages,
     rewrite_messages,
+    strip_years,
 )
 from content_zavod.settings import (
     PERSONAS,
@@ -379,3 +382,20 @@ def test_every_generation_step_gets_today_and_the_date_rule_before_persona() -> 
         assert data["today"] == "2026-10-13"
     assert "Сегодня — поле today" in TODAY_RULE
     assert "старше 12 месяцев" in TODAY_RULE
+
+
+@pytest.mark.parametrize(
+    ("text", "stripped"),
+    [
+        ("Тренды 2025 года в CRM", "Тренды в CRM"),
+        ("Итоги 2024 г. для бизнеса", "Итоги для бизнеса"),
+        ("Лучшие приложения 2024-2025", "Лучшие приложения"),
+        ("Ремонт 2020-х: что изменилось", "Ремонт: что изменилось"),
+        ("ЕПК с 2024 года", "ЕПК"),
+        ("Что использовать в 2024 году", "Что использовать"),
+        ("Тренды 2026: что нового в CRM", "Тренды: что нового в CRM"),
+        ("Как выбрать CRM", "Как выбрать CRM"),
+    ],
+)
+def test_strip_years_leaves_no_word_debris(text: str, stripped: str) -> None:
+    assert strip_years(text) == stripped

@@ -61,7 +61,13 @@ TODAY_RULE = (
 _YEAR = r"(?<!\d)(20\d{2})(?!\d)"
 # «…: что использовать в 2024 году» - the tail a model sticks on a title (#145).
 _YEAR_TAIL = re.compile(rf"\s*[:,]?\s*\b(?:в|на)\s+{_YEAR}(?:\s+году)?\s*$", re.IGNORECASE)
-_ANY_YEAR = re.compile(rf"\s*(?:\b(?:в|на)\s+)?{_YEAR}(?:\s+году?)?", re.IGNORECASE)
+# A year with what goes with it: «в 2024 году», «с 2024 года», «2024 г.», «2024-2025», «2020-х».
+_ANY_YEAR = re.compile(
+    r"\s*(?:\b(?:в|на|с|за|к)\s+)?(?<!\d)20\d{2}(?:\s*[-–]\s*20\d{2})?(?:-х)?(?!\d)"
+    r"(?:\s+(?:году|года|год|г\.?)(?!\w))?",
+    re.IGNORECASE,
+)
+_DANGLING_PREPOSITION = re.compile(r"\s+\b(?:в|на|с|за|к)$", re.IGNORECASE)
 
 
 def has_past_year(text: str, today: date) -> bool:
@@ -79,7 +85,7 @@ def strip_past_year_tail(title: str, today: date) -> str:
 
 def strip_years(text: str) -> str:
     """Every year out of a search query, with its «в … году» (#145)."""
-    return " ".join(_ANY_YEAR.sub("", text).split())
+    return _DANGLING_PREPOSITION.sub("", " ".join(_ANY_YEAR.sub("", text).split()))
 
 
 # With a Проект set, its closing invitation is the Статья's only CTA (#133): the PERSONA and

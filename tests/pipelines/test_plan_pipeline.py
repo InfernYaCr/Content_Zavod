@@ -4,7 +4,7 @@ line from code - and regenerate_topic, on fakes (no network)."""
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -13,6 +13,7 @@ from content_zavod.job_queue import JobPartialFailure
 from content_zavod.pipelines.article_prompts import TODAY_RULE
 from content_zavod.pipelines.niche_map import NICHE_MAP_KEY, MapPhrase, NicheMap, load_niche_map
 from content_zavod.pipelines.plan_pipeline import (
+    _Candidate,
     _top_up,
     make_generate_plan_handler,
     make_regenerate_topic_handler,
@@ -435,7 +436,7 @@ async def test_a_one_query_map_and_a_garbage_answer_still_give_three() -> None:
 
 def test_only_an_empty_niche_with_nothing_else_fails() -> None:
     with pytest.raises(RuntimeError):
-        _top_up([], [], [], [], "")
+        _top_up([], [], [], [], "", date(2026, 10, 19))
 
 
 @pytest.mark.asyncio
@@ -819,3 +820,31 @@ async def test_regenerate_topic_with_a_past_year_inside_falls_back_to_the_cleane
     output = await handler(WS_A, {"plan_item_id": "item-1", "comment": None})
 
     assert output["title"] == "Инструменты AI: что использовать"
+
+
+def test_top_up_skips_candidates_naming_a_past_year() -> None:
+    old = _Candidate("question", "итоги 2025 года для кофеен", "why", map_phrase="old")
+    fresh = _Candidate("question", "как открыть кофейню", "why", map_phrase="fresh")
+
+    chosen = _top_up([], [], [old, fresh], [], "кофейни", date(2026, 10, 19))
+
+    titles = [draft.title for draft, _ in chosen]
+    assert titles[0] == "Как открыть кофейню"
+    assert not any("2025" in title for title in titles)
+
+
+@pytest.mark.asyncio
+async def test_the_plan_week_comes_from_the_week_label_not_the_clock() -> None:
+    """A Plan for W43 asked on Sunday of W42 rotates and marks the Map for W43's Monday."""
+    llm = FakeLLM(editor_answers=[EDITOR.format(q=0)])
+    store = _store()
+    wordstat = FakeWordstat(dynamics={"кофе на вынос": growing()})
+
+    await _handler(wordstat, llm, store, now=datetime(2026, 10, 18, 12, tzinfo=UTC))(
+        WS_A, {"week_label": "2026-W43"}
+    )
+
+    stored = load_niche_map(store.values[WS_A][NICHE_MAP_KEY])
+    assert stored is not None
+    marks = {p.phrase: (p.checked, p.used) for p in stored.phrases}
+    assert marks["кофе на вынос"] == ("2026-10-19", "2026-10-19")
