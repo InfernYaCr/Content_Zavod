@@ -2,15 +2,17 @@
 
     uv run --with playwright==1.56.0 python scripts/render_guide_assets.py
 
-Every slide of `telegram.guide.GUIDE_SLIDES` gets `<slide key>.png`: a mockup of the bot's
-screen - its real message text and inline buttons, built by the same functions the bot uses
-(`render_plan_text`, `SETTING_FIELDS`, the onboarding step screens, …) - under a header with
-the slide's title. `BANNERS` get a flat illustration with a title. Rerun after changing a
+Every answer of `telegram.guide.GUIDE_ANSWERS` with its own picture (#152: «🗓 Как проходит
+неделя», «📄 Что делать со Статьёй») gets `<key>.png`: a mockup of the bot's screen - its real
+message text and inline buttons, built by the same functions the bot uses (`render_plan_text`,
+`render_hub_screen`) - under a header with the answer's title. `BANNERS` (`welcome` - also the
+picture of the Инструкция's first screen and its text-only answers - and `onboarding`) get a
+flat illustration with a title. Rerun after changing a
 text: the pictures follow the code. The bot itself never needs a browser - it sends the PNGs
 committed to the repository.
 
 A designer can replace any PNG by hand: keep the file name (the bot finds pictures by name)
-and the size (slides 1280×960, banners 1280×640). The bot notices the new file by its hash and
+and the size (answers 1280×960, banners 1280×640). The bot notices the new file by its hash and
 uploads it again on the next send.
 
 Next to the PNGs, `sources.json` keeps a hash of each picture's HTML - the texts, buttons and
@@ -19,7 +21,7 @@ the code without re-rendering its picture fails the tests instead of drifting si
 designer's hand-made PNG keeps passing; re-rendering would overwrite it, so after a text change
 the designer's picture needs updating by hand too, then rerun with `--sources-only`.)
 
-Options: `--only welcome,niche` renders some pictures only; `--html DIR` also saves each
+Options: `--only welcome,week` renders some pictures only; `--html DIR` also saves each
 picture's HTML, to tweak the design in a browser. Needs Playwright's Chromium: the
 `PLAYWRIGHT_BROWSERS_PATH` one, or `playwright install chromium`. Fonts: Liberation Sans or
 DejaVu Sans for Cyrillic, Noto Color Emoji for emoji - nothing is downloaded.
@@ -40,48 +42,13 @@ from pathlib import Path
 from aiogram.types import InlineKeyboardMarkup
 
 from content_zavod.domain import HubArticleCell, HubTopic, PlanHubView
-from content_zavod.scheduling import (
-    DEFAULT_DAY_OF_WEEK,
-    DEFAULT_HOUR,
-    DEFAULT_MINUTE,
-    ScheduleConfig,
-)
-from content_zavod.settings import SettingsService
 from content_zavod.telegram.asset_photos import ASSETS_DIR
 from content_zavod.telegram.gateway import build_plan_keyboard, render_plan_text
-from content_zavod.telegram.guide import BANNERS, GUIDE_SLIDES, Slide, example_of
-from content_zavod.telegram.input_prompt import build_cancel_input_keyboard, question_text
-from content_zavod.telegram.main_menu import (
-    TOPIC_INPUT_KIND,
-    build_main_menu_keyboard,
-    render_menu_text,
-)
-from content_zavod.telegram.onboarding import (
-    ONBOARDING_INPUT_KIND,
-    ONBOARDING_STEPS,
-    Onboarding,
-    StepRef,
-    onboarding_fields,
-)
+from content_zavod.telegram.guide import BANNERS, GUIDE_ANSWERS, Screen
+from content_zavod.telegram.onboarding import onboarding_fields
 from content_zavod.telegram.plan_hub import render_hub_screen
-from content_zavod.telegram.settings_screen import (
-    BACK_TO_MENU,
-    build_schedule_keyboard,
-    render_schedule_text,
-)
-from content_zavod.telegram.texts import (
-    BACK_BUTTON,
-    PLAN_GENERATE_BUTTON,
-    PLAN_MISSING_TEXT,
-    TOPIC_ADDED_TEXT,
-    TOPIC_QUESTION,
-    WELCOME_TEXT,
-    format_week_range,
-    schedule_text,
-    steps_count_text,
-)
+from content_zavod.telegram.texts import steps_count_text
 from content_zavod.telegram.types import PlanItemView, PlanView
-from content_zavod.workspaces import TrialLimits, Workspace, WorkspaceId
 
 SLIDE_SIZE = (1280, 960)
 BANNER_SIZE = (1280, 640)
@@ -121,48 +88,6 @@ def _buttons(markup: InlineKeyboardMarkup | Sequence[Sequence[object]] | None) -
     return [[button.text for button in row] for row in rows]  # type: ignore[attr-defined]
 
 
-class _MemoryStore:
-    """Настройки of the one sample Пространство: defaults only."""
-
-    async def get(self, workspace_id: WorkspaceId, key: str) -> str | None:
-        return None
-
-    async def set(self, workspace_id: WorkspaceId, key: str, value: str) -> None:
-        pass
-
-
-def _new_user_menu_text() -> str:
-    """The Главное меню right after /start: no Plan, no Ниша, the whole trial ahead."""
-    trial = TrialLimits()
-    usage = trial.usage(plan_limit=None, article_limit=None, plans_used=0, articles_used=0)
-    return render_menu_text(
-        view=None, hub=None, next_plan=None, usage=usage, contact=None, niche=None
-    )
-
-
-_SAMPLE_WORKSPACE = Workspace(WorkspaceId(1), 1, None, "Europe/Moscow", None, None)
-
-
-async def _step_bubble(key: str) -> Bubble:
-    """The onboarding question for `key`, exactly as the private chat shows it."""
-    onboarding = Onboarding(
-        None,  # type: ignore[arg-type]  # the step screen reads Настройки only
-        SettingsService(_MemoryStore()),
-        None,  # type: ignore[arg-type]
-        None,  # type: ignore[arg-type]
-        None,  # type: ignore[arg-type]
-        None,  # type: ignore[arg-type]
-    )
-    text, rows = await onboarding._step_screen(_SAMPLE_WORKSPACE, StepRef(key))
-    keyboard = build_cancel_input_keyboard(ONBOARDING_INPUT_KIND, rows)
-    return Bubble(question_text(text), _buttons(keyboard))
-
-
-def _answer_for(key: str) -> str | None:
-    step = ONBOARDING_STEPS.get(key)
-    return example_of(step.question) if step is not None and step.question else None
-
-
 def _sample_plan(status: str) -> PlanView:
     return PlanView(
         id="plan",
@@ -190,21 +115,8 @@ def _sample_plan(status: str) -> PlanView:
     )
 
 
-async def _slide_mockup(slide: Slide) -> Mockup:
-    note = "Необязательно" if slide.optional else "Инструкция"
-    if slide.key == "about":
-        bubbles = [
-            Bubble("Вы нажали /start", service=True),
-            Bubble(WELCOME_TEXT),
-            Bubble(_new_user_menu_text(), _buttons(build_main_menu_keyboard())),
-        ]
-    elif slide.key == "sourcing":
-        plan = _sample_plan("pending_review")
-        bubbles = [
-            Bubble("По Расписанию приходит План: 3 Темы и повод под каждой", service=True),
-            Bubble(render_plan_text(plan), _buttons(build_plan_keyboard(plan))),
-        ]
-    elif slide.key == "week":
+def _answer_mockup(screen: Screen) -> Mockup:
+    if screen.key == "week":
         plan = _sample_plan("mixed")
         hub_text, hub_keyboard = render_hub_screen(_sample_hub())
         bubbles = [
@@ -213,53 +125,19 @@ async def _slide_mockup(slide: Slide) -> Mockup:
             Bubble("После «✅ Утвердить всё» это же сообщение становится Хабом", service=True),
             Bubble(hub_text, _buttons(hub_keyboard)),
         ]
-    elif slide.key in {setting.key for setting in onboarding_fields()}:
-        bubbles = [
-            Bubble("Так я спрашиваю при первой настройке", service=True),
-            await _step_bubble(slide.key),
-        ]
-        answer = _answer_for(slide.key)
-        if answer:
-            bubbles.append(Bubble(answer, mine=True))
-    elif slide.key == "schedule":
-        config = ScheduleConfig(DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE)
-        bubbles = [
-            Bubble("🏠 Меню → 🕘 Расписание", service=True),
-            Bubble(
-                render_schedule_text(config, "Europe/Moscow"),
-                _buttons(build_schedule_keyboard(config, BACK_TO_MENU)),
-            ),
-        ]
-    elif slide.key == "article":
+    elif screen.key == "article":
         text, keyboard = render_hub_screen(_sample_hub(open_article=True))
         bubbles = [
             Bubble("Хаб → Тема → «📄 Статья для Дзена ›»", service=True),
             Bubble(text, _buttons(keyboard)),
         ]
-    elif slide.key == "propose":
-        keyboard = build_cancel_input_keyboard(TOPIC_INPUT_KIND)
-        bubbles = [
-            Bubble("🏠 Меню → ✍️ Предложить Тему", service=True),
-            Bubble(question_text(TOPIC_QUESTION), _buttons(keyboard)),
-            Bubble(example_of(TOPIC_QUESTION), mine=True),
-            Bubble(TOPIC_ADDED_TEXT),
-        ]
-    elif slide.key == "faq":
-        text = PLAN_MISSING_TEXT.format(
-            week=format_week_range(SAMPLE_WEEK),
-            schedule=schedule_text(DEFAULT_DAY_OF_WEEK, DEFAULT_HOUR, DEFAULT_MINUTE),
-        )
-        bubbles = [
-            Bubble("Плана нет? 🏠 Меню → 📋 План недели", service=True),
-            Bubble(text, [[PLAN_GENERATE_BUTTON], [BACK_BUTTON]]),
-        ]
     else:
         bubbles = []
-    return Mockup(slide.title, note, bubbles)
+    return Mockup(screen.title, "Инструкция", bubbles)
 
 
 def _sample_hub(*, open_article: bool = False) -> PlanHubView:
-    """The week slide's checklist, or (`open_article`) the first Тема's Статья для Дзена open."""
+    """The week answer's checklist, or (`open_article`) the first Тема's Статья для Дзена open."""
 
     def cells(zen: str, vc: str) -> list[HubArticleCell]:
         return [
@@ -562,8 +440,9 @@ class Picture:
 
 async def pictures(only: set[str] | None) -> list[Picture]:
     result = [
-        Picture(slide.key, slide_html(await _slide_mockup(slide)), SLIDE_SIZE, True)
-        for slide in GUIDE_SLIDES
+        Picture(screen.picture, slide_html(_answer_mockup(screen)), SLIDE_SIZE, True)
+        for screen in GUIDE_ANSWERS
+        if screen.picture == screen.key
     ]
     all_banners = banners()
     result += [
@@ -612,7 +491,7 @@ async def screenshot(items: Sequence[Picture], paths: Sequence[Path]) -> None:
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    parser.add_argument("--only", help="comma-separated picture names, e.g. welcome,niche")
+    parser.add_argument("--only", help="comma-separated picture names, e.g. welcome,week")
     parser.add_argument("--out", type=Path, default=ASSETS_DIR, help="output directory")
     parser.add_argument("--html", type=Path, help="also save each picture's HTML here")
     parser.add_argument(

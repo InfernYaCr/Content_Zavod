@@ -1195,14 +1195,14 @@ async def test_cancelling_a_wizard_question_says_how_to_come_back(f: Fixtures) -
 # --- the Инструкция (#114) ---
 
 
-async def test_guide_from_the_menu_replaces_it_with_the_carousel(f: Fixtures) -> None:
+async def test_guide_from_the_menu_replaces_it_with_the_first_screen(f: Fixtures) -> None:
     answer = await dispatch(f, SimpleAction("guide", "m"))
 
     assert answer.calls == [(None, None)]
     assert f.bot.deleted_messages == [(1, 2)]
     ((chat_id, photo, caption),) = f.bot.sent_photos
-    assert chat_id == USER and photo.filename == "about.png"
-    assert caption.startswith("🤖 Что делает бот")
+    assert chat_id == USER and photo.filename == "welcome.png"
+    assert caption.startswith("Как это работает — в 3 шага:")
 
 
 async def test_guide_from_another_message_leaves_it_in_place(f: Fixtures) -> None:
@@ -1212,15 +1212,24 @@ async def test_guide_from_another_message_leaves_it_in_place(f: Fixtures) -> Non
     assert len(f.bot.sent_photos) == 1
 
 
-async def test_guide_slide_turns_the_carousel(f: Fixtures) -> None:
-    answer = await dispatch(f, SimpleAction("guide_slide", "3"))
+async def test_guide_screen_opens_an_answer_in_place(f: Fixtures) -> None:
+    answer = await dispatch(f, SimpleAction("guide_screen", "week"))
 
     assert answer.calls == [(None, None)]
     ((_, _, photo, caption),) = f.bot.edited_media
-    assert photo.filename == "niche.png" and caption.startswith("🎯 Ниша")
+    assert photo.filename == "week.png" and caption.startswith("🗓 Как проходит неделя")
 
 
-async def test_to_menu_from_the_carousel_replaces_it_with_the_menu(f: Fixtures) -> None:
+async def test_an_old_carousel_button_opens_the_first_screen(f: Fixtures) -> None:
+    """«gs:3» from the 11-slide carousel (#114) still in the chat history (#152)."""
+    answer = await dispatch(f, decode_callback_data("gs:3"))
+
+    assert answer.calls == [(None, None)]
+    ((_, _, photo, caption),) = f.bot.edited_media
+    assert photo.filename == "welcome.png" and caption.startswith("Как это работает")
+
+
+async def test_to_menu_from_the_guide_replaces_it_with_the_menu(f: Fixtures) -> None:
     await dispatch(f, SimpleAction("menu", "g"))
 
     assert f.bot.deleted_messages == [(1, 2)]

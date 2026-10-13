@@ -1,4 +1,4 @@
-"""The Инструкция (#114): slides, the carousel, and pictures with their file_id cache and text
+"""The Инструкция (#114, #152): the first screen, its answers, and pictures with their file_id cache and text
 fallback."""
 
 from __future__ import annotations
@@ -18,16 +18,17 @@ from content_zavod.telegram.gateway import MessageGone
 from content_zavod.telegram.guide import (
     BANNERS,
     CAPTION_LIMIT,
-    GUIDE_SLIDES,
+    GUIDE_ANSWERS,
+    START_SCREEN,
     Guide,
-    build_guide_keyboard,
-    build_slides,
-    clamp_index,
+    build_answer_keyboard,
+    build_answers,
+    build_start_keyboard,
     example_of,
-    parse_slide_id,
+    parse_screen_id,
 )
-from content_zavod.telegram.settings_screen import SETTING_FIELDS
 from content_zavod.telegram.texts import ONBOARDING_NICHE_QUESTION
+from content_zavod.workspaces import TrialLimits
 
 from .fakes import RecordingBot, button_data, button_texts
 
@@ -72,34 +73,86 @@ def make_assets(tmp_path: Path, **files: bytes) -> Path:
     return tmp_path
 
 
-# --- slides ---
+# --- screens ---
+
+ALL_SCREENS = (START_SCREEN, *GUIDE_ANSWERS)
 
 
-@pytest.mark.parametrize("slide", GUIDE_SLIDES, ids=lambda slide: slide.key)
-def test_every_caption_fits_a_photo_caption(slide) -> None:
-    assert 0 < len(slide.caption) <= CAPTION_LIMIT
+@pytest.mark.parametrize("screen", ALL_SCREENS, ids=lambda screen: screen.key)
+def test_every_caption_fits_a_photo_caption(screen) -> None:
+    assert 0 < len(screen.caption) <= CAPTION_LIMIT
 
 
-def test_slides_are_the_owners_feed_in_order() -> None:
-    """#118: one feed for everyone - no Роли, Направления or team slides."""
-    assert [slide.title for slide in GUIDE_SLIDES] == [
-        "🤖 Что делает бот",
-        "🗺 Как я нахожу Темы",
+def test_the_first_screen_is_the_owners_3_steps() -> None:
+    assert START_SCREEN.caption.startswith("Как это работает — в 3 шага:\n1️⃣")
+    assert START_SCREEN.caption.endswith("Что непонятно? Нажмите кнопку ниже.")
+    assert START_SCREEN.picture == "welcome"
+
+
+def test_answers_are_the_owners_questions_in_order() -> None:
+    assert [answer.title for answer in GUIDE_ANSWERS] == [
         "🗓 Как проходит неделя",
-        "🎯 Ниша",
-        "👥 Аудитория",
+        "📄 Что делать со Статьёй",
+        "🎯 Ниша и Аудитория",
         "🎙 Стиль автора",
-        "🔗 Ваш канал или сайт",
+        "🔗 Ссылка в конце Статьи",
         "🕘 Расписание",
-        "✍️ Предложить Тему",
-        "📄 Экран Статьи",
+        "🎁 Лимит",
         "❓ Частые вопросы",
     ]
-    keys = [slide.key for slide in GUIDE_SLIDES]
+    keys = [answer.key for answer in ALL_SCREENS]
     assert len(keys) == len(set(keys))
 
 
-@pytest.mark.parametrize("name", [slide.key for slide in GUIDE_SLIDES] + list(BANNERS))
+@pytest.mark.parametrize("answer", GUIDE_ANSWERS, ids=lambda answer: answer.key)
+def test_an_answer_is_one_short_screen(answer) -> None:
+    assert answer.caption.startswith(f"{answer.title}\n\n")
+    assert len(answer.body.splitlines()) <= 8  # ≤ 6 lines of text, blank lines aside
+    assert len([line for line in answer.body.splitlines() if line]) <= 6
+
+
+def test_only_week_and_article_have_their_own_picture() -> None:
+    assert {
+        answer.key: answer.picture for answer in GUIDE_ANSWERS if answer.picture != "welcome"
+    } == {
+        "week": "week",
+        "article": "article",
+    }
+
+
+def test_answers_use_the_bots_own_buttons() -> None:
+    by_key = {answer.key: answer.caption for answer in GUIDE_ANSWERS}
+    for button in ("📄 Статья для Дзена ›", "✅ Готово, публикую", "✏️ Попросить доработать"):
+        assert button in by_key["article"]
+    assert "⬇️ Word (.docx)" in by_key["article"]
+    assert "«✅ Утвердить всё»" in by_key["week"] and "🔁 Повторить" in by_key["week"]
+    assert example_of(ONBOARDING_NICHE_QUESTION) in by_key["niche"]
+    assert "✏️ Изменить стиль автора" in by_key["style"] and "📄 Пришлю статью" in by_key["style"]
+    assert "✏️ Изменить канал или сайт" in by_key["link"]
+    assert "понедельник, 09:00" in by_key["schedule"] and "часовой пояс" in by_key["schedule"]
+    for words in ("🔄", "✏️ Попросить доработать", "🗂 История", "📋 План недели"):
+        assert words in by_key["faq"]
+    assert "«⚠️ Источники не найдены»" in by_key["faq"]
+
+
+def test_the_limit_answer_follows_the_config() -> None:
+    default = {answer.key: answer.caption for answer in GUIDE_ANSWERS}["limit"]
+    assert "1 План и 8 Статей" in default and "напишите" not in default
+    assert "«✏️ Попросить доработать» тоже тратит одну Статью" in default
+
+    (limit,) = [
+        answer.caption
+        for answer in build_answers(TrialLimits(plans=2, articles=12, contact="@boss"))
+        if answer.key == "limit"
+    ]
+    assert "2 Плана и 12 Статей" in limit
+    assert limit.endswith("Нужно больше — напишите @boss.")
+
+
+PICTURES = sorted({answer.picture for answer in GUIDE_ANSWERS} | set(BANNERS))
+
+
+@pytest.mark.parametrize("name", PICTURES)
 def test_every_picture_is_committed_and_light(name: str) -> None:
     path = ASSETS_DIR / f"{name}.png"
     assert path.is_file(), f"run scripts/render_guide_assets.py to draw {name}.png"
@@ -108,60 +161,46 @@ def test_every_picture_is_committed_and_light(name: str) -> None:
     assert width >= 800 and width / height <= 2.5
 
 
-def test_setting_slides_reuse_the_bots_own_words() -> None:
-    by_key = {slide.key: slide for slide in GUIDE_SLIDES}
-    for field in SETTING_FIELDS:
-        caption = by_key[field.key].caption
-        assert field.label in caption
-        assert field.change_button in caption  # «Где поменять» names the real button
-        assert field.purpose[1:] in caption  # what it drives, capitalised
-        assert "👍 Так хорошо:" in caption and "👎 Так не надо:" in caption
-    assert example_of(ONBOARDING_NICHE_QUESTION) == "фитнес и здоровое питание"
-    assert "фитнес и здоровое питание" in by_key["niche"].caption
-    assert "(необязательно)" in by_key["audience"].caption
-    assert "(необязательно)" not in by_key["niche"].caption
-    assert "(необязательно)" in by_key["project"].caption
-    assert "✏️ Изменить канал или сайт" in by_key["project"].caption
+def test_no_picture_is_left_unused() -> None:
+    """#152: the old carousel's slides went with it."""
+    assert sorted(path.stem for path in ASSETS_DIR.glob("*.png")) == PICTURES
 
 
-def test_a_setting_this_build_lacks_has_no_slide() -> None:
-    keys = [slide.key for slide in build_slides([f for f in SETTING_FIELDS if f.key != "persona"])]
-    assert "persona" not in keys and "niche" in keys
+# --- keyboards ---
 
 
-# --- the carousel's keyboard ---
+def test_the_first_screen_has_the_questions_two_in_a_row_and_the_menu() -> None:
+    markup = build_start_keyboard()
 
-
-def test_keyboard_wraps_round_and_returns_to_the_menu() -> None:
-    markup = build_guide_keyboard(0, 5)
-
-    assert button_texts(markup) == [["◀", "1/5", "▶"], ["🏠 В меню"]]
-    assert button_data(markup) == [["gs:4", "gs:0", "gs:1"], ["mn:g"]]
-    assert button_data(build_guide_keyboard(4, 5))[0] == ["gs:3", "gs:4", "gs:0"]
+    assert button_texts(markup) == [
+        ["🗓 Как проходит неделя", "📄 Что делать со Статьёй"],
+        ["🎯 Ниша и Аудитория", "🎙 Стиль автора"],
+        ["🔗 Ссылка в конце Статьи", "🕘 Расписание"],
+        ["🎁 Лимит", "❓ Частые вопросы"],
+        ["🏠 В меню"],
+    ]
+    assert button_data(markup)[0] == ["gs:week", "gs:article"]
+    assert button_data(markup)[-1] == ["mn:g"]
     assert all(
-        len(data.encode()) <= CALLBACK_DATA_LIMIT for row in button_data(markup) for data in row
+        len(data.encode()) <= CALLBACK_DATA_LIMIT
+        for row in button_data(build_start_keyboard(text_mode=True))
+        for data in row
     )
 
 
-def test_a_single_slide_has_only_its_counter() -> None:
-    assert button_texts(build_guide_keyboard(0, 1)) == [["1/1"], ["🏠 В меню"]]
+def test_an_answer_goes_back_to_the_questions_or_the_menu() -> None:
+    markup = build_answer_keyboard()
+
+    assert button_texts(markup) == [["◀ К вопросам", "🏠 В меню"]]
+    assert button_data(markup) == [["gs:start", "mn:g"]]
 
 
-@pytest.mark.parametrize(("index", "expected"), [(-3, 0), (0, 0), (4, 4), (10, 4)], ids=str)
-def test_a_stale_index_is_clamped(index: int, expected: int) -> None:
-    assert clamp_index(index, 5) == expected
-
-
-def test_slide_ids_carry_the_text_mode_and_garbage_is_the_first_slide() -> None:
-    assert parse_slide_id("3") == (3, False)
-    assert parse_slide_id("3t") == (3, True)
-    assert parse_slide_id("x") == (0, False)
-
-
-def test_a_text_carousels_buttons_remember_it_is_text() -> None:
-    markup = build_guide_keyboard(1, 3, text_mode=True)
-
-    assert button_data(markup)[0] == ["gs:0t", "gs:1t", "gs:2t"]
+def test_screen_ids_carry_the_text_mode() -> None:
+    assert parse_screen_id("week") == ("week", False)
+    assert parse_screen_id("week.t") == ("week", True)
+    assert parse_screen_id("3t") == ("3t", False)  # an old carousel's id: the first screen
+    assert button_data(build_answer_keyboard(text_mode=True))[0][0] == "gs:start.t"
+    assert button_data(build_start_keyboard(text_mode=True))[0][0] == "gs:week.t"
 
 
 # --- pictures: file_id cache and fallbacks ---
@@ -213,7 +252,7 @@ async def test_a_refused_file_id_falls_back_to_an_upload(tmp_path: Path) -> None
 async def test_a_photo_telegram_refuses_goes_out_as_text_with_its_buttons(tmp_path: Path) -> None:
     bot = FailingPhotosBot()
     photos = AssetPhotos(bot, FakeStore(), directory=make_assets(tmp_path, welcome=b"png"))
-    keyboard = build_guide_keyboard(0, 2)
+    keyboard = build_answer_keyboard()
 
     message_id = await photos.send(CHAT, "welcome", "Привет", keyboard)
 
@@ -237,81 +276,93 @@ def make_guide(bot: RecordingBot, store: FakeStore | None = None) -> Guide:
     return Guide(AssetPhotos(bot, store or FakeStore()), bot)
 
 
-async def test_send_opens_the_carousel_on_the_first_slide() -> None:
+async def test_send_opens_the_first_screen() -> None:
     bot = RecordingBot()
 
     await make_guide(bot).send(CHAT)
 
     ((chat, photo, caption, markup),) = bot.photos
     assert chat == CHAT and isinstance(photo, BufferedInputFile)
-    assert photo.filename == "about.png"
-    assert caption == GUIDE_SLIDES[0].caption
-    assert button_texts(markup)[0] == ["◀", f"1/{len(GUIDE_SLIDES)}", "▶"]
+    assert photo.filename == "welcome.png"
+    assert caption == START_SCREEN.caption
+    assert button_texts(markup)[0] == ["🗓 Как проходит неделя", "📄 Что делать со Статьёй"]
 
 
-async def test_show_turns_the_page_in_place_with_the_cached_picture() -> None:
+async def test_a_question_switches_picture_and_caption_in_place() -> None:
     bot, store = RecordingBot(), FakeStore()
     guide = make_guide(bot, store)
 
-    await guide.show(CHAT, 55, "3")
-    await guide.show(CHAT, 55, "3")
+    await guide.show(CHAT, 55, "week")
+    await guide.show(CHAT, 55, "start")
+    await guide.show(CHAT, 55, "week")
 
-    (_, message_id, photo, caption, markup), (*_, again, _, _) = bot.edited_media
+    (_, message_id, photo, caption, markup), back, (*_, again, _, _) = bot.edited_media
     assert message_id == 55 and isinstance(photo, BufferedInputFile)
-    assert photo.filename == "niche.png"
-    assert caption.startswith("🎯 Ниша")
-    assert button_texts(markup)[0][1] == f"4/{len(GUIDE_SLIDES)}"
+    assert photo.filename == "week.png" and caption.startswith("🗓 Как проходит неделя")
+    assert button_texts(markup) == [["◀ К вопросам", "🏠 В меню"]]
+    assert back[2].filename == "welcome.png" and back[3] == START_SCREEN.caption
     assert again == "file-edit-55"  # the file_id Telegram returned, not a second upload
 
 
-async def test_a_stale_index_lands_on_the_last_slide() -> None:
-    """A button from a carousel that had more slides (Роли, Направления, #118)."""
+@pytest.mark.parametrize("answer", GUIDE_ANSWERS, ids=lambda answer: answer.key)
+async def test_every_answer_opens_with_its_picture_and_the_way_back(answer) -> None:
     bot = RecordingBot()
 
-    await make_guide(bot).show(CHAT, 55, "99")
+    await make_guide(bot).show(CHAT, 55, answer.key)
 
-    (_, _, photo, caption, _) = bot.edited_media[0]
-    assert photo.filename == "faq.png"
-    assert caption.startswith("❓")
+    ((_, _, photo, caption, markup),) = bot.edited_media
+    assert photo.filename == f"{answer.picture}.png" and caption == answer.caption
+    assert button_data(markup) == [["gs:start", "mn:g"]]
 
 
-async def test_a_photo_that_cannot_go_sends_a_text_carousel_that_turns_as_text() -> None:
+@pytest.mark.parametrize("old_id", ["0", "3", "10", "99", "3t", "x", ""])
+async def test_an_old_carousel_button_opens_the_first_screen(old_id: str) -> None:
+    """The 11-slide carousel's «gs:N» / «gs:Nt» still in the chat history (#152)."""
+    bot = RecordingBot()
+
+    await make_guide(bot).show(CHAT, 55, old_id)
+
+    ((_, _, photo, caption, _),) = bot.edited_media
+    assert photo.filename == "welcome.png" and caption == START_SCREEN.caption
+
+
+async def test_a_photo_that_cannot_go_sends_a_text_guide_that_switches_as_text() -> None:
     bot = FailingPhotosBot()
     guide = make_guide(bot)
 
     await guide.send(CHAT)
     ((_, _, markup, _),) = bot.sent
-    next_id = button_data(markup)[0][2].removeprefix("gs:")
-    await guide.show(CHAT, 100, next_id)
+    week_id = button_data(markup)[0][0].removeprefix("gs:")
+    await guide.show(CHAT, 100, week_id)
 
-    assert next_id == "1t"
+    assert week_id == "week.t"
     assert bot.edited_media == []  # no wasted editMessageMedia (and no upload) on a text one
-    ((_, message_id, text, turned),) = bot.edited
-    assert message_id == 100 and text.startswith("🗺")
-    assert button_data(turned)[0][1] == "gs:1t"
+    ((_, message_id, text, switched),) = bot.edited
+    assert message_id == 100 and text.startswith("🗓")
+    assert button_data(switched)[0][0] == "gs:start.t"
 
 
-async def test_a_photo_carousel_that_turned_out_text_is_redrawn_as_text() -> None:
+async def test_an_old_text_carousel_is_redrawn_as_the_first_screen_in_text() -> None:
     class TextOnlyBot(RecordingBot):
         async def edit_message_media(self, *args, **kwargs):
             raise RuntimeError("there is no media in the message to edit")
 
     bot = TextOnlyBot()
 
-    await make_guide(bot).show(CHAT, 55, "1")
+    await make_guide(bot).show(CHAT, 55, "1t")
 
     ((_, message_id, text, markup),) = bot.edited
-    assert message_id == 55 and text.startswith("🗺")
-    assert button_data(markup)[0][1] == "gs:1t"  # from now on, turned as text
+    assert message_id == 55 and text == START_SCREEN.caption
+    assert button_data(markup)[0][0] == "gs:week.t"  # from now on, switched as text
 
 
-async def test_show_sends_a_new_carousel_when_the_old_one_is_gone() -> None:
+async def test_show_sends_a_new_guide_when_the_old_one_is_gone() -> None:
     bot = RecordingBot()
     bot.fail_edits = True
 
-    await make_guide(bot).show(CHAT, 55, "1")
+    await make_guide(bot).show(CHAT, 55, "faq")
 
-    assert bot.photos[0][2].startswith("🗺")
+    assert bot.photos[0][2].startswith("❓ Частые вопросы")
 
 
 async def test_a_gone_message_is_not_reuploaded_to(tmp_path: Path) -> None:
@@ -325,10 +376,10 @@ async def test_a_gone_message_is_not_reuploaded_to(tmp_path: Path) -> None:
             raise MessageGone(chat_id, message_id)
 
     bot, store = GoneBot(), FakeStore()
-    directory = make_assets(tmp_path, about=b"png")
-    await AssetPhotos(RecordingBot(), store, directory=directory).send(CHAT, "about", "x")
+    directory = make_assets(tmp_path, week=b"png")
+    await AssetPhotos(RecordingBot(), store, directory=directory).send(CHAT, "week", "x")
 
-    edited = await AssetPhotos(bot, store, directory=directory).edit(CHAT, 55, "about", "x")
+    edited = await AssetPhotos(bot, store, directory=directory).edit(CHAT, 55, "week", "x")
 
     assert edited is False and bot.media_attempts == 1
 

@@ -935,7 +935,7 @@ async def main(settings: Settings | None = None) -> None:
         bot_username = (await bot.me()).username
         # The Инструкция's pictures and the banners (#114), uploaded once and reused by file_id.
         photos = AssetPhotos(bot_client, bot_state)
-        guide = Guide(photos, bot_client)
+        guide = Guide(photos, bot_client, trial=settings.trial_limits)
         prompts = InputPrompt(bot_client, pending_inputs)
 
         # Its first run, right away, also catches up a deadline missed while the bot was down.

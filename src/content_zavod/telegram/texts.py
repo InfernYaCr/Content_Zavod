@@ -373,6 +373,10 @@ def articles_text(count: int) -> str:
     return f"{count} {_plural(count, 'Статья', 'Статьи', 'Статей')}"
 
 
+def plans_text(count: int) -> str:
+    return f"{count} {_plural(count, 'План', 'Плана', 'Планов')}"
+
+
 def topics_text(count: int) -> str:
     return f"{count} {_plural(count, 'Тема', 'Темы', 'Тем')}"
 

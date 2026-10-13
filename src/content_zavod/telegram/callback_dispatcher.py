@@ -221,17 +221,17 @@ class CallbackDispatcher:
             case SimpleAction(action="menu", id_=id_):
                 await answer()
                 if id_ == FROM_GUIDE:
-                    # «🏠 В меню» on the Инструкция: the menu takes the carousel's place (#114).
+                    # «🏠 В меню» on the Инструкция: the menu takes its place (#114).
                     await self._bot_client.delete_message(chat_id, message_id)
                     await self._main_menu.send(workspace, chat_id)
                     return
                 await self._main_menu.show(workspace, chat_id, message_id)
             case SimpleAction(action="guide", id_=id_):
                 await answer()
-                if id_ == FROM_MENU:  # the carousel takes the menu's place
+                if id_ == FROM_MENU:  # the Инструкция takes the menu's place
                     await self._bot_client.delete_message(chat_id, message_id)
                 await self._guide.send(chat_id)
-            case SimpleAction(action="guide_slide", id_=id_):
+            case SimpleAction(action="guide_screen", id_=id_):
                 await answer()
                 await self._guide.show(chat_id, message_id, id_)
             case SimpleAction(action="menu_plan"):

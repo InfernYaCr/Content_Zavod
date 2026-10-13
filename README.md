@@ -283,23 +283,23 @@ uv run pre-commit run --all-files
 
 ### Картинки Инструкции
 
-Слайды «📖 Как пользоваться» и картинки к приветствиям лежат в `src/content_zavod/assets/guide/` и
+Картинки Инструкции «📖 Как пользоваться» и приветствий лежат в `src/content_zavod/assets/guide/` и
 закоммичены: бот просто отправляет PNG и браузер ему не нужен. Telegram `file_id` загруженной
 картинки кэшируется в `bot_state` вместе с хэшем файла, так что изменённый PNG бот загрузит
 заново сам.
 
-- Слайды (1280×960) — по ключу слайда из `telegram/guide.py`: `about`, `sourcing`, `week`,
-  `niche`, `audience`, `persona`, `project`, `schedule`, `propose`, `article`, `faq`.
-- Баннеры (1280×640): `welcome` (/start), `onboarding` (вступление Онбординга).
+- Ответы Инструкции со своей картинкой (1280×960), по ключу ответа из `telegram/guide.py`:
+  `week` («🗓 Как проходит неделя»), `article` («📄 Что делать со Статьёй»).
+- Баннеры (1280×640): `welcome` (/start, а ещё первый экран Инструкции и её ответы без своей
+  картинки), `onboarding` (вступление Онбординга).
 
-Слайды — макеты экрана Telegram из настоящих текстов бота (`texts.py`, `SETTING_FIELDS`, экраны
-Онбординга), поэтому после правки текстов их стоит пересобрать одной командой (Chromium от
+Картинки ответов — макеты экрана Telegram из настоящих текстов бота (План, Хаб), поэтому после правки текстов их стоит пересобрать одной командой (Chromium от
 Playwright: из `PLAYWRIGHT_BROWSERS_PATH` или `uv run --with playwright==1.56.0 playwright install chromium`):
 
 ```bash
 uv run --with playwright==1.56.0 python scripts/render_guide_assets.py
 # только некоторые и с HTML для правки в браузере:
-uv run --with playwright==1.56.0 python scripts/render_guide_assets.py --only welcome,niche --html /tmp/guide-html
+uv run --with playwright==1.56.0 python scripts/render_guide_assets.py --only welcome,week --html /tmp/guide-html
 ```
 
 Рядом лежит `sources.json` — хэши текстов и разметки, из которых нарисован каждый PNG. Тест

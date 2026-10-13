@@ -73,7 +73,7 @@ Action = Literal[
     "onboarding_later",
     "onboarding_launch",
     "guide",
-    "guide_slide",
+    "guide_screen",
     "style_start",
     "style_done",
     "style_presets",
@@ -128,9 +128,10 @@ _ACTION_CODES: dict[Action, str] = {
     "onboarding_pick": "op",
     "onboarding_later": "ox",
     "onboarding_launch": "og",
-    # The Инструкция (#114): "g…".
+    # The Инструкция (#114): "g…". `gs` was the old carousel's slide (#152 made it a screen
+    # key), so an old «gs:3» decodes and opens the first screen.
     "guide": "gd",
-    "guide_slide": "gs",
+    "guide_screen": "gs",
     # Стиль автора по образцам (#134): "y…".
     "style_start": "ya",
     "style_done": "yd",
