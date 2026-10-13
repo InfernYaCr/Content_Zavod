@@ -7,9 +7,9 @@ Research finds pages via the search provider, has the model extract facts strict
 each page's text and keeps only facts whose verbatim quote is really on the page; the
 shared outline is built from that evidence. Both are reused by the other Площадка and by
 every Перегенерация, so the Статьи of one Тема can't disagree on facts. The draft cites
-evidence with `[E1]` markers; this module turns them into numbered `[1]` references and
-appends «Источники» listing only URLs from the evidence bundle - the model never writes a
-source list, and any other URL it put in the text is dropped (the Проект's link excepted).
+evidence with `[E1]` markers to stay on the facts; this module strips them, and every URL
+the model put in the text is dropped (the Проект's link excepted). Sources stay in the
+Тема's Исследование (and the Версия's prompt) and are not shown in the Статья (#144).
 Without evidence (search unavailable or nothing verifiable found) the draft is told not to
 state concrete facts/numbers; the Статья text itself stays clean (it is exported and
 published as is) - the Job reports `research_status`, the Версия stores it, and the
@@ -42,7 +42,7 @@ import re
 from collections.abc import Sequence
 from typing import Any, Protocol
 
-from ..domain import ArticleId, ArticleView, PlanItemId, ResearchBundle
+from ..domain import ArticleId, ArticleView, PlanItemId
 from ..job_queue import JobHandler
 from ..personas import platform_profile
 from ..settings import Project, SettingsReader
@@ -230,7 +230,7 @@ async def _run_pipeline(
                 style_profile=owner_settings.style_profile,
             ),
         )
-        content = assemble_content(rewrite, research.bundle, project)
+        content = assemble_content(rewrite, project)
     except Exception as exc:
         raise steps.recorder.fail(exc, article_id=article_id) from exc
 
@@ -258,30 +258,21 @@ def _is_money_or_legal(title: str, keywords: Sequence[str]) -> bool:
     return any(word in haystack for word in _SENSITIVE_KEYWORDS)
 
 
-def assemble_content(body: str, bundle: ResearchBundle, project: Project | None) -> str:
-    """The model's text -> the Статья: foreign URLs out, `[E1]` -> `[1]`, the Проект link
-    exactly once, «Источники» from the evidence bundle only. Nothing about missing evidence
-    goes into the text: that is `research_status` metadata, shown on the Article card."""
-    body = _drop_foreign_urls(body, {source.url for source in bundle.sources}, project)
-    body, cited = _number_citations(body, bundle)
-    body = _ensure_project_link(body, project)
-    if bundle.has_evidence:
-        if cited:
-            lines = [
-                f"{number}. {_source_line(bundle, url)}" for number, url in enumerate(cited, 1)
-            ]
-        else:
-            # Written from the evidence but the model dropped every marker: the pages are
-            # still what the text stands on, so list them without numbering.
-            lines = [f"- {_source_line(bundle, source.url)}" for source in bundle.sources]
-        body = f"{body.rstrip()}\n\n{SOURCES_HEADING}\n" + "\n".join(lines)
-    return body
+def assemble_content(body: str, project: Project | None) -> str:
+    """The model's text -> the Статья: every URL but the Проект link out (research pages
+    included), `[E1]` markers out, the Проект link exactly once. Sources stay in the Тема's
+    Исследование and are not shown in the Статья (#144); nothing about missing evidence goes
+    into the text either: that is `research_status` metadata, shown on the Article card."""
+    body = _drop_foreign_urls(body, set(), project)
+    body = _MARKER_RE.sub(_marker_gap, body)
+    return _ensure_project_link(body, project)
 
 
-def _source_line(bundle: ResearchBundle, url: str) -> str:
-    source = bundle.source_for(url)
-    title = source.title.strip() if source is not None else ""
-    return f"{title} — {url}" if title else url
+def _marker_gap(match: re.Match[str]) -> str:
+    """`продажи [E1].` -> `продажи.`, but `продажи[E1]и` -> `продажи и`: a space only where
+    the marker was the only thing between two words."""
+    after = match.string[match.end() : match.end() + 1]
+    return "" if not after or after.isspace() or after in _TRAILING_PUNCT + ")" else " "
 
 
 # Schemes are case-insensitive: `HTTPS://evil.com` is just as foreign (#133).
@@ -331,56 +322,17 @@ def _drop_foreign_urls(body: str, allowed: set[str], project: Project | None) ->
 # reach the published text.
 _E = "[EeЕе]"
 _MARKER_RE = re.compile(rf"[ \t]*[\[(]\s*({_E}\s*\d+(?:\s*[,;–—-]\s*{_E}?\s*\d+)*)\s*[\])]")
-_HEADING_LINE_RE = re.compile(r"^[ \t]*#{1,6}[ \t].*$", re.MULTILINE)
-_RANGE_RE = re.compile(r"(\d+)\s*[–—-]\s*" + _E + r"?\s*(\d+)")
-
-
-def _marker_ids(inner: str) -> list[str]:
-    numbers: list[int] = []
-    for part in re.split(r"\s*[,;]\s*", inner):
-        span = _RANGE_RE.search(part)
-        if span is not None:
-            first, last = int(span.group(1)), int(span.group(2))
-            if first <= last <= first + 20:
-                numbers.extend(range(first, last + 1))
-                continue
-        numbers.extend(int(n) for n in re.findall(r"\d+", part))
-    return [f"E{n}" for n in numbers]
-
-
-def _number_citations(body: str, bundle: ResearchBundle) -> tuple[str, list[str]]:
-    """`[E1]`/`[E1, E3]` -> `[1]`/`[1, 2]`, numbered per source URL by first appearance;
-    markers for unknown ids, and every marker in a heading, are dropped. Returns the body
-    and the cited URLs in order."""
-    url_by_id = {item.id: item.url for item in bundle.evidence}
-    cited: list[str] = []
-
-    def replace(match: re.Match[str]) -> str:
-        numbers: list[int] = []
-        for evidence_id in _marker_ids(match.group(1)):
-            url = url_by_id.get(evidence_id)
-            if url is None:
-                continue
-            if url not in cited:
-                cited.append(url)
-            number = cited.index(url) + 1
-            if number not in numbers:
-                numbers.append(number)
-        if not numbers:
-            return ""
-        return " [" + ", ".join(str(n) for n in numbers) + "]"
-
-    body = _HEADING_LINE_RE.sub(lambda line: _MARKER_RE.sub("", line.group(0)), body)
-    return _MARKER_RE.sub(replace, body), cited
 
 
 def strip_generated_parts(content: str) -> str:
-    """The previous Версия as the model should see it on Перегенерация: without the
-    «Источники» appendix and the numbered references - both of which the code adds itself
-    and which would only confuse the `[E1]` markers."""
+    """The previous Версия as the model should see it on Перегенерация. Versions made
+    before #144 end with a «Источники» appendix and carry numbered `[1]` references - both
+    would only confuse the `[E1]` markers, so they go. Without the appendix the text is
+    already clean, and a `[2024]` in it is the author's, not a reference."""
     heading = f"\n\n{SOURCES_HEADING}\n"
-    if heading in content:
-        content = content[: content.rindex(heading)]
+    if heading not in content:
+        return content
+    content = content[: content.rindex(heading)]
     return re.sub(r"[ \t]*\[\d+(?:,\s*\d+)*\]", "", content)
 
 
