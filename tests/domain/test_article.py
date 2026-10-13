@@ -370,6 +370,20 @@ async def test_telegraph_path_raises_for_unknown_article(article: Article) -> No
         await article.get_telegraph_path(WS_A, "missing")
     with pytest.raises(ArticleNotFound):
         await article.set_telegraph_path(WS_A, "missing", "p")
+    with pytest.raises(ArticleNotFound):
+        await article.clear_telegraph_path(WS_A, "missing")
+
+
+async def test_clear_telegraph_path_forgets_an_outdated_page(article: Article, plan: Plan) -> None:
+    """#143: a page that couldn't be updated to the new Версия is forgotten, so «📖» doesn't
+    open the old text and the next open publishes afresh."""
+    plan_id, item_id = await _create_plan_item(plan)
+    article_id = await article.create(WS_A, plan_id, item_id, "Topic A", "zen")
+    await article.set_telegraph_path(WS_A, article_id, "Topic-A-10-07")
+
+    await article.clear_telegraph_path(WS_A, article_id)
+
+    assert await article.get_telegraph_path(WS_A, article_id) is None
 
 
 async def test_list_versions_is_empty_for_an_article_with_no_version_yet(

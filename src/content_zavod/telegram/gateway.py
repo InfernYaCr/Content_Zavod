@@ -13,7 +13,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 
-from .article_card import render_article_card_text
+from ..workspaces import WorkspaceId
 from .callback_codec import (
     Action,
     ExportArticle,
@@ -28,20 +28,29 @@ from .comment_gated_regeneration import COMMENT_MAX_LENGTH
 from .pending_inputs import PendingInput
 from .plan_hub import render_hub_screen
 from .texts import (
+    ARTICLE_COMMENT_QUESTION,
+    ARTICLE_COMMENT_SKIP_BUTTON,
+    ARTICLE_REWRITING,
+    COMMENT_CANCEL_BUTTON,
+    COMMENT_GENERATING,
+    COMMENT_SKIP_BUTTON,
     COMMENT_TOO_LONG_TEXT,
     COVER_CAPTION,
     HUB_BUTTON_COVER,
     READ_BUTTON,
     REFINE_BUTTON,
     TO_MENU_BUTTON,
+    TOPIC_COMMENT_QUESTION,
     article_status,
     format_week_range,
     plan_status,
+    platform_genitive,
     platform_name,
     topic_status,
 )
 from .types import (
     ArticleFormat,
+    ArticleId,
     ArticleSummary,
     ArticleVersionSummary,
     ArticleVersionView,
@@ -370,17 +379,19 @@ def build_history_version_keyboard(article_id: str, *, back_page: int) -> Inline
     )
 
 
-def build_skip_keyboard(id_: str, action: Action = "regenerate") -> InlineKeyboardMarkup:
+def build_skip_keyboard(
+    id_: str, action: Action = "regenerate", *, skip_label: str = COMMENT_SKIP_BUTTON
+) -> InlineKeyboardMarkup:
     """Пропустить re-sends `action` (regenerate without a comment); Отмена drops the wait (#88)."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Пропустить",
+                    text=skip_label,
                     callback_data=encode_callback_data(SimpleAction(action, id_)),
                 ),
                 InlineKeyboardButton(
-                    text="Отмена",
+                    text=COMMENT_CANCEL_BUTTON,
                     callback_data=encode_callback_data(SimpleAction("cancel_comment", id_)),
                 ),
             ]
@@ -688,21 +699,12 @@ class TelegramGateway:
     async def edit_notice(self, chat_id: int, message_id: int, text: str) -> None:
         await self._bot.edit_message_text(chat_id, message_id, text)
 
-    async def send_article_ready(
-        self, chat_id: int, article: ArticleView, *, read_url: str | None = None
-    ) -> None:
-        keyboard = build_article_keyboard(
-            article.id, article.plan_item_id, read_url=read_url, covers=self._covers
-        )
-        await self._bot.send_message(
-            chat_id, render_article_card_text(article), reply_markup=keyboard
-        )
-
     async def mark_article_card_exported(
         self, chat_id: int, message_id: int, article: ArticleView, *, read_url: str | None = None
     ) -> None:
         """Redraws an Article card's buttons in place after ✅, text untouched (#86);
-        `read_url` keeps «📖 Читать» on the redrawn card (#92)."""
+        `read_url` keeps «📖 Читать» on the redrawn card (#92). Only cards sent before #143
+        are left in the chat - a Статья is now a screen of the Хаб."""
         keyboard = build_article_keyboard(
             article.id, article.plan_item_id, read_url=read_url, exported=True, covers=self._covers
         )
@@ -761,23 +763,30 @@ class TelegramCommentPrompt:
     "⏳ Генерирую..." (#80); on Отмена or a superseded wait it is deleted.
     """
 
+    skip_label = COMMENT_SKIP_BUTTON
+    generating_text = COMMENT_GENERATING
+
     def __init__(self, bot: BotClient, *, action: Action = "regenerate") -> None:
         self._bot = bot
         self._action = action
 
-    async def prompt_for_comment(self, chat_id: int, id_: str) -> int:
+    async def question(self, workspace_id: WorkspaceId, id_: str) -> str:
+        return TOPIC_COMMENT_QUESTION
+
+    async def prompt_for_comment(self, workspace_id: WorkspaceId, chat_id: int, id_: str) -> int:
         return await self._bot.send_message(
             chat_id,
-            "Комментарий к перегенерации? Напишите его следующим сообщением "
-            "или нажмите «Пропустить».",
-            reply_markup=build_skip_keyboard(id_, self._action),
+            await self.question(workspace_id, id_),
+            reply_markup=build_skip_keyboard(id_, self._action, skip_label=self.skip_label),
         )
 
     async def mark_generating(self, chat_id: int, pending: PendingInput) -> None:
         # Cosmetic: the regeneration is already enqueued, so a prompt the user deleted
         # meanwhile must not fail the update.
         try:
-            await self._bot.edit_message_text(chat_id, pending.prompt_message_id, "⏳ Генерирую...")
+            await self._bot.edit_message_text(
+                chat_id, pending.prompt_message_id, self.generating_text
+            )
         except Exception:
             logger.warning("could not mark comment prompt as generating", exc_info=True)
 
@@ -796,3 +805,26 @@ class TelegramCommentPrompt:
         await self._bot.send_message(
             chat_id, COMMENT_TOO_LONG_TEXT.format(limit=COMMENT_MAX_LENGTH)
         )
+
+
+class ArticleSummaries(Protocol):
+    async def get_summary(
+        self, workspace_id: WorkspaceId, article_id: ArticleId
+    ) -> ArticleSummary: ...
+
+
+class ArticleCommentPrompt(TelegramCommentPrompt):
+    """«✏️ Попросить доработать» (#143): asks what to fix in the Статья for that Площадка; the
+    answer turns into «⏳ Переписываю…», and the result comes back as the Хаб moved to the
+    bottom of the chat, open on this Статья."""
+
+    skip_label = ARTICLE_COMMENT_SKIP_BUTTON
+    generating_text = ARTICLE_REWRITING
+
+    def __init__(self, bot: BotClient, articles: ArticleSummaries) -> None:
+        super().__init__(bot, action="regenerate_article")
+        self._articles = articles
+
+    async def question(self, workspace_id: WorkspaceId, id_: str) -> str:
+        summary = await self._articles.get_summary(workspace_id, ArticleId(id_))
+        return ARTICLE_COMMENT_QUESTION.format(platform=platform_genitive(summary.platform))

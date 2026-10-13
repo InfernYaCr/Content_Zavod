@@ -28,6 +28,8 @@ from content_zavod.telegram import (
 from content_zavod.telegram.gateway import (
     ITEMS_PER_PAGE,
     MESSAGE_LIMIT,
+    ArticleCommentPrompt,
+    build_article_keyboard,
     build_history_articles_keyboard,
     build_history_version_keyboard,
     build_history_versions_keyboard,
@@ -42,6 +44,7 @@ from content_zavod.telegram.gateway import (
     render_plan_text,
 )
 from content_zavod.telegram.pending_inputs import PendingInput
+from tests.tenancy import WS_A
 
 
 class FakeBot:
@@ -398,31 +401,12 @@ def make_article() -> ArticleView:
     )
 
 
-@pytest.mark.asyncio
-async def test_send_article_ready_sends_a_preview_card_not_a_document() -> None:
-    bot = FakeBot()
-    gateway = TelegramGateway(bot)
-
-    await gateway.send_article_ready(chat_id=42, article=make_article())
-
-    assert bot.sent_documents == []
-    assert len(bot.sent_messages) == 1
-    chat_id, text, _ = bot.sent_messages[0]
-    assert chat_id == 42
-    assert text == "📄 Best Niche Guide\nПлощадка: Дзен\n\nHello, world."
-    assert "Выберите формат" not in text
-
-
-@pytest.mark.asyncio
-async def test_send_article_ready_with_read_url_puts_read_button_first() -> None:
-    bot = FakeBot()
-    gateway = TelegramGateway(bot)
-
-    await gateway.send_article_ready(
-        chat_id=42, article=make_article(), read_url="https://telegra.ph/Best-10-07"
+def test_old_article_card_keyboard_with_read_url_puts_read_button_first() -> None:
+    """A Статья card sent before #143: its ✅ still redraws this keyboard."""
+    keyboard = build_article_keyboard(
+        "article-1", "item-1", read_url="https://telegra.ph/Best-10-07"
     )
 
-    _, _, keyboard = bot.sent_messages[0]
     (read_button, refine_button) = keyboard.inline_keyboard[0]
     assert read_button.text == "📖 Читать"
     assert read_button.url == "https://telegra.ph/Best-10-07"
@@ -445,29 +429,12 @@ async def test_send_article_ready_with_read_url_puts_read_button_first() -> None
     )
 
 
-@pytest.mark.asyncio
-async def test_send_article_ready_with_covers_off_has_no_cover_button() -> None:
+def test_old_article_card_keyboard_with_covers_off_has_no_cover_button() -> None:
     """#123: `YANDEX_COVERS=off`."""
-    bot = FakeBot()
-    gateway = TelegramGateway(bot, covers=False)
+    keyboard = build_article_keyboard("article-1", "item-1", exported=True, covers=False)
 
-    await gateway.send_article_ready(chat_id=42, article=make_article())
-
-    _, _, keyboard = bot.sent_messages[0]
-    assert [button.text for button in keyboard.inline_keyboard[-1]] == ["✅"]
-
-
-@pytest.mark.asyncio
-async def test_send_article_ready_without_read_url_has_no_read_button() -> None:
-    bot = FakeBot()
-    gateway = TelegramGateway(bot)
-
-    await gateway.send_article_ready(chat_id=42, article=make_article())
-
-    _, _, keyboard = bot.sent_messages[0]
-    buttons = [button for row in keyboard.inline_keyboard for button in row]
-    assert all(button.url is None for button in buttons)
-    assert [button.text for button in keyboard.inline_keyboard[0]] == ["✏️ Доработать"]
+    assert [button.text for button in keyboard.inline_keyboard[-1]] == ["✅ Готово"]
+    assert all(button.url is None for row in keyboard.inline_keyboard for button in row)
 
 
 @pytest.mark.asyncio
@@ -739,7 +706,7 @@ async def test_comment_prompt_sends_message_with_skip_button_encoding_regenerate
     bot = FakeBot()
     prompt = TelegramCommentPrompt(bot)
 
-    message_id = await prompt.prompt_for_comment(chat_id=CHAT_ID, id_="item-1")
+    message_id = await prompt.prompt_for_comment(WS_A, chat_id=CHAT_ID, id_="item-1")
 
     assert message_id == 1
     assert len(bot.sent_messages) == 1
@@ -758,12 +725,38 @@ async def test_comment_prompt_with_article_action_encodes_regenerate_article_on_
     bot = FakeBot()
     prompt = TelegramCommentPrompt(bot, action="regenerate_article")
 
-    await prompt.prompt_for_comment(chat_id=CHAT_ID, id_="article-1")
+    await prompt.prompt_for_comment(WS_A, chat_id=CHAT_ID, id_="article-1")
 
     skip_button, _ = bot.sent_messages[0][2].inline_keyboard[0]
     assert decode_callback_data(skip_button.callback_data) == SimpleAction(
         "regenerate_article", "article-1"
     )
+
+
+class FakeArticles:
+    async def get_summary(self, workspace_id, article_id):
+        assert workspace_id == WS_A
+        return ArticleSummary(id=article_id, title="T", platform="zen", status="ready")
+
+
+@pytest.mark.asyncio
+async def test_article_comment_prompt_asks_what_to_fix_for_that_platform() -> None:
+    """#143: «✏️ Попросить доработать» names the Площадка; its skip rewrites without wishes."""
+    bot = FakeBot()
+    prompt = ArticleCommentPrompt(bot, FakeArticles())
+
+    await prompt.prompt_for_comment(WS_A, chat_id=CHAT_ID, id_="article-1")
+    await prompt.mark_generating(CHAT_ID, PendingInput("article_comment", "article-1", 1))
+
+    _, text, keyboard = bot.sent_messages[0]
+    assert text.startswith("✏️ Что поправить в Статье для Дзена?")
+    skip_button, cancel_button = keyboard.inline_keyboard[0]
+    assert skip_button.text == "🔄 Переписать без пожеланий"
+    assert decode_callback_data(skip_button.callback_data) == SimpleAction(
+        "regenerate_article", "article-1"
+    )
+    assert cancel_button.text == "Отмена"
+    assert bot.edited_messages == [(CHAT_ID, 1, "⏳ Переписываю… пришлю, как будет готова", None)]
 
 
 @pytest.mark.asyncio

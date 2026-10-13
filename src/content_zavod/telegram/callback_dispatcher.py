@@ -34,7 +34,7 @@ from ..domain import PLATFORMS, Article, DomainError, HubTopic, Plan
 from ..job_queue import JobId, JobQueue, JobQueueError
 from ..telegraph import page_url
 from ..workspaces import LimitRefused, Limits, TrialLimitExhausted, Workspace, WorkspaceId
-from .article_card import ArticlePagePublisher, send_article_card
+from .article_card import ArticlePagePublisher
 from .callback_codec import (
     CallbackPayload,
     ExportArticle,
@@ -64,6 +64,8 @@ from .style_samples import STYLE_SAMPLES_KIND, StyleSamples
 from .texts import (
     COVER_REQUESTED,
     COVERS_OFF,
+    FILE_COMING,
+    HUB_ALERT_APPROVED,
     HUB_ALERT_NO_COVER,
     HUB_ALERT_NOTHING_TO_RETRY,
     HUB_ALERT_RETRYING,
@@ -421,6 +423,7 @@ class CallbackDispatcher:
                 # The flow edits its own prompt message, never this card's (#80).
                 await self._article_regeneration.request(ws, chat_id, user_id, ArticleId(id_))
             case SimpleAction(action="approve", id_=id_):
+                # ✅ on a Статья card sent before #143 (now «✅ Готово, публикую» on the Хаб).
                 # Accepting a ready Статья: no comment-wait, just the transition to "exported".
                 # Transition first, so a refusal is the callback's only (alerting) answer; then
                 # confirm it and redraw the card's ✅ as «✅ Готово» (#86).
@@ -446,7 +449,7 @@ class CallbackDispatcher:
                 await answer(COVER_REQUESTED)
             case ExportArticle(article_id=article_id, article_format=article_format):
                 view = await self._article.get(ws, ArticleId(article_id))
-                await answer()
+                await answer(FILE_COMING)
                 await self._gateway.send_article_document(chat_id, view, article_format)
             case SimpleAction(action="regenerate", id_=id_):
                 plan_item_id = PlanItemId(id_)
@@ -505,15 +508,25 @@ class CallbackDispatcher:
                 await self._gateway.send_cover(chat_id, cover.image, cover.mime_type, cover.title)
             case SimpleAction(action="hub_article", id_=id_):
                 view = await self._article.get(ws, ArticleId(id_))
+                plan_id = await self._article.get_plan_id(ws, view.id)
                 await answer()
-                # The usual Статья card, as its own message: its ✏️/✅/.docx/.md keep working
-                # exactly as before, and the Хаб stays put above it. The page was published
-                # when the Статья became ready; only a missing one is published now (#92).
-                path = await self._article.get_telegraph_path(ws, ArticleId(id_))
-                if path is not None:
-                    await self._gateway.send_article_ready(chat_id, view, read_url=page_url(path))
-                else:
-                    await send_article_card(self._gateway, ws, chat_id, view, self._publisher)
+                # The Статья screen, in place of the Тема's (#143). Its page was published when
+                # the Статья became ready; only a missing one is published now (#92), before the
+                # redraw, so «📖 Читать полностью» is already there.
+                await self._plan.set_hub_view(ws, plan_id, view.plan_item_id, view.id)
+                if (
+                    self._publisher is not None
+                    and await self._article.get_telegraph_path(ws, view.id) is None
+                ):
+                    await self._publisher.publish(ws, view)
+                await self._redraw_hub(ws, chat_id, message_id, plan_id)
+            case SimpleAction(action="hub_approve", id_=id_):
+                # «✅ Готово, публикую» (#143): the transition first, so a refusal (not ready, not
+                # this Пространство's) is the only answer; a repeated press changes nothing.
+                await self._article.mark_exported(ws, ArticleId(id_))
+                await answer(HUB_ALERT_APPROVED)
+                plan_id = await self._article.get_plan_id(ws, ArticleId(id_))
+                await self._redraw_hub(ws, chat_id, message_id, plan_id)
             case SimpleAction(action="hub_retry", id_=id_):
                 hub = await self._plan.get_hub(ws, PlanId(id_))
                 await self._retry_failed(ws, hub.topics, answer)

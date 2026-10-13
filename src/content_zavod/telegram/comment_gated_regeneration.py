@@ -14,7 +14,7 @@ type RegenerateOp[Id] = Callable[[WorkspaceId, Id, str | None], Awaitable[None]]
 
 
 class CommentPrompt[Id](Protocol):
-    async def prompt_for_comment(self, chat_id: int, id_: Id) -> int:
+    async def prompt_for_comment(self, workspace_id: WorkspaceId, chat_id: int, id_: Id) -> int:
         """Sends the request; returns its message id."""
         ...
 
@@ -96,7 +96,7 @@ class CommentGatedRegeneration[Id: str]:
         if pending is not None:
             await self._run(workspace_id, chat_id, pending, id_, None)
             return
-        prompt_message_id = await self._prompt.prompt_for_comment(chat_id, id_)
+        prompt_message_id = await self._prompt.prompt_for_comment(workspace_id, chat_id, id_)
         replaced = await self._pending.put(
             workspace_id, chat_id, user_id, PendingInput(self._kind, id_, prompt_message_id)
         )

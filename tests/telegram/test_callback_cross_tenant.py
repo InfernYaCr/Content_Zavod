@@ -19,6 +19,7 @@ from content_zavod.owner_settings import BotStateStore, WorkspaceSettingsStore
 from content_zavod.scheduling import ScheduleSettings
 from content_zavod.settings import OnboardingState, SettingsService
 from content_zavod.telegram import (
+    ArticleCommentPrompt,
     ArticleId,
     CommentGatedRegeneration,
     ExportArticle,
@@ -156,7 +157,7 @@ def _dispatcher(pool: asyncpg.Pool, queue: JobQueue, bot: RecordingBot) -> Callb
         PlanReview(plan, TelegramCommentPrompt(bot), pending),
         CommentGatedRegeneration[ArticleId](
             article.request_regeneration,
-            TelegramCommentPrompt(bot, action="regenerate_article"),
+            ArticleCommentPrompt(bot, article),
             pending,
             kind="article_comment",
         ),
@@ -194,6 +195,7 @@ def _payloads_with_bs_ids(b: Content) -> list[CallbackPayload]:
         SimpleAction("hub_back", plan),
         SimpleAction("hub_cover", item),
         SimpleAction("hub_article", article),
+        SimpleAction("hub_approve", article),
         SimpleAction("hub_retry", plan),
         SimpleAction("hub_retry_topic", item),
         SimpleAction("style_ok", str(b.style_job_id)),
@@ -305,6 +307,9 @@ async def test_the_same_presses_by_b_work(pool: asyncpg.Pool, queue: JobQueue) -
         SimpleAction("regenerate", theirs.item_id),
         SimpleAction("retry", str(theirs.failed_job_id)),
         SimpleAction("style_ok", str(theirs.style_job_id)),
+        SimpleAction("hub_article", theirs.article_id),
+        SimpleAction("hub_approve", theirs.article_id),
+        SimpleAction("regenerate_article", theirs.article_id),
     ):
         answer = _Answerer()
         await _dispatcher(pool, queue, RecordingBot()).dispatch(
@@ -312,6 +317,7 @@ async def test_the_same_presses_by_b_work(pool: asyncpg.Pool, queue: JobQueue) -
         )
         assert (STALE_BUTTON, True) not in answer.calls, payload
     assert await queue.get_status(WS_B, JobId(theirs.failed_job_id)) == "queued"
+    assert (await article.get_summary(WS_B, theirs.article_id)).status == "exported"
     style = (await SettingsService(WorkspaceSettingsStore(pool)).read(WS_B)).style_profile
     assert style is not None and style.summary == "Вы пишете коротко."
 

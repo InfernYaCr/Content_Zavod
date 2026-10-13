@@ -19,6 +19,7 @@ from .callback_dispatcher import (
 from .commands import ADMIN_COMMANDS, MENU_COMMANDS, sync_admin_commands
 from .comment_gated_regeneration import CommentGatedRegeneration, CommentPrompt
 from .gateway import (
+    ArticleCommentPrompt,
     BotClient,
     MessageGone,
     TelegramCommentPrompt,
@@ -70,6 +71,7 @@ __all__ = [
     "MENU_COMMANDS",
     "SETTING_FIELDS",
     "Action",
+    "ArticleCommentPrompt",
     "ArticleFormat",
     "ArticleId",
     "ArticleSummary",

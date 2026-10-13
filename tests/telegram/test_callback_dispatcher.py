@@ -112,7 +112,7 @@ class FakePlan:
         self.cover_requests: list[PlanItemId] = []
         self.manual_cover_requests: list[PlanItemId] = []
         self.replacement_requests: list[PlanId] = []
-        self.hub_views: list[tuple[PlanId, PlanItemId | None]] = []
+        self.hub_views: list[tuple[PlanId, PlanItemId | None, ArticleId | None]] = []
         self.cover: PlanItemCoverView | None = None
         self.hub = PlanHubView(
             id=PlanId("plan-1"),
@@ -190,13 +190,17 @@ class FakePlan:
         (self.manual_cover_requests if manual else self.cover_requests).append(plan_item_id)
 
     async def get_hub(self, workspace_id, plan_id: PlanId) -> PlanHubView:
-        open_item = self.hub_views[-1][1] if self.hub_views else None
-        return replace(self.hub, open_item_id=open_item)
+        _, open_item, open_article = self.hub_views[-1] if self.hub_views else (None, None, None)
+        return replace(self.hub, open_item_id=open_item, open_article_id=open_article)
 
     async def set_hub_view(
-        self, workspace_id, plan_id: PlanId, plan_item_id: PlanItemId | None
+        self,
+        workspace_id,
+        plan_id: PlanId,
+        plan_item_id: PlanItemId | None,
+        article_id: ArticleId | None = None,
     ) -> None:
-        self.hub_views.append((plan_id, plan_item_id))
+        self.hub_views.append((plan_id, plan_item_id, article_id))
 
     async def get_cover(self, workspace_id, plan_item_id: PlanItemId) -> PlanItemCoverView | None:
         return self.cover
@@ -294,7 +298,7 @@ class FakePrompt:
         self.generating: list[tuple[int, int]] = []
         self.withdrawn: list[tuple[int, int]] = []
 
-    async def prompt_for_comment(self, chat_id: int, id_: object) -> int:
+    async def prompt_for_comment(self, workspace_id, chat_id: int, id_: object) -> int:
         self.prompted.append((chat_id, id_))
         return 100
 
@@ -671,7 +675,7 @@ async def test_request_cover_with_covers_off_says_so_and_requests_nothing(f: Fix
 async def test_export_article_sends_the_document(f: Fixtures) -> None:
     answer = await dispatch(f, ExportArticle("article-1", "md"))
 
-    assert answer.calls == [(None, None)]
+    assert answer.calls == [("Файл пришлю ниже ⬇️", None)]
     assert len(f.bot.sent_documents) == 1
 
 
@@ -762,7 +766,7 @@ async def test_hub_topic_opens_the_result_card_in_the_same_message(f: Fixtures) 
     answer = await dispatch(f, SimpleAction("hub_topic", "item-1"))
 
     assert answer.calls == [(None, None)]
-    assert f.plan.hub_views == [(PlanId("plan-1"), PlanItemId("item-1"))]
+    assert f.plan.hub_views == [(PlanId("plan-1"), PlanItemId("item-1"), None)]
     chat_id, message_id, text, keyboard = f.bot.edited_messages[-1]
     assert (chat_id, message_id) == (1, 2)
     assert text.startswith("📂 Тема 1 из 1")
@@ -776,7 +780,7 @@ async def test_hub_back_returns_to_the_checklist(f: Fixtures) -> None:
 
     await dispatch(f, SimpleAction("hub_back", "plan-1"))
 
-    assert f.plan.hub_views[-1] == (PlanId("plan-1"), None)
+    assert f.plan.hub_views[-1] == (PlanId("plan-1"), None, None)
     assert f.bot.edited_messages[-1][2].startswith("📋 План")
 
 
@@ -821,31 +825,125 @@ async def test_hub_cover_with_covers_off_says_covers_are_off(f: Fixtures) -> Non
     assert answer.calls == [("Обложки сейчас выключены.", None)]
 
 
-async def test_hub_article_sends_the_usual_article_card_below(f: Fixtures) -> None:
+async def test_hub_article_opens_the_article_screen_in_the_same_message(f: Fixtures) -> None:
+    """#143: no card below - the Хаб message itself becomes the Статья screen."""
     f.article.telegraph_path = "Statya-10-07"
+
+    answer = await dispatch(f, SimpleAction("hub_article", "article-1"))
+
+    assert answer.calls == [(None, None)]
+    assert f.plan.hub_views == [(PlanId("plan-1"), PlanItemId("item-1"), ArticleId("article-1"))]
+    assert f.bot.sent_messages == []
+    chat_id, message_id, text, keyboard = f.bot.edited_messages[-1]
+    assert (chat_id, message_id) == (1, 2)
+    assert text.startswith("📄 Статья для Дзена\n«Тема»")
+    actions = [
+        decode_callback_data(b.callback_data)
+        for r in keyboard.inline_keyboard
+        for b in r
+        if b.callback_data
+    ]
+    assert SimpleAction("hub_approve", "article-1") in actions
+    assert actions[-2:] == [SimpleAction("hub_topic", "item-1"), SimpleAction("hub_back", "plan-1")]
+
+
+async def test_hub_article_publishes_a_missing_reading_page_before_the_redraw(
+    f: Fixtures,
+) -> None:
+    class Publisher:
+        def __init__(self) -> None:
+            self.published: list[str] = []
+
+        async def publish(self, workspace_id, article):
+            assert workspace_id == WS_A
+            assert f.bot.edited_messages == []  # the screen is drawn after, with «📖»
+            self.published.append(article.id)
+            return "https://telegra.ph/new"
+
+    publisher = Publisher()
+    f.dispatcher._publisher = publisher
 
     await dispatch(f, SimpleAction("hub_article", "article-1"))
 
-    ((chat_id, text, keyboard),) = f.bot.sent_messages
-    assert chat_id == USER and "Статья" in text
-    urls = [b.url for r in keyboard.inline_keyboard for b in r if b.url]
-    assert urls == ["https://telegra.ph/Statya-10-07"]
+    assert publisher.published == ["article-1"]
+    assert len(f.bot.edited_messages) == 1
 
 
-async def test_hub_article_publishes_a_missing_reading_page_first(f: Fixtures) -> None:
+async def test_hub_article_whose_page_fails_to_publish_does_not_point_at_it(
+    f: Fixtures,
+) -> None:
     class Publisher:
         async def publish(self, workspace_id, article):
-            assert workspace_id == WS_A
-            return "https://telegra.ph/new"
+            return None  # Telegraph is down
 
     f.dispatcher._publisher = Publisher()
 
     await dispatch(f, SimpleAction("hub_article", "article-1"))
 
-    ((_chat_id, _text, keyboard),) = f.bot.sent_messages
-    assert [b.url for r in keyboard.inline_keyboard for b in r if b.url] == [
-        "https://telegra.ph/new"
-    ]
+    _, _, text, keyboard = f.bot.edited_messages[-1]
+    assert "Читать полностью" not in text
+    assert all(b.url is None for r in keyboard.inline_keyboard for b in r)
+
+
+async def test_hub_article_with_a_published_page_does_not_publish_again(f: Fixtures) -> None:
+    class Publisher:
+        async def publish(self, workspace_id, article):
+            raise AssertionError("already published")
+
+    f.article.telegraph_path = "Statya-10-07"
+    f.dispatcher._publisher = Publisher()
+
+    await dispatch(f, SimpleAction("hub_article", "article-1"))
+
+
+async def test_hub_topic_from_the_article_screen_closes_the_article(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("hub_article", "article-1"))
+
+    await dispatch(f, SimpleAction("hub_topic", "item-1"))
+
+    assert f.plan.hub_views[-1] == (PlanId("plan-1"), PlanItemId("item-1"), None)
+    assert f.bot.edited_messages[-1][2].startswith("📂 Тема 1 из 1")
+
+
+async def test_hub_approve_marks_the_article_exported_and_redraws_in_place(f: Fixtures) -> None:
+    await dispatch(f, SimpleAction("hub_article", "article-1"))
+    f.plan.hub = replace(
+        f.plan.hub,
+        topics=[
+            replace(
+                f.plan.hub.topics[0],
+                articles=[
+                    replace(f.plan.hub.topics[0].articles[0], exported=True),
+                    f.plan.hub.topics[0].articles[1],
+                ],
+            )
+        ],
+    )
+
+    answer = await dispatch(f, SimpleAction("hub_approve", "article-1"))
+
+    assert answer.calls == [("Отмечено: готово к публикации", None)]
+    assert f.article.mark_exported_calls == [ArticleId("article-1")]
+    _, message_id, text, keyboard = f.bot.edited_messages[-1]
+    assert message_id == 2
+    assert "👍 Отмечена готовой" in text
+    labels = [b.text for r in keyboard.inline_keyboard for b in r]
+    assert "👍 Отмечено готовой" in labels and "✅ Готово, публикую" not in labels
+    assert f.bot.sent_messages == []
+
+
+async def test_hub_approve_refusal_is_the_only_answer(f: Fixtures) -> None:
+    from content_zavod.domain import ArticleNotReady
+
+    async def not_ready(workspace_id, article_id: ArticleId) -> None:
+        raise ArticleNotReady(article_id)
+
+    f.article.mark_exported = not_ready  # type: ignore[method-assign]
+
+    answer = await dispatch(f, SimpleAction("hub_approve", "article-1"))
+
+    assert answer.calls == [("Статья ещё не готова.", True)]
+    assert f.bot.edited_messages == []
 
 
 async def test_hub_retry_reruns_every_failed_cell_and_redraws(f: Fixtures) -> None:

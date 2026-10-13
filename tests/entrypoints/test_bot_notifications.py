@@ -23,6 +23,7 @@ from content_zavod.domain import (
     PlanId,
     PlanItemId,
     PlanMessageRef,
+    PlanSummary,
     PlanView,
     TopicDraft,
 )
@@ -70,6 +71,7 @@ class FakePlan:
         self.manual_cover_jobs: set[int] = set()
         self.cover_failures_marked: list[int] = []
         self.mark_cover_generation_failed_returns: PlanItemId | None = PlanItemId("item-1")
+        self.hub_views: list[tuple[PlanId, PlanItemId | None, str | None]] = []
 
     async def add_topics(
         self, workspace_id, week_label: str, topics: list[TopicDraft], *, source_job_id=None
@@ -117,6 +119,20 @@ class FakePlan:
     async def get_hub(self, workspace_id, plan_id: PlanId) -> PlanHubView:
         return PlanHubView(id=plan_id, week_label="2026-W41", status=self.plan_status, topics=[])
 
+    async def get_summary(self, workspace_id, plan_id: PlanId) -> PlanSummary:
+        return PlanSummary(id=plan_id, week_label="2026-W41", status=self.plan_status)
+
+    async def set_hub_view(self, workspace_id, plan_id, plan_item_id, article_id=None) -> None:
+        self.hub_views.append((plan_id, plan_item_id, article_id))
+
+    async def replace_message_ref(
+        self, workspace_id, plan_id: PlanId, old: PlanMessageRef, chat_id: int, message_id: int
+    ) -> bool:
+        if self.message_refs.get(plan_id) != old:
+            return False
+        self.message_refs[plan_id] = PlanMessageRef(chat_id=chat_id, message_id=message_id)
+        return True
+
 
 class FakeArticle:
     def __init__(self) -> None:
@@ -125,6 +141,7 @@ class FakeArticle:
         self.application = "applied"
         self.plan_id_for_article = PlanId("plan-1")
         self.articles_for_plan: list[ArticleView] = []
+        self.cleared_pages: list[str] = []
 
     async def record_version(self, workspace_id, article_id: str, version: GeneratedVersion) -> str:
         self.recorded_versions.append((article_id, version))
@@ -145,6 +162,9 @@ class FakeArticle:
     async def get_plan_id(self, workspace_id, article_id: str) -> PlanId:
         return self.plan_id_for_article
 
+    async def clear_telegraph_path(self, workspace_id, article_id: str) -> None:
+        self.cleared_pages.append(article_id)
+
     async def list_for_plan(self, workspace_id, plan_id: PlanId) -> list[ArticleView]:
         return self.articles_for_plan
 
@@ -153,8 +173,7 @@ class FakeGateway:
     def __init__(self) -> None:
         self.sent_plans: list[tuple[int, PlanView]] = []
         self.edited_plans: list[tuple[int, int, PlanView]] = []
-        self.sent_articles: list[tuple[int, ArticleView]] = []
-        self.article_read_urls: list[str | None] = []
+        self.deleted: list[tuple[int, int]] = []
         self.sent_errors: list[tuple[int, str]] = []
         self.sent_errors_with_retry: list[tuple[int, str, int]] = []
         self.sent_notices: list[tuple[int, str]] = []
@@ -179,11 +198,8 @@ class FakeGateway:
     async def edit_plan(self, chat_id: int, message_id: int, plan: PlanView) -> None:
         self.edited_plans.append((chat_id, message_id, plan))
 
-    async def send_article_ready(
-        self, chat_id: int, article: ArticleView, *, read_url: str | None = None
-    ) -> None:
-        self.sent_articles.append((chat_id, article))
-        self.article_read_urls.append(read_url)
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        self.deleted.append((chat_id, message_id))
 
     async def send_error(self, chat_id: int, text: str) -> None:
         self.sent_errors.append((chat_id, text))
@@ -449,7 +465,7 @@ async def test_stale_article_result_is_not_sent() -> None:
         )
     )
 
-    assert gateway.sent_articles == []
+    assert gateway.hub_redraws == []
 
 
 async def test_stale_failed_generate_cover_job_is_ignored() -> None:
@@ -479,7 +495,7 @@ async def test_unknown_job_type_is_ignored() -> None:
 
     assert gateway.sent_errors == []
     assert gateway.sent_plans == []
-    assert gateway.sent_articles == []
+    assert gateway.hub_redraws == []
 
 
 class FakePublisher:
@@ -513,8 +529,11 @@ def _article_result(job_type: str = "regenerate_article") -> JobResult:
     )
 
 
-async def test_ready_article_card_carries_the_published_read_url() -> None:
+async def test_rewritten_article_republishes_its_page_and_moves_the_hub_down_open_on_it() -> None:
+    """#143: «✏️ Попросить доработать» is answered by the Хаб itself - sent anew at the bottom
+    of the chat, open on this Статья, the old copy deleted. No card of its own."""
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=42, message_id=5)
     publisher = FakePublisher({"article-1": "https://telegra.ph/T-10-07"})
     handle = _make_notification_handler(
         plan, article, gateway, FakeWorkspaces(), publisher=publisher
@@ -523,11 +542,16 @@ async def test_ready_article_card_carries_the_published_read_url() -> None:
     await handle(_article_result())
 
     assert publisher.published == ["article-1"]
-    assert [a.id for _, a in gateway.sent_articles] == ["article-1"]
-    assert gateway.article_read_urls == ["https://telegra.ph/T-10-07"]
+    assert plan.hub_views == [("plan-1", "item-1", "article-1")]
+    assert gateway.hub_redraws == [(42, None, "plan-1")]
+    assert plan.message_refs[PlanId("plan-1")] == PlanMessageRef(chat_id=42, message_id=1)
+    assert gateway.deleted == [(42, 5)]
+    assert article.cleared_pages == []
 
 
-async def test_telegraph_failure_still_delivers_the_card_without_read_url() -> None:
+async def test_rewritten_article_whose_page_fails_to_update_forgets_the_old_page() -> None:
+    """«📖» must not open the previous text: the page is forgotten, the Хаб shows no «📖», and
+    opening the Статья next time publishes it afresh."""
     plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
     publisher = FakePublisher({"article-1": None})
     handle = _make_notification_handler(
@@ -536,8 +560,23 @@ async def test_telegraph_failure_still_delivers_the_card_without_read_url() -> N
 
     await handle(_article_result())
 
-    assert [a.id for _, a in gateway.sent_articles] == ["article-1"]
-    assert gateway.article_read_urls == [None]
+    assert article.cleared_pages == ["article-1"]
+    assert gateway.hub_redraws == [(42, None, "plan-1")]
+
+
+async def test_rewritten_article_of_an_archived_plan_moves_no_hub() -> None:
+    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
+    plan.plan_status = "archived"
+    publisher = FakePublisher({"article-1": None})
+    handle = _make_notification_handler(
+        plan, article, gateway, FakeWorkspaces(), publisher=publisher
+    )
+
+    await handle(_article_result())
+
+    assert publisher.published == ["article-1"]
+    assert plan.hub_views == []
+    assert gateway.hub_redraws == []
 
 
 async def test_generate_article_records_version_and_redraws_the_hub_without_a_card() -> None:
@@ -556,7 +595,6 @@ async def test_generate_article_records_version_and_redraws_the_hub_without_a_ca
             ),
         )
     ]
-    assert gateway.sent_articles == []
     assert gateway.hub_redraws == [(-100, 5, "plan-1")]
 
 
@@ -572,7 +610,6 @@ async def test_generate_article_publishes_its_reading_page_for_the_hub() -> None
     await handle(_article_result("generate_article"))
 
     assert publisher.published == ["article-1"]
-    assert gateway.sent_articles == []
 
 
 async def test_redelivered_article_result_just_redraws_the_same_hub() -> None:
@@ -586,7 +623,6 @@ async def test_redelivered_article_result_just_redraws_the_same_hub() -> None:
     await handle(_article_result("generate_article"))
     await handle(_article_result("generate_article"))
 
-    assert gateway.sent_articles == []
     assert gateway.hub_redraws == [(-100, 5, "plan-1")] * 2
 
 
@@ -609,18 +645,6 @@ async def test_result_for_an_archived_plan_redraws_nothing() -> None:
     await handle(_article_result("generate_article"))
 
     assert gateway.hub_redraws == []
-
-
-async def test_regenerated_article_sends_its_card_and_redraws_the_hub() -> None:
-    """«✏️ Доработать» was asked for by hand: its result is a card where the person is looking."""
-    plan, article, gateway = FakePlan(), FakeArticle(), FakeGateway()
-    plan.message_refs[PlanId("plan-1")] = PlanMessageRef(chat_id=-100, message_id=5)
-    handle = _make_notification_handler(plan, article, gateway, FakeWorkspaces())
-
-    await handle(_article_result("regenerate_article"))
-
-    assert [a.id for _, a in gateway.sent_articles] == ["article-1"]
-    assert gateway.hub_redraws == [(-100, 5, "plan-1")]
 
 
 async def test_failed_fan_out_article_only_turns_red_in_the_hub() -> None:

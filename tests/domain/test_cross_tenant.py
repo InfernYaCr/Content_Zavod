@@ -187,6 +187,7 @@ async def test_article_calls_with_another_workspaces_ids_find_nothing_and_change
         article.list_versions(a, theirs.article_id),
         article.get_telegraph_path(a, theirs.article_id),
         article.set_telegraph_path(a, theirs.article_id, "page-a"),
+        article.clear_telegraph_path(a, theirs.article_id),
         article.request_regeneration(a, theirs.article_id, None),
         article.mark_exported(a, theirs.article_id),
         article.record_version(a, theirs.article_id, GeneratedVersion("чужой", "p", "m", 1, 0.0)),

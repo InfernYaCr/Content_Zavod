@@ -58,6 +58,7 @@ from ..scheduling import ScheduleSettings, schedule_weekly_plan_tick
 from ..settings import OnboardingState, SettingsService
 from ..telegram import (
     MENU_COMMANDS,
+    ArticleCommentPrompt,
     ArticleId,
     BotClient,
     CallbackDispatcher,
@@ -78,12 +79,13 @@ from ..telegram import (
     unpack_callback_query,
 )
 from ..telegram.admin_command import AdminRegistry, SpendSource, handle_admin_command
-from ..telegram.article_card import ArticlePagePublisher, send_article_card
+from ..telegram.article_card import ArticlePagePublisher
 from ..telegram.asset_photos import AssetPhotos
 from ..telegram.gateway import SentPhoto, format_week_range
 from ..telegram.guide import Guide
 from ..telegram.onboarding import Onboarding
 from ..telegram.pending_inputs import PendingInputs
+from ..telegram.plan_delivery import resend_plan_message
 from ..telegram.start_guard import StartGuard
 from ..telegram.style_samples import (
     ANALYZE_STYLE_JOB,
@@ -621,12 +623,13 @@ class _NoticeDelivery:
 
 
 @dataclass(frozen=True)
-class _ArticleDelivery:
-    """A Статья card, sent only for a by-hand «✏️ Доработать» (`regenerate_article`): the
-    person who asked is looking at the bottom of the chat. The approval fan-out's Статьи are
-    reached through the Хаб instead (#91)."""
+class _RewrittenArticleDelivery:
+    """A by-hand «✏️ Попросить доработать» (`regenerate_article`) finished (#143): the person who
+    asked is looking at the bottom of the chat, so the Хаб moves there, open on this Статья -
+    no card of its own. The approval fan-out's Статьи are only redrawn in the Хаб (#91)."""
 
     article_id: ArticleId
+    plan_id: PlanId
 
 
 @dataclass(frozen=True)
@@ -639,8 +642,8 @@ class _PagePublishDelivery:
 
 @dataclass(frozen=True)
 class _CoverDelivery:
-    """A cover photo, sent only for a by-hand «🖼 Обложка» re-request - same reasoning as
-    `_ArticleDelivery`."""
+    """A cover photo, sent only for a by-hand «🎨 Перерисовать» - same reasoning as
+    `_RewrittenArticleDelivery`."""
 
     plan_item_id: PlanItemId
     image: bytes
@@ -664,7 +667,7 @@ _Delivery = (
     _PlanDelivery
     | _HubDelivery
     | _NoticeDelivery
-    | _ArticleDelivery
+    | _RewrittenArticleDelivery
     | _PagePublishDelivery
     | _CoverDelivery
     | _StyleDelivery
@@ -778,10 +781,10 @@ async def _apply_result(plan: Plan, article: Article, result: JobResult) -> list
         if application == "stale":
             logger.info("Ignoring stale Article result for job_id=%s", result.job_id)
             return []
-        hub = _HubDelivery(plan_id=await article.get_plan_id(ws, article_id))
+        plan_id = await article.get_plan_id(ws, article_id)
         if result.job_type == "generate_article":
-            return [_PagePublishDelivery(article_id=article_id), hub]
-        return [_ArticleDelivery(article_id=article_id), hub]
+            return [_PagePublishDelivery(article_id=article_id), _HubDelivery(plan_id=plan_id)]
+        return [_RewrittenArticleDelivery(article_id=article_id, plan_id=plan_id)]
     if result.job_type == "generate_cover":
         plan_item_id = PlanItemId(output["plan_item_id"])
         image = base64.b64decode(output["image"])
@@ -820,9 +823,16 @@ async def _deliver(
         await deliver_plan_hub(plan, gateway, workspace_id, chat_id, delivery.plan_id)
     elif isinstance(delivery, _NoticeDelivery):
         await gateway.send_notice(chat_id, delivery.text)
-    elif isinstance(delivery, _ArticleDelivery):
+    elif isinstance(delivery, _RewrittenArticleDelivery):
         view = await article.get(workspace_id, delivery.article_id)
-        await send_article_card(gateway, workspace_id, chat_id, view, publisher)
+        # The page shows the new Версия too (#92); one that couldn't be updated is forgotten,
+        # so «📖» doesn't open the old text and the next open of the Статья publishes afresh.
+        if publisher is not None and await publisher.publish(workspace_id, view) is None:
+            await article.clear_telegraph_path(workspace_id, view.id)
+        if (await plan.get_summary(workspace_id, delivery.plan_id)).status != "approved":
+            return  # an archived Plan's Хаб is left alone, like `deliver_plan_hub` does
+        await plan.set_hub_view(workspace_id, delivery.plan_id, view.plan_item_id, view.id)
+        await resend_plan_message(plan, gateway, workspace_id, chat_id, delivery.plan_id)
     elif isinstance(delivery, _PagePublishDelivery):
         if publisher is not None:
             await publisher.publish(
@@ -918,7 +928,7 @@ async def main(settings: Settings | None = None) -> None:
         )
         article_regeneration = CommentGatedRegeneration[ArticleId](
             reserved(limits, article.request_regeneration, "regenerate_article"),
-            TelegramCommentPrompt(bot_client, action="regenerate_article"),
+            ArticleCommentPrompt(bot_client, article),
             pending_inputs,
             kind="article_comment",
         )

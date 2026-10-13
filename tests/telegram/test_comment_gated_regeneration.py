@@ -29,7 +29,7 @@ class FakePrompt:
         self.refused: list[tuple[int, str]] = []
         self._next_message_id = 100
 
-    async def prompt_for_comment(self, chat_id: int, id_: str) -> int:
+    async def prompt_for_comment(self, workspace_id, chat_id: int, id_: str) -> int:
         self.prompted.append((chat_id, id_))
         self._next_message_id += 1
         return self._next_message_id - 1

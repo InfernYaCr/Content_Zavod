@@ -105,7 +105,9 @@ class HubArticleCell:
     says whether a Версия exists to open - an `error` after a successful earlier Версия still
     has one. `job_id` is the Job currently owning its generation, what «🔁 Повторить» retries.
     `telegraph_path` is its Страница для чтения (#92), if published. `research_status` is the
-    latest Версия's (#94), so the result card can warn about a Статья written without sources."""
+    latest Версия's (#94), so the result card can warn about a Статья written without sources.
+    `exported` - marked «Готово, публикую» (#143, a 👍 cell). `chars` and `opening` (its first
+    1000 characters, Markdown as stored) are the latest Версия's, for the Статья screen."""
 
     platform: str
     state: HubCellState
@@ -114,6 +116,9 @@ class HubArticleCell:
     job_id: int | None = None
     telegraph_path: str | None = None
     research_status: str | None = None
+    exported: bool = False
+    chars: int = 0
+    opening: str = ""
 
 
 @dataclass(frozen=True)
@@ -154,18 +159,31 @@ class HubTopic:
 @dataclass(frozen=True)
 class PlanHubView:
     """An approved Plan as its Хаб (#91): progress per Тема, derived from `articles` and
-    `plan_items` cover state at read time. `open_item_id` is the Тема whose result card the
-    Plan message currently shows, `None` for the checklist."""
+    `plan_items` cover state at read time. `open_item_id` is the Тема whose screen the
+    Plan message currently shows, `None` for the checklist; `open_article_id` is the Статья
+    open inside that Тема (#143), `None` for the Тема screen itself."""
 
     id: PlanId
     week_label: str
     status: str
     topics: Sequence[HubTopic]
     open_item_id: PlanItemId | None = None
+    open_article_id: ArticleId | None = None
 
     @property
     def open_topic(self) -> HubTopic | None:
         return next((t for t in self.topics if t.id == self.open_item_id), None)
+
+    @property
+    def open_article(self) -> HubArticleCell | None:
+        """The open Тема's open Статья, if it has a Версия to show."""
+        topic = self.open_topic
+        if topic is None or self.open_article_id is None:
+            return None
+        return next(
+            (c for c in topic.articles if c.article_id == self.open_article_id and c.has_content),
+            None,
+        )
 
     @property
     def cells(self) -> list[HubCellState]:
