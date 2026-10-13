@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 
 import pytest
 
@@ -311,8 +312,8 @@ async def test_audience_reaches_draft_and_rewrite_as_input_data_but_not_the_cach
     for _system, user in (draft_2, rewrite_2):
         assert '"audience": "Студенты-маркетологи"' in user.text
     versions = {s["step_name"]: s["prompt_template_version"] for s in first["steps"]}
-    assert versions["outline"] == "outline-v4"  # unchanged: the outline takes no Аудитория
-    assert (versions["draft"], versions["rewrite"]) == ("draft-v8", "rewrite-v8")
+    assert versions["outline"] == "outline-v5"  # #145 bumped it; the outline takes no Аудитория
+    assert (versions["draft"], versions["rewrite"]) == ("draft-v9", "rewrite-v9")
     assert [s["step_name"] for s in second["steps"]] == ["draft", "rewrite"]
 
 
@@ -916,3 +917,64 @@ async def test_a_style_profile_of_one_workspace_never_reaches_anothers_prompt() 
     assert "author_style" not in b_prompts
     for _system, user in text_generator.calls[4:]:
         assert "фирменный тон А" in user.text
+
+
+async def _vladivostok(workspace_id: int) -> str:
+    return "Asia/Vladivostok"
+
+
+@pytest.mark.asyncio
+async def test_today_in_the_workspace_zone_reaches_every_step_and_past_years_leave_headings() -> (
+    None
+):
+    """#145: the model is told today's date (the Пространство's, not UTC's). Only `#`/`##`
+    headings lose a past-year tail; a true fact about the past in the text stays as is."""
+    rewrite = (
+        "# Инструменты AI: что использовать в 2024 году\n\n"
+        "С 22 мая 2024 года работает ЕПК.\n\n"
+        "## Что выбрать в 2024 году\n\n"
+        "### Что было в 2024 году\n\n"
+        "## Планы на 2027 год"
+    )
+    text_generator = ScriptedTextGenerator(_plain_completions(rewrite))
+    handler = make_generate_article_handler(
+        text_generator,
+        _no_evidence_researcher(),
+        SettingsService(FakeOwnerSettingsStore()),
+        now=lambda: datetime(2026, 12, 31, 20, tzinfo=UTC),
+        workspace_timezone=_vladivostok,
+    )
+
+    output = await handler(WS_A, _PAYLOAD)
+
+    assert output["content"] == (
+        "# Инструменты AI: что использовать\n\n"
+        "С 22 мая 2024 года работает ЕПК.\n\n"
+        "## Что выбрать\n\n"
+        "### Что было в 2024 году\n\n"
+        "## Планы на 2027 год"
+    )
+    for messages in text_generator.calls:
+        data = json.loads(messages[1].text.split("INPUT_DATA\n", 1)[1].split("\nEND_INPUT_DATA")[0])
+        assert data["today"] == "2027-01-01"
+    assert {s["step_name"]: s["prompt_template_version"] for s in output["steps"]} == {
+        "research_search": "web-search-v1",
+        "outline": "outline-v5",
+        "draft": "draft-v9",
+        "rewrite": "rewrite-v9",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_heading_left_empty_is_dropped_and_code_blocks_are_not_headings() -> None:
+    rewrite = "## В 2024 году\n\nТекст.\n\n```\n# сборка в 2024 году\n```"
+    handler = make_generate_article_handler(
+        ScriptedTextGenerator(_plain_completions(rewrite)),
+        _no_evidence_researcher(),
+        SettingsService(FakeOwnerSettingsStore()),
+        now=lambda: datetime(2026, 10, 13, 9, tzinfo=UTC),
+    )
+
+    output = await handler(WS_A, _PAYLOAD)
+
+    assert output["content"] == "Текст.\n\n```\n# сборка в 2024 году\n```"

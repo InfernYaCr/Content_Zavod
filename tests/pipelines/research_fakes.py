@@ -14,8 +14,10 @@ class FakeSearch:
         *,
         error: Exception | None = None,
         cost: float | None = 0.5,
+        modtimes: dict[str, str] | None = None,
     ) -> None:
         self._urls = urls or []
+        self._modtimes = modtimes or {}
         self._error = error
         self._cost = cost
         self.queries: list[str] = []
@@ -24,7 +26,10 @@ class FakeSearch:
         self.queries.append(query)
         if self._error is not None:
             raise self._error
-        hits = [SearchHit(url=url, title=f"title of {url}", snippet="") for url in self._urls]
+        hits = [
+            SearchHit(url=url, title=f"title of {url}", snippet="", modtime=self._modtimes.get(url))
+            for url in self._urls
+        ]
         return SearchResults(hits=hits[:limit], latency_ms=3, cost=self._cost)
 
 

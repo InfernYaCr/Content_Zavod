@@ -3,8 +3,8 @@ the search provider behind a Тема's Исследование (#94).
 
 Same Yandex Cloud host and credentials as Wordstat (`KeywordStats`), see
 `docs/integrations/yandex-search-api.md`. The response is `{"rawData": <base64>}` holding
-Yandex's XML results page (`FORMAT_XML`); only `url`/`title`/`passages` of each document
-are read. Unlike `KeywordStats`, failures do raise - the caller (research step) decides
+Yandex's XML results page (`FORMAT_XML`); only `url`/`title`/`passages`/`modtime` of each
+document are read. Unlike `KeywordStats`, failures do raise - the caller (research step) decides
 that a failed search means "no evidence" for this Тема, which has to be visible in the
 Статья rather than silently swallowed here.
 
@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import re
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Awaitable, Callable
@@ -41,6 +42,8 @@ class SearchHit:
     url: str
     title: str
     snippet: str
+    # ISO date of `<modtime>` - when the index last saw the page, not its publication (#145).
+    modtime: str | None = None
 
 
 @dataclass(frozen=True)
@@ -158,8 +161,22 @@ def parse_search_xml(raw: bytes) -> list[SearchHit]:
             continue
         passages = [_text(p) for p in doc.iterfind("passages/passage")]
         snippet = " ".join(p for p in passages if p) or _text(doc.find("headline"))
-        hits.append(SearchHit(url=url, title=_text(doc.find("title")), snippet=snippet))
+        hits.append(
+            SearchHit(
+                url=url,
+                title=_text(doc.find("title")),
+                snippet=snippet,
+                modtime=_modtime(_text(doc.find("modtime"))),
+            )
+        )
     return hits
+
+
+def _modtime(value: str) -> str | None:
+    """`20261010T080745` (live check, docs/research/2026-10-12-niche-map-live-checks.md) ->
+    `2026-10-10`; anything else -> `None`, the format isn't documented as stable."""
+    match = re.match(r"(\d{4})(\d{2})(\d{2})(?:T|$)", value)
+    return "-".join(match.groups()) if match else None
 
 
 def _text(element: ET.Element | None) -> str:

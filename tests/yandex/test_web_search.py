@@ -5,7 +5,12 @@ import pytest
 from content_zavod.yandex.credentials import StaticApiKeyProvider
 from content_zavod.yandex.errors import AuthError, YandexError
 from content_zavod.yandex.http import HttpResponse
-from content_zavod.yandex.web_search import WEB_SEARCH_URL, SearchHit, WebSearch
+from content_zavod.yandex.web_search import (
+    WEB_SEARCH_URL,
+    SearchHit,
+    WebSearch,
+    parse_search_xml,
+)
 
 from .fakes import FakeHttpTransport, RecordingSleep
 
@@ -158,3 +163,18 @@ async def test_freshness_goes_as_period_the_field_the_api_honours() -> None:
     _url, _headers, body = transport.post_calls[0]
     assert body["period"] == "PERIOD_2_WEEKS"
     assert "resultsWithin" not in body and "sortSpec" not in body
+
+
+def test_modtime_is_read_as_an_iso_date_and_garbage_is_ignored() -> None:
+    """#145: `<modtime>` is `YYYYMMDDThhmmss` (live check, docs/research/2026-10-12-niche-map-
+    live-checks.md) - when the index last saw the page, the research's fallback date."""
+    xml = """<?xml version="1.0" encoding="utf-8"?>
+<yandexsearch version="1.0"><response><results><grouping>
+<group><doc><url>https://a.ru/x</url><title>A</title><modtime>20240315T101500</modtime></doc></group>
+<group><doc><url>https://b.ru/x</url><title>B</title><modtime>вчера</modtime></doc></group>
+<group><doc><url>https://c.ru/x</url><title>C</title></doc></group>
+</grouping></results></response></yandexsearch>"""
+
+    hits = parse_search_xml(xml.encode("utf-8"))
+
+    assert [hit.modtime for hit in hits] == ["2024-03-15", None, None]
