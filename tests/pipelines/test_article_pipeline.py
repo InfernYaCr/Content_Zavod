@@ -6,8 +6,10 @@ import pytest
 from content_zavod.domain import ArticleId, ArticleView, PlanItemDetail, PlanItemId
 from content_zavod.job_queue import JobPartialFailure
 from content_zavod.pipelines.article_pipeline import (
+    assemble_content,
     make_generate_article_handler,
     make_regenerate_article_handler,
+    strip_generated_parts,
 )
 from content_zavod.pipelines.topic_research import TopicResearcher
 from content_zavod.settings import SettingsService, StyleProfile
@@ -149,7 +151,7 @@ _PAYLOAD = {
 
 
 @pytest.mark.asyncio
-async def test_generate_article_writes_from_evidence_and_lists_only_cited_bundle_sources() -> None:
+async def test_generate_article_writes_from_evidence_without_references_or_a_source_list() -> None:
     rewrite = (
         "Почти половина малых компаний уже работает с CRM [E1]. Внедрение занимает недели "
         "[E2, E1]. Подробнее: https://invented.example/fake-study и "
@@ -163,11 +165,8 @@ async def test_generate_article_writes_from_evidence_and_lists_only_cited_bundle
     output = await handler(WS_A, {**_PAYLOAD, "title": "Как выбрать CRM", "platform": "zen"})
 
     assert output["content"] == (
-        "Почти половина малых компаний уже работает с CRM [1]. Внедрение занимает недели "
-        "[2, 1]. Подробнее: и исследование.\n\n"
-        "Источники:\n"
-        f"1. Опрос о CRM — {_PAGE_A}\n"
-        f"2. Советы по CRM — {_PAGE_B}"
+        "Почти половина малых компаний уже работает с CRM. Внедрение занимает недели. "
+        "Подробнее: и исследование."
     )
     assert output["research_status"] == "ok"
     assert [s["step_name"] for s in output["steps"]] == [
@@ -187,7 +186,7 @@ async def test_generate_article_writes_from_evidence_and_lists_only_cited_bundle
 
 
 @pytest.mark.asyncio
-async def test_marker_spelling_variants_are_numbered_and_heading_markers_dropped() -> None:
+async def test_marker_spelling_variants_and_heading_markers_are_all_dropped() -> None:
     rewrite = (
         "## Рынок CRM [E1]\n\n"
         "Почти половина компаний работает с CRM [Е1]. Внедрение — недели (E2). "
@@ -201,14 +200,12 @@ async def test_marker_spelling_variants_are_numbered_and_heading_markers_dropped
     output = await handler(WS_A, _PAYLOAD)
 
     assert output["content"] == (
-        "## Рынок CRM\n\n"
-        "Почти половина компаний работает с CRM [1]. Внедрение — недели [2]. Обе цифры [1, 2]."
-        f"\n\nИсточники:\n1. Опрос о CRM — {_PAGE_A}\n2. Советы по CRM — {_PAGE_B}"
+        "## Рынок CRM\n\nПочти половина компаний работает с CRM. Внедрение — недели. Обе цифры."
     )
 
 
 @pytest.mark.asyncio
-async def test_unknown_evidence_markers_are_dropped_and_unmarked_text_lists_all_sources() -> None:
+async def test_unknown_evidence_markers_are_dropped_and_no_sources_are_listed() -> None:
     text_generator = ScriptedTextGenerator(
         _evidence_completions("Текст без маркеров, но с выдуманным [E9].")
     )
@@ -218,10 +215,7 @@ async def test_unknown_evidence_markers_are_dropped_and_unmarked_text_lists_all_
 
     output = await handler(WS_A, _PAYLOAD)
 
-    assert output["content"] == (
-        "Текст без маркеров, но с выдуманным.\n\nИсточники:\n"
-        f"- Опрос о CRM — {_PAGE_A}\n- Советы по CRM — {_PAGE_B}"
-    )
+    assert output["content"] == "Текст без маркеров, но с выдуманным."
 
 
 @pytest.mark.asyncio
@@ -270,7 +264,7 @@ async def test_second_platform_reuses_the_topic_research_and_outline() -> None:
     vc = await handler(WS_A, {**_PAYLOAD, "article_id": "vc", "platform": "vc"})
 
     assert [s["step_name"] for s in vc["steps"]] == ["draft", "rewrite"]
-    assert vc["content"] == f"VC [1].\n\nИсточники:\n1. Опрос о CRM — {_PAGE_A}"
+    assert vc["content"] == "VC."
     vc_draft_input = text_generator.calls[5][1].text
     assert "## Аутлайн" in vc_draft_input
 
@@ -407,7 +401,7 @@ async def test_regenerate_article_reuses_the_topic_research_cached_at_generation
     output = await regenerate(WS_A, {"article_id": "a", "comment": None})
 
     assert [s["step_name"] for s in output["steps"]] == ["draft", "rewrite"]
-    assert output["content"] == f"Новый [1].\n\nИсточники:\n1. Советы по CRM — {_PAGE_B}"
+    assert output["content"] == "Новый."
 
 
 @pytest.mark.asyncio
@@ -813,17 +807,85 @@ async def test_project_url_repeated_by_the_model_is_kept_only_in_the_closing_cta
 
 
 @pytest.mark.asyncio
-async def test_sources_filter_never_removes_the_project_cta_and_lists_it_nowhere() -> None:
-    """#98: the Проект link survives the foreign-URL filter and never becomes a Источник."""
+async def test_url_filter_with_evidence_keeps_the_project_cta_as_the_only_link() -> None:
+    """#98/#144: the Проект link survives the foreign-URL filter, and nothing else does."""
     content, _ = await _generate_with_project(
         f"Факт [E1]. Чужая ссылка https://spam.example/x.\n\nПодписывайтесь: {_PROJECT_URL}",
         evidence=True,
     )
 
-    assert content == (
-        f"Факт [1]. Чужая ссылка.\n\nПодписывайтесь: {_PROJECT_URL}\n\n"
-        f"Источники:\n1. Опрос о CRM — {_PAGE_A}"
+    assert content == f"Факт. Чужая ссылка.\n\nПодписывайтесь: {_PROJECT_URL}"
+
+
+@pytest.mark.asyncio
+async def test_marker_glued_between_words_leaves_a_single_space() -> None:
+    content, _ = await _generate_with_project(
+        "Рост продажи[E1]и выручки, продажи [E2] и расходы[E1]«как есть».", evidence=True
     )
+
+    assert content.startswith("Рост продажи и выручки, продажи и расходы «как есть».")
+
+
+@pytest.mark.asyncio
+async def test_year_in_brackets_and_project_markdown_link_survive_marker_removal() -> None:
+    content, _ = await _generate_with_project(
+        f"Итоги [2024] года [E1].\n\nБольше — [в канале]({_PROJECT_URL}).", evidence=True
+    )
+
+    assert content == f"Итоги [2024] года.\n\nБольше — [в канале]({_PROJECT_URL})."
+
+
+@pytest.mark.asyncio
+async def test_links_to_research_pages_never_reach_the_text() -> None:
+    content, _ = await _generate_with_project(
+        f"Опрос: {_PAGE_A}. Советы — [тут]({_PAGE_B}).\n\nСм. {_PROJECT_URL}", evidence=True
+    )
+
+    assert content == f"Опрос:. Советы — тут.\n\nСм. {_PROJECT_URL}"
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("Факт [E1][E2].", "Факт."),
+        ("Факт [E1] [E2], дальше.", "Факт, дальше."),
+        ("Факт[E1]… и всё", "Факт… и всё"),
+        ("Факт[E1]—рост", "Факт—рост"),
+        ("Факт [E1] — рост", "Факт — рост"),
+        ("[E1] Начало.\n\n[E2][E3] Второй абзац.", "Начало.\n\nВторой абзац."),
+        ("Факт ([E1]).", "Факт."),
+        ("Факт ([E1][E2]) и вывод.", "Факт и вывод."),
+        ("Список (см. [E1] и др.) тут.", "Список (см. и др.) тут."),
+        ("Факт ([E1] и опыт) тут.", "Факт (и опыт) тут."),
+    ],
+)
+def test_marker_removal_leaves_no_stray_spaces_or_brackets(body, expected) -> None:
+    assert assemble_content(body, None) == expected
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "Источники:\n- https://a.example/x\n- https://b.example/y",
+        "**Источники:**\n1. https://a.example/x\n2. https://b.example/y",
+        "## Источники\n\n• https://a.example/x",
+    ],
+)
+def test_a_source_list_written_by_the_model_disappears_with_its_links(tail) -> None:
+    assert assemble_content(f"Текст.\n\n{tail}\n\n\n\nВывод.", None) == "Текст.\n\nВывод."
+    assert assemble_content(f"Текст.\n\n{tail}", None) == "Текст."
+
+
+def test_a_sources_heading_with_real_items_and_markdown_lists_stay() -> None:
+    body = "Источники:\n- опыт автора\n\n- пункт\n---"
+    assert assemble_content(body, None) == body
+    body = "## Источники\n\n- опыт автора\n\nТекст."
+    assert assemble_content(body, None) == body
+
+
+def test_strip_generated_parts_keeps_bracketed_numbers_in_text_without_a_source_list() -> None:
+    assert strip_generated_parts("Итоги [2024] года, шаг [2].") == "Итоги [2024] года, шаг [2]."
+    assert strip_generated_parts("Факт [1, 2].\n\nИсточники:\n1. x — https://a") == "Факт."
 
 
 class _WorkspaceStore:
