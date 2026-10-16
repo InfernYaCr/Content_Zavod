@@ -46,7 +46,7 @@ def test_the_limits_are_those_of_adr_0015() -> None:
         200,
         1500,
         500,
-        1000,
+        2000,
     )
     assert (TOPIC_MAX_LENGTH, COMMENT_MAX_LENGTH) == (300, 1000)
 

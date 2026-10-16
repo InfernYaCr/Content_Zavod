@@ -11,7 +11,7 @@ from __future__ import annotations
 AUDIENCE_KEY = "audience"
 # `-` removes the Аудитория (like Проект's); stored as an empty value, which reads back as `None`.
 CLEAR_AUDIENCE = "-"
-AUDIENCE_MAX_LENGTH = 1000
+AUDIENCE_MAX_LENGTH = 2000
 _SCREEN_LENGTH = 100
 
 
