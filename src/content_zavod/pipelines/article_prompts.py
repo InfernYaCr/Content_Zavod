@@ -340,12 +340,18 @@ _EVIDENCE_RULE = (
 )
 
 # The draft is the step that decides whether the Статья reads like an article or like a
-# list of extracted facts with a footnote on every line.
+# list of extracted facts with a footnote on every line. The outline is built from evidence
+# without the reader in mind, so a glossary page found in research would otherwise become a
+# Статья that lists ten abbreviations.
 _READABILITY_RULE = (
     "Пиши живым связным текстом для читателя, а не перечнем фактов: каждый факт — опора для "
     "объяснения, примера или практического вывода, а не самоцель. Не начинай абзацы подряд "
     "с «Согласно исследованию…» или «По данным…». Пометки «(мнение)» из аутлайна в текст не "
-    "переноси — мнение выражай формулировкой («на мой взгляд», «я бы советовал»)."
+    "переноси — мнение выражай формулировкой («на мой взгляд», «я бы советовал»). "
+    "approved_outline — карта фактов, а не обязательный список: бери из неё то, что нужно "
+    "читателю, и не превращай статью в перечень терминов и аббревиатур. Специальных терминов "
+    "— не больше трёх-четырёх на статью: каждый объясни простыми словами на примере из жизни "
+    "читателя, остальные замени обычными словами или опусти."
 )
 
 _NO_EVIDENCE_RULE = (

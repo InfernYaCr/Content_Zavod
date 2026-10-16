@@ -282,6 +282,8 @@ def test_draft_gets_evidence_quotes_but_never_source_urls() -> None:
     assert "Evidence по теме нет" not in system.text
     assert "в заголовках маркеры не ставь" in system.text
     assert "а не перечнем фактов" in system.text
+    assert "а не обязательный список" in system.text
+    assert "не больше трёх-четырёх" in system.text
     input_data = user.text.split("INPUT_DATA", 1)[1]
     assert "42% компаний используют CRM." in input_data
     assert "https://media.example/a" not in input_data
